@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Osservazioni pedagogiche</title>
+<style>
+  :root {
+    --carta: #f6f4ee;
+    --carta-scura: #ece8dc;
+    --inchiostro: #232620;
+    --inchiostro-tenue: #5b5d54;
+    --riga: #d8d3c3;
+    --accento: #2f4d3a;      /* verde muschio: identità della materia/azione primaria */
+    --autonomo: #2f7d3c;      /* verde: Autonomo (2) */
+    --supporto: #b8960b;      /* giallo (dorato, leggibile): Con supporto (1) */
+    --non-manifestato: #b3261e; /* rosso: Non manifestato (0) */
+    --non-valutato: #78766e;  /* grigio: Non valutato (—) */
+    --ombra: 0 1px 2px rgba(35,38,32,.08);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--carta);
+    color: var(--inchiostro);
+    font: 15px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header.app {
+    display: flex; align-items: center; gap: 1rem;
+    padding: .85rem 1.25rem;
+    background: var(--accento); color: #f3f1e8;
+    position: sticky; top: 0; z-index: 20;
+  }
+  header.app h1 { font-size: 1.05rem; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  header.app .filo { flex: 1; opacity: .85; font-size: .85rem; }
+  header.app input {
+    width: 5rem; padding: .3rem .5rem; border-radius: 5px; border: 1px solid transparent;
+    font: inherit;
+  }
+  header.app label { font-size: .8rem; opacity: .9; }
+  main { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
+
+  .avviso {
+    background: #fbf0d9; border: 1px solid #e3c583; color: #6b4d16;
+    padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem;
+  }
+
+  nav.percorso { font-size: .85rem; color: var(--inchiostro-tenue); margin-bottom: 1rem; }
+  nav.percorso button {
+    background: none; border: none; color: var(--accento); cursor: pointer;
+    font: inherit; padding: 0; text-decoration: underline;
+  }
+
+  .elenco { display: grid; gap: .5rem; }
+  .scelta {
+    text-align: left; background: #fff; border: 1px solid var(--riga); border-radius: 8px;
+    padding: .75rem .9rem; cursor: pointer; font: inherit; color: inherit; box-shadow: var(--ombra);
+  }
+  .scelta:hover { border-color: var(--accento); }
+  .scelta .tit { font-weight: 600; }
+  .scelta .sub { color: var(--inchiostro-tenue); font-size: .85rem; }
+
+  table.griglia { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; box-shadow: var(--ombra); }
+  .griglia-scroll { overflow-x: auto; border-radius: 8px; }
+  table.griglia th, table.griglia td { border-bottom: 1px solid var(--riga); padding: .5rem .55rem; text-align: center; }
+  table.griglia th { background: var(--carta-scura); font-weight: 600; font-size: .78rem; vertical-align: bottom; }
+  table.griglia th.criterio { min-width: 6.5rem; max-width: 9rem; white-space: normal; line-height: 1.25; }
+  table.griglia th.alunno, table.griglia td.alunno { text-align: left; position: sticky; left: 0; background: #fff; min-width: 9rem; }
+  table.griglia th.alunno { background: var(--carta-scura); }
+  table.griglia td.alunno button {
+    background: none; border: none; font: inherit; color: var(--inchiostro); cursor: pointer;
+    text-decoration: underline; text-align: left; padding: 0;
+  }
+  td.esito { font-size: .8rem; color: var(--inchiostro-tenue); white-space: nowrap; min-width: 9rem; text-align: left; }
+
+  .cella {
+    width: 2.4rem; height: 2.1rem; border-radius: 6px; border: 1px solid var(--riga);
+    background: #fff; cursor: pointer; font-weight: 700; font-variant-numeric: tabular-nums;
+    color: var(--inchiostro-tenue);
+  }
+  .cella[data-p="0"] { background: color-mix(in srgb, var(--non-manifestato) 18%, white); border-color: var(--non-manifestato); color: var(--non-manifestato); }
+  .cella[data-p="1"] { background: color-mix(in srgb, var(--supporto) 18%, white); border-color: var(--supporto); color: var(--supporto); }
+  .cella[data-p="2"] { background: color-mix(in srgb, var(--autonomo) 18%, white); border-color: var(--autonomo); color: var(--autonomo); }
+  .cella[data-p=""] { border-style: dashed; color: var(--non-valutato); }
+
+  .menu-valutazione {
+    position: fixed; z-index: 50; background: #fff; border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(35,38,32,.25); padding: .35rem; min-width: 11rem;
+    display: flex; flex-direction: column; gap: .25rem;
+  }
+  .menu-valutazione button {
+    display: flex; align-items: center; gap: .55rem; border: none; border-radius: 6px;
+    padding: .5rem .6rem; font: inherit; font-size: .88rem; cursor: pointer; text-align: left;
+    background: #fff; color: var(--inchiostro);
+  }
+  .menu-valutazione button:hover, .menu-valutazione button:focus-visible { background: var(--carta-scura); }
+  .menu-valutazione .pallino-opzione { width: .95rem; height: .95rem; border-radius: 50%; flex: none; }
+  .menu-valutazione button[data-p="2"] .pallino-opzione { background: var(--autonomo); }
+  .menu-valutazione button[data-p="1"] .pallino-opzione { background: var(--supporto); }
+  .menu-valutazione button[data-p="0"] .pallino-opzione { background: var(--non-manifestato); }
+  .menu-valutazione button[data-p=""] .pallino-opzione { background: var(--non-valutato); }
+  .menu-valutazione button.selezionata { font-weight: 600; }
+  .menu-valutazione button.selezionata::after { content: '✓'; margin-left: auto; color: var(--accento); }
+
+  .legenda { display: flex; gap: 1rem; font-size: .8rem; color: var(--inchiostro-tenue); margin: .75rem 0 1rem; flex-wrap: wrap; }
+  .legenda span.pallino { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .35rem; }
+
+  dialog.scheda { border: none; border-radius: 10px; padding: 0; width: min(560px, 92vw); box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+  dialog.scheda::backdrop { background: rgba(35,38,32,.35); }
+  .scheda-corpo { padding: 1.25rem 1.4rem; }
+  .scheda-corpo h2 { margin: 0 0 .1rem; font-size: 1.15rem; }
+  .scheda-corpo .meta { color: var(--inchiostro-tenue); font-size: .85rem; margin-bottom: 1rem; }
+  .scheda-corpo table { width: 100%; border-collapse: collapse; margin-bottom: .9rem; }
+  .scheda-corpo td, .scheda-corpo th { padding: .35rem 0; border-bottom: 1px solid var(--riga); text-align: left; font-size: .9rem; }
+  .scheda-corpo textarea { width: 100%; min-height: 4.5rem; font: inherit; padding: .5rem; border: 1px solid var(--riga); border-radius: 6px; }
+  .barra { height: .45rem; border-radius: 3px; background: var(--carta-scura); overflow: hidden; margin-top: .25rem; }
+  .barra > i { display: block; height: 100%; background: var(--accento); }
+  .storico-riga { display: flex; align-items: center; gap: .6rem; font-size: .85rem; margin-bottom: .35rem; }
+  .storico-riga .nome { flex: 0 0 11rem; }
+  .storico-riga .barra { flex: 1; }
+  .storico-riga .val { flex: 0 0 3.4rem; text-align: right; color: var(--inchiostro-tenue); }
+  .chiudi { margin-top: .5rem; }
+  button.azione { background: var(--accento); color: #fff; border: none; border-radius: 6px; padding: .45rem .9rem; font: inherit; cursor: pointer; }
+  button.azione:disabled { opacity: .6; cursor: default; }
+
+  .form-attivita {
+    background: #fff; border: 1px solid var(--riga); border-radius: 8px; padding: 1rem 1.1rem;
+    margin-bottom: 1.25rem; box-shadow: var(--ombra);
+  }
+  .form-attivita h2 { font-size: .95rem; margin: 0 0 .75rem; }
+  .form-attivita .campi { display: grid; grid-template-columns: 2fr 1fr 1.6fr auto; gap: .6rem; align-items: end; }
+  .form-attivita label { display: block; font-size: .78rem; color: var(--inchiostro-tenue); margin-bottom: .2rem; }
+  .form-attivita input, .form-attivita select {
+    width: 100%; padding: .4rem .5rem; border: 1px solid var(--riga); border-radius: 5px; font: inherit;
+  }
+  .errore-form { color: var(--non-manifestato); font-size: .8rem; margin-top: .5rem; }
+  @media (max-width: 720px) {
+    .form-attivita .campi { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="app">
+  <h1>Osservazioni pedagogiche</h1>
+  <span class="filo" id="filoPercorso"></span>
+  <label>Docente (ID) <input id="docenteId" type="number" min="1" value="1" /></label>
+</header>
+<main>
+  <p class="avviso">
+    Modalità di sviluppo: l'identità del docente è impostata a mano nel campo qui sopra
+    (header <code>X-Docente-Id</code>). Non è un login: va sostituita da un'autenticazione
+    reale prima di qualunque uso con dati veri (vedi <code>server/auth.js</code>).
+  </p>
+  <nav class="percorso" id="percorso"></nav>
+  <div id="contenuto">Caricamento…</div>
+</main>
+
+<dialog class="scheda" id="dialogoScheda">
+  <div class="scheda-corpo" id="corpoScheda"></div>
+</dialog>
+
+<script>
+'use strict';
+
+const stato = { insegnamenti: [], insegnamentoCorrente: null, attivitaCorrente: null };
+
+function docenteId() { return document.getElementById('docenteId').value; }
+
+async function api(percorso, opzioni) {
+  const risposta = await fetch('/api' + percorso, {
+    ...opzioni,
+    headers: { 'Content-Type': 'application/json', 'X-Docente-Id': docenteId(), ...(opzioni && opzioni.headers) },
+  });
+  if (!risposta.ok) {
+    const corpo = await risposta.json().catch(() => ({}));
+    throw new Error(corpo.errore || ('Errore HTTP ' + risposta.status));
+  }
+  return risposta.status === 204 ? null : risposta.json();
+}
+
+function el(tag, props, figli) {
+  const nodo = document.createElement(tag);
+  Object.assign(nodo, props || {});
+  (figli || []).forEach((f) => nodo.append(f));
+  return nodo;
+}
+
+function aggiornaPercorso() {
+  const box = document.getElementById('percorso');
+  box.innerHTML = '';
+  const home = el('button', { textContent: 'I miei insegnamenti', onclick: mostraInsegnamenti });
+  box.append(home);
+  if (stato.insegnamentoCorrente) {
+    box.append(document.createTextNode(' › '));
+    const ins = stato.insegnamentoCorrente;
+    box.append(el('button', {
+      textContent: `${ins.materia} — ${ins.classe} (${ins.anno_scolastico})`,
+      onclick: () => mostraAttivita(ins),
+    }));
+  }
+  if (stato.attivitaCorrente) {
+    box.append(document.createTextNode(' › '));
+    box.append(el('span', { textContent: stato.attivitaCorrente.nome }));
+  }
+}
+
+async function mostraInsegnamenti() {
+  stato.insegnamentoCorrente = null;
+  stato.attivitaCorrente = null;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const insegnamenti = await api('/insegnamenti');
+    stato.insegnamenti = insegnamenti;
+    if (insegnamenti.length === 0) {
+      contenuto.textContent = 'Nessun insegnamento trovato per questo docente.';
+      return;
+    }
+    const lista = el('div', { className: 'elenco' });
+    insegnamenti.forEach((ins) => {
+      lista.append(el('button', {
+        className: 'scelta',
+        onclick: () => mostraAttivita(ins),
+      }, [
+        el('div', { className: 'tit', textContent: `${ins.materia} — ${ins.classe}` }),
+        el('div', { className: 'sub', textContent: `Anno scolastico ${ins.anno_scolastico}` }),
+      ]));
+    });
+    contenuto.innerHTML = '';
+    contenuto.append(lista);
+  } catch (errore) {
+    contenuto.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+async function mostraAttivita(insegnamento) {
+  stato.insegnamentoCorrente = insegnamento;
+  stato.attivitaCorrente = null;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const [attivita, nuclei] = await Promise.all([
+      api(`/insegnamenti/${insegnamento.insegnamento_id}/attivita`),
+      api(`/insegnamenti/${insegnamento.insegnamento_id}/nuclei`),
+    ]);
+    contenuto.innerHTML = '';
+    contenuto.append(costruisciFormNuovaAttivita(insegnamento, nuclei));
+
+    if (attivita.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuna attività per questo insegnamento: creane una qui sopra.' }));
+      return;
+    }
+    const lista = el('div', { className: 'elenco' });
+    attivita.forEach((a) => {
+      lista.append(el('button', {
+        className: 'scelta',
+        onclick: () => mostraGriglia(a),
+      }, [
+        el('div', { className: 'tit', textContent: a.nome }),
+        el('div', { className: 'sub', textContent: `${a.nucleo} · ${new Date(a.data_attivita).toLocaleDateString('it-IT')}` }),
+      ]));
+    });
+    contenuto.append(lista);
+  } catch (errore) {
+    contenuto.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+/**
+ * Modulo per creare una nuova attività: il nucleo tematico si sceglie SOLO tra
+ * quelli già configurati per la materia dell'insegnamento (mai scritti qui nel
+ * frontend); i criteri non si specificano mai in questa schermata, derivano
+ * automaticamente dal nucleo scelto quando l'attività viene aperta.
+ */
+function costruisciFormNuovaAttivita(insegnamento, nuclei) {
+  const inputNome = el('input', { type: 'text', placeholder: 'Es. Addizioni e sottrazioni', required: true });
+  const inputData = el('input', { type: 'date', required: true });
+  const selectNucleo = el('select', { required: true }, [
+    el('option', { value: '', textContent: nuclei.length ? 'Scegli il nucleo tematico…' : 'Nessun nucleo configurato per questa materia' }),
+    ...nuclei.map((n) => el('option', { value: n.nucleo_id, textContent: n.nome })),
+  ]);
+  const messaggioErrore = el('div', { className: 'errore-form' });
+  const bottoneCrea = el('button', { className: 'azione', type: 'submit', textContent: 'Crea attività' });
+
+  const form = el('form', {
+    className: 'form-attivita',
+    onsubmit: async (evento) => {
+      evento.preventDefault();
+      messaggioErrore.textContent = '';
+      if (!selectNucleo.value) { messaggioErrore.textContent = 'Scegliere un nucleo tematico.'; return; }
+      bottoneCrea.disabled = true;
+      try {
+        await api(`/insegnamenti/${insegnamento.insegnamento_id}/attivita`, {
+          method: 'POST',
+          body: JSON.stringify({
+            nome: inputNome.value,
+            dataAttivita: inputData.value,
+            nucleoTematicoId: Number(selectNucleo.value),
+          }),
+        });
+        await mostraAttivita(insegnamento); // ricarica l'elenco con la nuova attività
+      } catch (errore) {
+        messaggioErrore.textContent = 'Impossibile creare l\'attività: ' + errore.message;
+        bottoneCrea.disabled = false;
+      }
+    },
+  }, [
+    el('h2', { textContent: 'Nuova attività' }),
+    el('div', { className: 'campi' }, [
+      el('div', {}, [el('label', { textContent: 'Titolo' }), inputNome]),
+      el('div', {}, [el('label', { textContent: 'Data' }), inputData]),
+      el('div', {}, [el('label', { textContent: 'Nucleo tematico' }), selectNucleo]),
+      bottoneCrea,
+    ]),
+    messaggioErrore,
+  ]);
+  return form;
+}
+
+const ETICHETTA_PUNTEGGIO = { 0: 'Non manifestato', 1: 'Con supporto', 2: 'Autonomo' };
+// Opzioni del menu di valutazione, in ordine di visualizzazione dal basso all'alto.
+const OPZIONI_VALUTAZIONE = [
+  { punteggio: 2, etichetta: 'Autonomo' },
+  { punteggio: 1, etichetta: 'Con supporto' },
+  { punteggio: 0, etichetta: 'Non manifestato' },
+  { punteggio: null, etichetta: 'Non valutato' },
+];
+
+async function mostraGriglia(attivitaRif) {
+  stato.attivitaCorrente = attivitaRif;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const griglia = await api(`/attivita/${attivitaRif.attivita_id}/griglia`);
+    contenuto.innerHTML = '';
+    if (griglia.grigliaNonConfigurata) {
+      contenuto.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
+      return;
+    }
+    contenuto.append(el('div', { className: 'legenda' }, [
+      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--autonomo)' }), document.createTextNode('2 · Autonomo')]),
+      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--supporto)' }), document.createTextNode('1 · Con supporto')]),
+      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--non-manifestato)' }), document.createTextNode('0 · Non manifestato')]),
+      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--non-valutato);border:1px dashed #999' }), document.createTextNode('— · Non valutato · clic sulla cella per scegliere')]),
+    ]));
+
+    const tabella = el('table', { className: 'griglia' });
+    const intestazione = el('tr', {}, [
+      el('th', { className: 'alunno', textContent: 'Alunno' }),
+      ...griglia.criteri.map((c) => el('th', { className: 'criterio', textContent: c.nome })),
+      el('th', { textContent: 'Esito' }),
+    ]);
+    tabella.append(el('thead', {}, [intestazione]));
+
+    const corpo = el('tbody');
+    griglia.righe.forEach((riga) => {
+      const tr = el('tr');
+      tr.append(el('td', { className: 'alunno' }, [
+        el('button', {
+          textContent: `${riga.cognome} ${riga.nome}`,
+          onclick: () => apriScheda(attivitaRif, riga),
+        }),
+      ]));
+      riga.celle.forEach((cella) => {
+        const bottone = el('button', {
+          className: 'cella',
+          textContent: cella.punteggio === null ? '—' : cella.punteggio,
+          title: cella.punteggio === null ? 'Non valutato' : ETICHETTA_PUNTEGGIO[cella.punteggio],
+        });
+        bottone.dataset.p = cella.punteggio === null ? '' : cella.punteggio;
+        bottone.addEventListener('click', () => apriMenuValutazione(attivitaRif, riga, cella, bottone));
+        tr.append(el('td', {}, [bottone]));
+      });
+      const esito = riga.esito;
+      tr.append(el('td', {
+        className: 'esito',
+        textContent: esito.percentuale === null
+          ? `${riga.valutazionePresenti}/${riga.valutazioniTotali} valutati`
+          : `${riga.valutazionePresenti}/${riga.valutazioniTotali} · ${esito.percentuale}% · ${esito.giudizio}`,
+      }));
+      corpo.append(tr);
+    });
+    tabella.append(corpo);
+    contenuto.append(el('div', { className: 'griglia-scroll' }, [tabella]));
+  } catch (errore) {
+    contenuto.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+let menuValutazioneAperto = null;
+
+function chiudiMenuValutazione() {
+  if (menuValutazioneAperto) {
+    menuValutazioneAperto.remove();
+    menuValutazioneAperto = null;
+    document.removeEventListener('click', gestisciClicFuoriMenu, true);
+    document.removeEventListener('keydown', gestisciEscMenu, true);
+  }
+}
+function gestisciClicFuoriMenu(evento) {
+  if (menuValutazioneAperto && !menuValutazioneAperto.contains(evento.target)) chiudiMenuValutazione();
+}
+function gestisciEscMenu(evento) {
+  if (evento.key === 'Escape') chiudiMenuValutazione();
+}
+
+/**
+ * Al clic su una cella, apre un piccolo menu con le 4 opzioni scritte per
+ * esteso (non un ciclo di valori): ogni opzione ha un'etichetta di testo e
+ * un colore distinto (grigio/rosso/giallo/verde), coerenti con la cella.
+ */
+function apriMenuValutazione(attivitaRif, riga, cella, bottone) {
+  chiudiMenuValutazione();
+  const menu = el('div', { className: 'menu-valutazione', role: 'menu' });
+  OPZIONI_VALUTAZIONE.forEach((opzione) => {
+    const voce = el('button', {
+      type: 'button',
+      onclick: () => { chiudiMenuValutazione(); impostaValutazione(attivitaRif, riga, cella, bottone, opzione.punteggio); },
+    }, [
+      el('span', { className: 'pallino-opzione' }),
+      document.createTextNode(opzione.etichetta),
+    ]);
+    voce.dataset.p = opzione.punteggio === null ? '' : opzione.punteggio;
+    if (opzione.punteggio === cella.punteggio) voce.classList.add('selezionata');
+    menu.append(voce);
+  });
+
+  document.body.append(menu);
+  const rettangolo = bottone.getBoundingClientRect();
+  const larghezzaMenu = menu.offsetWidth;
+  const spazioSotto = window.innerHeight - rettangolo.bottom;
+  menu.style.left = Math.min(rettangolo.left, window.innerWidth - larghezzaMenu - 8) + 'px';
+  if (spazioSotto < menu.offsetHeight + 8) {
+    menu.style.top = (rettangolo.top - menu.offsetHeight - 4) + 'px';
+  } else {
+    menu.style.top = (rettangolo.bottom + 4) + 'px';
+  }
+  menuValutazioneAperto = menu;
+  // setTimeout: evita che il click che ha aperto il menu lo richiuda subito.
+  setTimeout(() => {
+    document.addEventListener('click', gestisciClicFuoriMenu, true);
+    document.addEventListener('keydown', gestisciEscMenu, true);
+  }, 0);
+}
+
+async function impostaValutazione(attivitaRif, riga, cella, bottone, nuovo) {
+  bottone.disabled = true;
+  try {
+    await api(`/attivita/${attivitaRif.attivita_id}/iscrizioni/${riga.iscrizioneId}/criteri/${cella.criterioId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ punteggio: nuovo }),
+    });
+    // Ricarica la griglia: aggiorna sia la cella sia l'esito della riga.
+    await mostraGriglia(attivitaRif);
+  } catch (errore) {
+    alert('Impossibile salvare: ' + errore.message);
+    bottone.disabled = false;
+  }
+}
+
+async function apriScheda(attivitaRif, riga) {
+  const dialogo = document.getElementById('dialogoScheda');
+  const corpo = document.getElementById('corpoScheda');
+  corpo.textContent = 'Caricamento…';
+  dialogo.showModal();
+  try {
+    const scheda = await api(`/attivita/${attivitaRif.attivita_id}/iscrizioni/${riga.iscrizioneId}/scheda`);
+    corpo.innerHTML = '';
+    corpo.append(el('h2', { textContent: `${scheda.alunno.cognome} ${scheda.alunno.nome}` }));
+    corpo.append(el('div', {
+      className: 'meta',
+      textContent: `${scheda.classe} · ${scheda.annoScolastico} · ${scheda.attivita.nome} · `
+        + `${new Date(scheda.attivita.dataAttivita).toLocaleDateString('it-IT')} · Nucleo: ${scheda.nucleo}`,
+    }));
+
+    const tabella = el('table');
+    scheda.criteri.forEach((c) => {
+      tabella.append(el('tr', {}, [
+        el('td', { textContent: c.nome }),
+        el('td', { textContent: c.punteggio === null ? 'Non valutato' : `${c.punteggio} · ${ETICHETTA_PUNTEGGIO[c.punteggio]}` }),
+      ]));
+    });
+    corpo.append(tabella);
+
+    const esito = scheda.esito;
+    corpo.append(el('p', {
+      textContent: esito.percentuale === null
+        ? 'Nessuna valutazione presente in questa attività.'
+        : `Esito dell'attività: ${esito.punteggioOttenuto}/${esito.punteggioMassimo} · ${esito.percentuale}% · ${esito.giudizio}`,
+    }));
+
+    const nota = el('textarea', { placeholder: 'Nota facoltativa…', value: scheda.nota || '' });
+    corpo.append(el('div', {}, [el('div', { textContent: 'Nota', style: 'font-size:.8rem;color:var(--inchiostro-tenue);margin-bottom:.25rem' }), nota]));
+
+    const areaStorico = el('div', { style: 'margin-top:1rem' });
+    corpo.append(areaStorico);
+    caricaStorico(attivitaRif, riga, scheda, areaStorico);
+
+    const barraAzioni = el('div', { className: 'chiudi' });
+    const salva = el('button', { className: 'azione', textContent: 'Salva nota', onclick: async () => {
+      try {
+        await api(`/attivita/${attivitaRif.attivita_id}/iscrizioni/${riga.iscrizioneId}/nota`, {
+          method: 'PUT', body: JSON.stringify({ nota: nota.value || null }),
+        });
+        salva.textContent = 'Nota salvata ✓';
+        setTimeout(() => { salva.textContent = 'Salva nota'; }, 1500);
+      } catch (errore) { alert('Impossibile salvare la nota: ' + errore.message); }
+    } });
+    const chiudi = el('button', { textContent: 'Chiudi', style: 'margin-left:.5rem', onclick: () => dialogo.close() });
+    barraAzioni.append(salva, chiudi);
+    corpo.append(barraAzioni);
+  } catch (errore) {
+    corpo.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+async function caricaStorico(attivitaRif, riga, scheda, contenitore) {
+  contenitore.append(el('div', { textContent: 'Andamento storico dei criteri (tutte le attività di questo nucleo)', style: 'font-size:.85rem;font-weight:600;margin-bottom:.4rem' }));
+  const righeBarra = new Map();
+  scheda.criteri.forEach((c) => {
+    const barra = el('i', { style: 'width:0%' });
+    const valore = el('span', { className: 'val', textContent: '…' });
+    contenitore.append(el('div', { className: 'storico-riga' }, [
+      el('span', { className: 'nome', textContent: c.nome }),
+      el('div', { className: 'barra' }, [barra]),
+      valore,
+    ]));
+    righeBarra.set(c.criterioId, { barra, valore });
+  });
+
+  await Promise.all(scheda.criteri.map(async (c) => {
+    try {
+      const esito = await api(
+        `/alunni/${scheda.personaId}/anni/${scheda.annoScolasticoId}/nuclei/${scheda.nucleoTematicoId}/criteri/${c.criterioId}/storico`
+      );
+      const { barra, valore } = righeBarra.get(c.criterioId);
+      if (esito.percentuale === null) {
+        valore.textContent = '—';
+      } else {
+        barra.style.width = esito.percentuale + '%';
+        valore.textContent = esito.percentuale + '%';
+      }
+    } catch (errore) {
+      righeBarra.get(c.criterioId).valore.textContent = 'errore';
+    }
+  }));
+
+  // Riepilogo dell'intero nucleo (cumulativo su tutte le attività, non solo quella corrente).
+  contenitore.append(el('div', { textContent: 'Andamento complessivo del nucleo', style: 'font-size:.85rem;font-weight:600;margin:.9rem 0 .4rem' }));
+  const barraNucleo = el('i', { style: 'width:0%' });
+  const valoreNucleo = el('span', { className: 'val', textContent: '…' });
+  contenitore.append(el('div', { className: 'storico-riga' }, [
+    el('span', { className: 'nome', textContent: scheda.nucleo }),
+    el('div', { className: 'barra' }, [barraNucleo]),
+    valoreNucleo,
+  ]));
+  try {
+    const riepilogo = await api(`/alunni/${scheda.personaId}/anni/${scheda.annoScolasticoId}/nuclei/${scheda.nucleoTematicoId}/riepilogo`);
+    if (riepilogo.percentuale === null) {
+      valoreNucleo.textContent = '—';
+    } else {
+      barraNucleo.style.width = riepilogo.percentuale + '%';
+      valoreNucleo.textContent = `${riepilogo.percentuale}% · ${riepilogo.giudizio}`;
+    }
+  } catch (errore) {
+    valoreNucleo.textContent = 'errore';
+  }
+}
+
+document.getElementById('docenteId').addEventListener('change', mostraInsegnamenti);
+document.getElementById('dialogoScheda').addEventListener('click', (evento) => {
+  if (evento.target === evento.currentTarget) evento.currentTarget.close();
+});
+mostraInsegnamenti();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+@"
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Log
+*.log
+npm-debug.log*
+
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+.vscode/
+"@ | Set-Content .gitignore

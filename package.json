@@ -1,0 +1,22 @@
+{
+  "name": "osservazioni-pedagogiche",
+  "version": "0.1.0",
+  "description": "Prototipo: osservazioni pedagogiche strutturate (Matematica) su PostgreSQL/Neon.",
+  "main": "server/index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "test:unit": "node --test tests/calcoli.test.js",
+    "test:integration": "node --test tests/integration.test.js",
+    "test": "node --test tests/calcoli.test.js tests/integration.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
+  }
+}
