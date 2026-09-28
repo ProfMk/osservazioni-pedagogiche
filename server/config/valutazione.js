@@ -77,8 +77,89 @@ function calcolaEsito(punteggi) {
     punteggioOttenuto,
     punteggioMassimo,
     // Arrotondata solo per la presentazione: il giudizio (sotto) usa il valore esatto, non questo.
-    percentuale: Math.round(percentualeEsatta * 100) / 100,
+    percentuale: arrotondaPerPresentazione(percentualeEsatta),
     giudizio: calcolaGiudizio(percentualeEsatta),
+  };
+}
+
+function arrotondaPerPresentazione(valore) {
+  return Math.round(valore * 100) / 100;
+}
+
+// --- Risultato corrente (media mobile) -------------------------------------
+//
+// Il risultato CORRENTE di un criterio è la media, a pesi uguali, delle
+// ultime FINESTRA_RISULTATO_CORRENTE osservazioni dello studente su quel
+// criterio (o di tutte, se sono meno). Lo storico completo non viene mai
+// scartato: questa è solo una lettura derivata.
+const FINESTRA_RISULTATO_CORRENTE = 3;
+
+/**
+ * Ordine cronologico deterministico: data dell'attività, poi id dell'attività.
+ * Per uno stesso studente e criterio esiste al massimo una valutazione per
+ * attività (UNIQUE su osservazioni e su valutazioni_criteri), quindi la
+ * coppia (data, id attività) non ha mai pareggi.
+ * @param {{dataAttivita: Date|string, attivitaId: number}[]} osservazioni
+ */
+function ordinaCronologicamente(osservazioni) {
+  return [...osservazioni].sort((a, b) => (
+    (new Date(a.dataAttivita).getTime() - new Date(b.dataAttivita).getTime()) || (a.attivitaId - b.attivitaId)
+  ));
+}
+
+/**
+ * Risultato corrente di UN criterio per uno studente.
+ * Percentuale e giudizio sono quelli di calcolaEsito applicato alle sole
+ * osservazioni della finestra: media / massimo × 100 = somma / (n × massimo) × 100.
+ * Lo 0 è una valutazione reale e fa parte della media; nessuna osservazione
+ * significa "Non valutato" (media e percentuale null).
+ *
+ * @param {{punteggio: number, dataAttivita: Date|string, attivitaId: number}[]} osservazioni - tutte, in qualunque ordine.
+ */
+function risultatoCorrenteCriterio(osservazioni) {
+  const ordinate = ordinaCronologicamente(osservazioni);
+  const finestra = ordinate.slice(-FINESTRA_RISULTATO_CORRENTE);
+  const esito = calcolaEsito(finestra.map((o) => o.punteggio));
+  return {
+    ...esito,
+    media: finestra.length === 0 ? null : arrotondaPerPresentazione(esito.punteggioOttenuto / finestra.length),
+    osservazioniConsiderate: finestra.length,
+    osservazioniTotali: ordinate.length,
+    attivitaConsiderate: finestra.map((o) => o.attivitaId),
+  };
+}
+
+function massimoComuneDivisore(a, b) { return b === 0 ? a : massimoComuneDivisore(b, a % b); }
+
+// Minimo comune multiplo di 1..FINESTRA_RISULTATO_CORRENTE (oggi 6): ogni media
+// di criterio (somma / n, con n <= finestra), moltiplicata per questo valore,
+// è un intero. Così la media dei criteri si calcola con una sola divisione
+// finale e le soglie esatte (es. 90%) non subiscono errori di arrotondamento.
+const DENOMINATORE_COMUNE = Array.from({ length: FINESTRA_RISULTATO_CORRENTE }, (_, i) => i + 1)
+  .reduce((mcm, n) => (mcm * n) / massimoComuneDivisore(mcm, n), 1);
+
+/**
+ * Risultato corrente di un insieme di criteri (nucleo o intera materia):
+ * media, a pesi uguali, dei risultati correnti dei soli criteri valutati.
+ * I criteri "Non valutato" sono esclusi; un criterio con media 0 è incluso.
+ *
+ * @param {object[]} risultatiCriteri - risultati di risultatoCorrenteCriterio.
+ */
+function aggregaRisultatiCorrenti(risultatiCriteri) {
+  const valutati = risultatiCriteri.filter((r) => r.osservazioniConsiderate > 0);
+  if (valutati.length === 0) {
+    return { media: null, percentuale: null, giudizio: '', criteriConsiderati: 0 };
+  }
+  const sommaScalata = valutati.reduce(
+    (totale, r) => totale + (r.punteggioOttenuto * DENOMINATORE_COMUNE) / r.osservazioniConsiderate, 0
+  );
+  const mediaEsatta = sommaScalata / (valutati.length * DENOMINATORE_COMUNE);
+  const percentualeEsatta = (sommaScalata * 100) / (valutati.length * DENOMINATORE_COMUNE * valoreMassimo());
+  return {
+    media: arrotondaPerPresentazione(mediaEsatta),
+    percentuale: arrotondaPerPresentazione(percentualeEsatta),
+    giudizio: calcolaGiudizio(percentualeEsatta),
+    criteriConsiderati: valutati.length,
   };
 }
 
@@ -105,4 +186,8 @@ module.exports = {
   etichettaPunteggio,
   calcolaEsito,
   calcolaGiudizio,
+  FINESTRA_RISULTATO_CORRENTE,
+  ordinaCronologicamente,
+  risultatoCorrenteCriterio,
+  aggregaRisultatiCorrenti,
 };

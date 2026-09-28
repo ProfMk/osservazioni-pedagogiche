@@ -67,7 +67,32 @@ async function verificaCriterioDelNucleo(client, attivitaInfo, criterioId) {
   return rows[0];
 }
 
+/**
+ * Verifica che l'insegnamento appartenga al docente autenticato (R2) e ne
+ * restituisce materia, classe e anno scolastico: sono le uniche fonti da
+ * cui derivare gli studenti e i nuclei di una classe (mai dal client).
+ *
+ * @throws {ErroreApplicativo} 404 se l'insegnamento non esiste o non è del docente.
+ */
+async function verificaInsegnamentoDelDocente(client, insegnamentoId, docenteId) {
+  const { rows } = await client.query(
+    `SELECT i.id, i.docente_id, i.materia_id, i.classe_id, i.anno_scolastico_id,
+            m.nome AS materia, cl.nome AS classe, an.nome AS anno_scolastico
+     FROM insegnamenti i
+     JOIN materie m          ON m.id = i.materia_id
+     JOIN classi cl          ON cl.id = i.classe_id
+     JOIN anni_scolastici an ON an.id = i.anno_scolastico_id
+     WHERE i.id = $1 AND i.docente_id = $2`,
+    [insegnamentoId, docenteId]
+  );
+  if (rows.length === 0) {
+    throw nonTrovato('Insegnamento non trovato o non accessibile.');
+  }
+  return rows[0];
+}
+
 module.exports = {
+  verificaInsegnamentoDelDocente,
   verificaAttivitaDelDocente,
   verificaIscrizioneCoerente,
   verificaCriterioDelNucleo,

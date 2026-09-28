@@ -135,6 +135,32 @@
     width: 100%; padding: .4rem .5rem; border: 1px solid var(--riga); border-radius: 5px; font: inherit;
   }
   .errore-form { color: var(--non-manifestato); font-size: .8rem; margin-top: .5rem; }
+
+  .barra-sezioni { margin: 0 0 1rem; }
+  .riepilogo-studente { color: var(--inchiostro-tenue); font-size: .9rem; margin: 0 0 1rem; }
+  .scelta .nuclei-sintesi { display: flex; flex-wrap: wrap; gap: .3rem .9rem; margin-top: .3rem; font-size: .8rem; color: var(--inchiostro-tenue); }
+  details.nucleo {
+    background: #fff; border: 1px solid var(--riga); border-radius: 8px; box-shadow: var(--ombra);
+    margin-bottom: .6rem;
+  }
+  details.nucleo > summary { cursor: pointer; padding: .7rem .9rem; font-weight: 600; }
+  details.nucleo > summary .sub { font-weight: 400; color: var(--inchiostro-tenue); font-size: .85rem; margin-left: .4rem; }
+  details.nucleo .corpo-nucleo { padding: 0 .9rem .8rem; }
+  .criterio { border-top: 1px solid var(--riga); padding: .6rem 0; }
+  .criterio .intestazione { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .criterio .intestazione .cumulativo { color: var(--inchiostro-tenue); font-size: .85rem; }
+  .criterio table { width: 100%; border-collapse: collapse; margin-top: .35rem; font-size: .85rem; }
+  .criterio th, .criterio td { text-align: left; padding: .25rem .4rem .25rem 0; border-bottom: 1px dotted var(--riga); }
+  .criterio th { font-weight: 600; color: var(--inchiostro-tenue); font-size: .78rem; }
+  .livello { display: inline-block; padding: .05rem .45rem; border-radius: 5px; border: 1px solid var(--riga); font-size: .8rem; }
+  .livello[data-p="0"] { color: var(--non-manifestato); border-color: var(--non-manifestato); background: color-mix(in srgb, var(--non-manifestato) 12%, white); }
+  .livello[data-p="1"] { color: var(--supporto); border-color: var(--supporto); background: color-mix(in srgb, var(--supporto) 12%, white); }
+  .livello[data-p="2"] { color: var(--autonomo); border-color: var(--autonomo); background: color-mix(in srgb, var(--autonomo) 12%, white); }
+  .livello[data-p=""] { color: var(--non-valutato); border-style: dashed; }
+  .spiegazione { font-size: .8rem; color: var(--inchiostro-tenue); margin: 0 0 1rem; }
+  .secondario { font-size: .78rem; color: var(--inchiostro-tenue); margin: .2rem 0 0; }
+  .criterio tr.in-corrente td { background: color-mix(in srgb, var(--accento) 9%, white); font-weight: 600; }
+  .criterio tr.in-corrente td:last-child { color: var(--accento); }
   @media (max-width: 720px) {
     .form-attivita .campi { grid-template-columns: 1fr; }
   }
@@ -163,7 +189,10 @@
 <script>
 'use strict';
 
-const stato = { insegnamenti: [], insegnamentoCorrente: null, attivitaCorrente: null };
+const stato = {
+  insegnamenti: [], materiaCorrente: null, insegnamentoCorrente: null, attivitaCorrente: null,
+  studentiAperti: false, studenteCorrente: null,
+};
 
 function docenteId() { return document.getElementById('docenteId').value; }
 
@@ -191,11 +220,16 @@ function aggiornaPercorso() {
   box.innerHTML = '';
   const home = el('button', { textContent: 'I miei insegnamenti', onclick: mostraInsegnamenti });
   box.append(home);
+  if (stato.materiaCorrente) {
+    box.append(document.createTextNode(' › '));
+    const materia = stato.materiaCorrente;
+    box.append(el('button', { textContent: materia, onclick: () => mostraClassi(materia) }));
+  }
   if (stato.insegnamentoCorrente) {
     box.append(document.createTextNode(' › '));
     const ins = stato.insegnamentoCorrente;
     box.append(el('button', {
-      textContent: `${ins.materia} — ${ins.classe} (${ins.anno_scolastico})`,
+      textContent: `${ins.classe} (${ins.anno_scolastico})`,
       onclick: () => mostraAttivita(ins),
     }));
   }
@@ -203,11 +237,33 @@ function aggiornaPercorso() {
     box.append(document.createTextNode(' › '));
     box.append(el('span', { textContent: stato.attivitaCorrente.nome }));
   }
+  if (stato.studentiAperti) {
+    box.append(document.createTextNode(' › '));
+    const ins = stato.insegnamentoCorrente;
+    box.append(el('button', { textContent: 'Studenti', onclick: () => mostraStudenti(ins) }));
+  }
+  if (stato.studenteCorrente) {
+    box.append(document.createTextNode(' › '));
+    box.append(el('span', { textContent: `${stato.studenteCorrente.cognome} ${stato.studenteCorrente.nome}` }));
+  }
 }
 
-async function mostraInsegnamenti() {
-  stato.insegnamentoCorrente = null;
+/** Azzera la posizione nella navigazione sotto il livello "classe". */
+function azzeraSottoClasse() {
   stato.attivitaCorrente = null;
+  stato.studentiAperti = false;
+  stato.studenteCorrente = null;
+}
+
+/**
+ * Primo livello di navigazione: le MATERIE del docente, ciascuna una sola volta.
+ * I dati sono quelli di /api/insegnamenti (una riga per materia/classe/anno),
+ * raggruppati qui per nome della materia (UNIQUE nel database).
+ */
+async function mostraInsegnamenti() {
+  stato.materiaCorrente = null;
+  stato.insegnamentoCorrente = null;
+  azzeraSottoClasse();
   aggiornaPercorso();
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
@@ -218,14 +274,17 @@ async function mostraInsegnamenti() {
       contenuto.textContent = 'Nessun insegnamento trovato per questo docente.';
       return;
     }
+    const materie = [...new Set(insegnamenti.map((ins) => ins.materia))]
+      .sort((a, b) => a.localeCompare(b, 'it'));
     const lista = el('div', { className: 'elenco' });
-    insegnamenti.forEach((ins) => {
+    materie.forEach((materia) => {
+      const numeroClassi = insegnamenti.filter((ins) => ins.materia === materia).length;
       lista.append(el('button', {
         className: 'scelta',
-        onclick: () => mostraAttivita(ins),
+        onclick: () => mostraClassi(materia),
       }, [
-        el('div', { className: 'tit', textContent: `${ins.materia} — ${ins.classe}` }),
-        el('div', { className: 'sub', textContent: `Anno scolastico ${ins.anno_scolastico}` }),
+        el('div', { className: 'tit', textContent: materia }),
+        el('div', { className: 'sub', textContent: numeroClassi === 1 ? '1 classe' : `${numeroClassi} classi` }),
       ]));
     });
     contenuto.innerHTML = '';
@@ -235,9 +294,38 @@ async function mostraInsegnamenti() {
   }
 }
 
+/**
+ * Secondo livello: le CLASSI in cui il docente insegna la materia scelta.
+ * Usa gli insegnamenti già caricati da mostraInsegnamenti (nessuna nuova chiamata).
+ */
+function mostraClassi(materia) {
+  stato.materiaCorrente = materia;
+  stato.insegnamentoCorrente = null;
+  azzeraSottoClasse();
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  const classi = stato.insegnamenti
+    .filter((ins) => ins.materia === materia)
+    .sort((a, b) => a.classe.localeCompare(b.classe, 'it', { numeric: true })
+      || b.anno_scolastico.localeCompare(a.anno_scolastico));
+  const lista = el('div', { className: 'elenco' });
+  classi.forEach((ins) => {
+    lista.append(el('button', {
+      className: 'scelta',
+      onclick: () => mostraAttivita(ins),
+    }, [
+      el('div', { className: 'tit', textContent: ins.classe }),
+      el('div', { className: 'sub', textContent: `Anno scolastico ${ins.anno_scolastico}` }),
+    ]));
+  });
+  contenuto.innerHTML = '';
+  contenuto.append(el('h2', { textContent: materia }), lista);
+}
+
 async function mostraAttivita(insegnamento) {
+  stato.materiaCorrente = insegnamento.materia;
   stato.insegnamentoCorrente = insegnamento;
-  stato.attivitaCorrente = null;
+  azzeraSottoClasse();
   aggiornaPercorso();
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
@@ -247,6 +335,10 @@ async function mostraAttivita(insegnamento) {
       api(`/insegnamenti/${insegnamento.insegnamento_id}/nuclei`),
     ]);
     contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `${insegnamento.materia} — ${insegnamento.classe}` }));
+    contenuto.append(el('div', { className: 'barra-sezioni' }, [
+      el('button', { className: 'azione', textContent: 'Studenti della classe', onclick: () => mostraStudenti(insegnamento) }),
+    ]));
     contenuto.append(costruisciFormNuovaAttivita(insegnamento, nuclei));
 
     if (attivita.length === 0) {
@@ -264,6 +356,169 @@ async function mostraAttivita(insegnamento) {
       ]));
     });
     contenuto.append(lista);
+  } catch (errore) {
+    contenuto.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+/** Numero in formato italiano (es. 1,67), al massimo 2 decimali. */
+function numeroIt(valore) {
+  return Number(valore).toLocaleString('it-IT', { maximumFractionDigits: 2 });
+}
+
+/** Percentuale e giudizio calcolati dal server: "Non valutato" se non c'è alcuna valutazione presente. */
+function testoEsito(esito) {
+  return esito.percentuale === null ? 'Non valutato' : `${numeroIt(esito.percentuale)}% · ${esito.giudizio}`;
+}
+
+/** Risultato corrente di un criterio: media delle ultime osservazioni (ultime N di M). */
+function testoRisultatoCorrenteCriterio(r) {
+  if (r.percentuale === null) return 'Non valutato';
+  let quante;
+  if (r.osservazioniConsiderate < r.osservazioniTotali) quante = `ultime ${r.osservazioniConsiderate} di ${r.osservazioniTotali}`;
+  else if (r.osservazioniTotali === 1) quante = '1 osservazione';
+  else quante = `tutte le ${r.osservazioniTotali} osservazioni`;
+  return `media ${numeroIt(r.media)} (${quante}) · ${testoEsito(r)}`;
+}
+
+const SPIEGAZIONE_RISULTATO_CORRENTE = 'Risultato corrente = media delle ultime 3 osservazioni di ogni criterio '
+  + '(nucleo e materia: media dei criteri valutati, a pesi uguali). '
+  + 'Storico = tutte le osservazioni disponibili dall\'inizio dell\'anno.';
+
+/**
+ * Studenti della classe (iscrizioni attive della classe/anno dell'insegnamento),
+ * ciascuno con il risultato corrente complessivo e per nucleo, calcolato dal
+ * server su tutte le attività di questo insegnamento.
+ */
+async function mostraStudenti(insegnamento) {
+  stato.materiaCorrente = insegnamento.materia;
+  stato.insegnamentoCorrente = insegnamento;
+  azzeraSottoClasse();
+  stato.studentiAperti = true;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const dati = await api(`/insegnamenti/${insegnamento.insegnamento_id}/studenti`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `${insegnamento.materia} — ${insegnamento.classe} · Studenti` }));
+    contenuto.append(el('p', { className: 'spiegazione', textContent: SPIEGAZIONE_RISULTATO_CORRENTE }));
+    if (dati.studenti.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuno studente iscritto (attivo) in questa classe per questo anno scolastico.' }));
+      return;
+    }
+    const lista = el('div', { className: 'elenco' });
+    dati.studenti.forEach((studente) => {
+      const c = studente.complessivo;
+      lista.append(el('button', {
+        className: 'scelta',
+        onclick: () => mostraProgressoStudente(insegnamento, studente),
+      }, [
+        el('div', { className: 'tit', textContent: `${studente.cognome} ${studente.nome}` }),
+        el('div', {
+          className: 'sub',
+          textContent: `Risultato corrente: ${testoEsito(c.risultatoCorrente)} · ${c.criteriValutati}/${c.criteriTotali} criteri valutati`,
+        }),
+        el('div', { className: 'nuclei-sintesi' }, studente.nuclei.map((n) => el('span', {
+          textContent: `${n.nome}: ${testoEsito(n.risultatoCorrente)} (${n.criteriValutati}/${n.criteriTotali})`,
+        }))),
+        el('div', { className: 'secondario', textContent: `Storico da inizio anno: ${testoEsito(c.cumulativoDaInizioAnno)}` }),
+      ]));
+    });
+    contenuto.append(lista);
+  } catch (errore) {
+    contenuto.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+/**
+ * Progresso di uno studente: risultato corrente complessivo -> nuclei
+ * (espandibili) -> criteri, ciascuno con il risultato corrente e lo storico
+ * completo delle osservazioni (evidenziate quelle usate per il risultato corrente).
+ */
+async function mostraProgressoStudente(insegnamento, studente) {
+  stato.studentiAperti = true;
+  stato.studenteCorrente = studente;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const p = await api(`/insegnamenti/${insegnamento.insegnamento_id}/studenti/${studente.iscrizioneId}/progresso`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `${p.alunno.cognome} ${p.alunno.nome}` }));
+    contenuto.append(el('p', {
+      className: 'riepilogo-studente',
+      textContent: `${p.insegnamento.materia} — ${p.insegnamento.classe} · ${p.insegnamento.annoScolastico} · `
+        + `Risultato corrente: ${testoEsito(p.complessivo.risultatoCorrente)} · `
+        + `${p.complessivo.criteriValutati}/${p.complessivo.criteriTotali} criteri valutati`,
+    }));
+    contenuto.append(el('p', {
+      className: 'secondario',
+      textContent: `Storico da inizio anno (tutte le osservazioni): ${testoEsito(p.complessivo.cumulativoDaInizioAnno)}`,
+    }));
+    contenuto.append(el('p', { className: 'spiegazione', textContent: SPIEGAZIONE_RISULTATO_CORRENTE }));
+
+    p.nuclei.forEach((nucleo) => {
+      const corpo = el('div', { className: 'corpo-nucleo' });
+      if (nucleo.grigliaNonConfigurata) {
+        corpo.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
+      } else {
+        corpo.append(el('p', {
+          className: 'secondario',
+          textContent: `Storico del nucleo da inizio anno: ${testoEsito(nucleo.cumulativoDaInizioAnno)}`,
+        }));
+      }
+      nucleo.criteri.forEach((criterio) => {
+        const blocco = el('div', { className: 'criterio' }, [
+          el('div', { className: 'intestazione' }, [
+            el('span', { textContent: criterio.nome }),
+            el('span', {
+              className: 'cumulativo',
+              textContent: `Risultato corrente: ${testoRisultatoCorrenteCriterio(criterio.risultatoCorrente)}`,
+            }),
+          ]),
+        ]);
+        if (criterio.osservazioni.length === 0) {
+          const livello = el('span', { className: 'livello', textContent: 'Non valutato' });
+          livello.dataset.p = '';
+          blocco.append(el('div', { style: 'margin-top:.3rem' }, [livello]));
+        } else {
+          const cumulativo = criterio.cumulativoDaInizioAnno;
+          blocco.append(el('div', {
+            className: 'secondario',
+            textContent: `Storico (tutte le ${criterio.osservazioni.length} osservazioni): `
+              + `${cumulativo.punteggioOttenuto}/${cumulativo.punteggioMassimo} · ${testoEsito(cumulativo)}`,
+          }));
+          const tabella = el('table', {}, [
+            el('tr', {}, ['Attività', 'Data', 'Punteggio', 'Livello', 'Risultato corrente'].map((t) => el('th', { textContent: t }))),
+          ]);
+          criterio.osservazioni.forEach((o) => {
+            const livello = el('span', { className: 'livello', textContent: o.etichetta });
+            livello.dataset.p = o.punteggio;
+            tabella.append(el('tr', { className: o.inRisultatoCorrente ? 'in-corrente' : '' }, [
+              el('td', { textContent: o.attivita }),
+              el('td', { textContent: new Date(o.dataAttivita).toLocaleDateString('it-IT') }),
+              el('td', { textContent: String(o.punteggio) }),
+              el('td', {}, [livello]),
+              el('td', { textContent: o.inRisultatoCorrente ? '✓ usata' : '—' }),
+            ]));
+          });
+          blocco.append(tabella);
+        }
+        corpo.append(blocco);
+      });
+      contenuto.append(el('details', { className: 'nucleo' }, [
+        el('summary', {}, [
+          document.createTextNode(nucleo.nome),
+          el('span', {
+            className: 'sub',
+            textContent: `Risultato corrente: ${testoEsito(nucleo.risultatoCorrente)} · `
+              + `${nucleo.criteriValutati}/${nucleo.criteriTotali} criteri valutati`,
+          }),
+        ]),
+        corpo,
+      ]));
+    });
   } catch (errore) {
     contenuto.textContent = 'Errore: ' + errore.message;
   }
@@ -519,7 +774,7 @@ async function apriScheda(attivitaRif, riga) {
 }
 
 async function caricaStorico(attivitaRif, riga, scheda, contenitore) {
-  contenitore.append(el('div', { textContent: 'Andamento storico dei criteri (tutte le attività di questo nucleo)', style: 'font-size:.85rem;font-weight:600;margin-bottom:.4rem' }));
+  contenitore.append(el('div', { textContent: 'Risultato corrente dei criteri (media delle ultime 3 osservazioni, su tutte le attività di questo nucleo)', style: 'font-size:.85rem;font-weight:600;margin-bottom:.4rem' }));
   const righeBarra = new Map();
   scheda.criteri.forEach((c) => {
     const barra = el('i', { style: 'width:0%' });
@@ -550,7 +805,7 @@ async function caricaStorico(attivitaRif, riga, scheda, contenitore) {
   }));
 
   // Riepilogo dell'intero nucleo (cumulativo su tutte le attività, non solo quella corrente).
-  contenitore.append(el('div', { textContent: 'Andamento complessivo del nucleo', style: 'font-size:.85rem;font-weight:600;margin:.9rem 0 .4rem' }));
+  contenitore.append(el('div', { textContent: 'Risultato corrente del nucleo (media dei criteri valutati)', style: 'font-size:.85rem;font-weight:600;margin:.9rem 0 .4rem' }));
   const barraNucleo = el('i', { style: 'width:0%' });
   const valoreNucleo = el('span', { className: 'val', textContent: '…' });
   contenitore.append(el('div', { className: 'storico-riga' }, [

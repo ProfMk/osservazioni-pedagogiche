@@ -1,8 +1,12 @@
 'use strict';
 
-const { calcolaEsito, isPunteggioValido, valoreMassimo } = require('./config/valutazione');
+const {
+  calcolaEsito, isPunteggioValido, valoreMassimo, etichettaPunteggio,
+  ordinaCronologicamente, risultatoCorrenteCriterio, aggregaRisultatiCorrenti,
+} = require('./config/valutazione');
 const { datiNonValidi, nonTrovato } = require('./lib/erroreApplicativo');
 const {
+  verificaInsegnamentoDelDocente,
   verificaAttivitaDelDocente,
   verificaIscrizioneCoerente,
   verificaCriterioDelNucleo,
@@ -213,47 +217,269 @@ async function getSchedaAlunno(client, { attivitaId, iscrizioneId, docenteId }) 
   };
 }
 
-/**
- * Sviluppo cumulativo di UN criterio per un alunno, in un anno scolastico,
- * attraverso tutte le attività del nucleo (Q4). Solo le attività del
- * docente autenticato (A3): un docente vede lo storico solo sulle proprie
- * attività, non su quelle di altri docenti nella stessa classe.
- */
-async function getStoricoCriterio(client, { personaId, annoScolasticoId, nucleoId, criterioId, docenteId }) {
-  const { rows } = await client.query(
-    `SELECT v.punteggio
-     FROM iscrizioni s
-     JOIN osservazioni o          ON o.iscrizione_id = s.id
-     JOIN attivita a              ON a.id = o.attivita_id AND a.nucleo_tematico_id = $3
-     JOIN insegnamenti i          ON i.id = a.insegnamento_id AND i.docente_id = $5
-                                  AND i.classe_id = s.classe_id AND i.anno_scolastico_id = s.anno_scolastico_id
-     JOIN valutazioni_criteri v   ON v.osservazione_id = o.id AND v.criterio_id = $4
-     JOIN criteri_osservazione c  ON c.id = v.criterio_id AND c.nucleo_tematico_id = a.nucleo_tematico_id
-     WHERE s.persona_id = $1 AND s.anno_scolastico_id = $2`,
-    [personaId, annoScolasticoId, nucleoId, criterioId, docenteId]
-  );
-  return calcolaEsito(rows.map((r) => r.punteggio));
-}
+// Filtri ammessi da getValutazioniNellAmbito: nome del filtro -> colonna SQL.
+// Elenco chiuso: i nomi di colonna non arrivano mai dall'esterno, i valori
+// passano sempre come parametri ($n).
+const FILTRI_VALUTAZIONI = Object.freeze({
+  personaId: 's.persona_id',
+  annoScolasticoId: 's.anno_scolastico_id',
+  iscrizioneId: 's.id',
+  nucleoId: 'a.nucleo_tematico_id',
+  criterioId: 'v.criterio_id',
+  insegnamentoId: 'i.id',
+});
 
 /**
- * Risultato cumulativo del nucleo per un alunno, in un anno scolastico (Q5),
- * attraverso TUTTE le valutazioni realmente presenti sulle attività del
- * docente autenticato. Non usa mai il numero teorico di criteri o attività.
+ * Valutazioni REALMENTE presenti (mai placeholder per "non valutato"),
+ * nell'ambito delle attività del docente autenticato (A3).
+ *
+ * È l'UNICA implementazione della catena di ambito e coerenza usata da Q4
+ * (storico di un criterio), Q5 (riepilogo di un nucleo) e dal progresso
+ * complessivo degli studenti di una classe: cambiano solo i filtri.
+ *
+ * Catena: iscrizione -> osservazioni -> valutazioni_criteri -> criterio,
+ * con attività e insegnamento usati SOLO per l'ambito (attività del docente,
+ * stessa classe/anno dell'iscrizione) e per la coerenza criterio/nucleo.
+ *
+ * @param {object} filtri - almeno un filtro tra le chiavi di FILTRI_VALUTAZIONI.
  */
-async function getRiepilogoNucleo(client, { personaId, annoScolasticoId, nucleoId, docenteId }) {
+async function getValutazioniNellAmbito(client, docenteId, filtri) {
+  const parametri = [docenteId];
+  const condizioni = Object.entries(filtri).map(([nome, valore]) => {
+    const colonna = FILTRI_VALUTAZIONI[nome];
+    if (!colonna) throw new Error(`Filtro non previsto in getValutazioniNellAmbito: ${nome}`);
+    parametri.push(valore);
+    return `${colonna} = $${parametri.length}`;
+  });
+  if (condizioni.length === 0) throw new Error('getValutazioniNellAmbito richiede almeno un filtro.');
+
   const { rows } = await client.query(
-    `SELECT v.punteggio
+    `SELECT s.id AS iscrizione_id, a.nucleo_tematico_id AS nucleo_id, v.criterio_id, v.punteggio,
+            a.id AS attivita_id, a.nome AS attivita, a.data_attivita
      FROM iscrizioni s
      JOIN osservazioni o          ON o.iscrizione_id = s.id
-     JOIN attivita a              ON a.id = o.attivita_id AND a.nucleo_tematico_id = $3
-     JOIN insegnamenti i          ON i.id = a.insegnamento_id AND i.docente_id = $4
+     JOIN attivita a              ON a.id = o.attivita_id
+     JOIN insegnamenti i          ON i.id = a.insegnamento_id AND i.docente_id = $1
                                   AND i.classe_id = s.classe_id AND i.anno_scolastico_id = s.anno_scolastico_id
      JOIN valutazioni_criteri v   ON v.osservazione_id = o.id
      JOIN criteri_osservazione c  ON c.id = v.criterio_id AND c.nucleo_tematico_id = a.nucleo_tematico_id
-     WHERE s.persona_id = $1 AND s.anno_scolastico_id = $2`,
-    [personaId, annoScolasticoId, nucleoId, docenteId]
+     WHERE ${condizioni.join(' AND ')}
+     ORDER BY a.data_attivita, a.id`,
+    parametri
   );
-  return calcolaEsito(rows.map((r) => r.punteggio));
+  return rows;
+}
+
+/**
+ * Valutazione di UN criterio a partire dalle sue righe (getValutazioniNellAmbito):
+ * - risultatoCorrente: media delle ultime osservazioni (risultatoCorrenteCriterio);
+ * - cumulativoDaInizioAnno: tutte le osservazioni, informazione secondaria;
+ * - osservazioni: lo storico COMPLETO in ordine cronologico, ciascuna marcata
+ *   con inRisultatoCorrente se fa parte della finestra del risultato corrente.
+ * Punto unico usato da Q4, Q5 e dal progresso degli studenti.
+ */
+function valutaCriterio(righe) {
+  const storico = ordinaCronologicamente(righe.map((v) => ({
+    attivitaId: v.attivita_id,
+    attivita: v.attivita,
+    dataAttivita: v.data_attivita,
+    punteggio: v.punteggio,
+    etichetta: etichettaPunteggio(v.punteggio),
+  })));
+  const risultatoCorrente = risultatoCorrenteCriterio(storico);
+  const considerate = new Set(risultatoCorrente.attivitaConsiderate);
+  return {
+    risultatoCorrente,
+    cumulativoDaInizioAnno: calcolaEsito(storico.map((o) => o.punteggio)),
+    osservazioni: storico.map((o) => ({ ...o, inRisultatoCorrente: considerate.has(o.attivitaId) })),
+  };
+}
+
+/**
+ * Valutazione di un insieme di criteri (nucleo o materia): il risultato
+ * corrente è la media, a pesi uguali, dei risultati correnti dei criteri
+ * valutati; il cumulativo da inizio anno resta calcolato su tutte le righe.
+ */
+function valutaInsiemeDiCriteri(criteriValutati, righe) {
+  return {
+    risultatoCorrente: aggregaRisultatiCorrenti(criteriValutati.map((c) => c.risultatoCorrente)),
+    cumulativoDaInizioAnno: calcolaEsito(righe.map((r) => r.punteggio)),
+  };
+}
+
+function raggruppaPerCriterio(righe) {
+  const gruppi = new Map();
+  righe.forEach((r) => {
+    if (!gruppi.has(r.criterio_id)) gruppi.set(r.criterio_id, []);
+    gruppi.get(r.criterio_id).push(r);
+  });
+  return gruppi;
+}
+
+/**
+ * Risultato di UN criterio per un alunno, in un anno scolastico, attraverso
+ * tutte le attività del nucleo (Q4): risultato corrente (ultime osservazioni)
+ * più il cumulativo da inizio anno. Solo le attività del docente autenticato
+ * (A3): un docente non vede le attività di altri docenti nella stessa classe.
+ */
+async function getStoricoCriterio(client, { personaId, annoScolasticoId, nucleoId, criterioId, docenteId }) {
+  const righe = await getValutazioniNellAmbito(client, docenteId, {
+    personaId, annoScolasticoId, nucleoId, criterioId,
+  });
+  const criterio = valutaCriterio(righe);
+  return { ...criterio.risultatoCorrente, cumulativoDaInizioAnno: criterio.cumulativoDaInizioAnno };
+}
+
+/**
+ * Risultato del nucleo per un alunno, in un anno scolastico (Q5): media dei
+ * risultati correnti dei criteri valutati, più il cumulativo da inizio anno
+ * su tutte le valutazioni presenti sulle attività del docente autenticato.
+ */
+async function getRiepilogoNucleo(client, { personaId, annoScolasticoId, nucleoId, docenteId }) {
+  const righe = await getValutazioniNellAmbito(client, docenteId, {
+    personaId, annoScolasticoId, nucleoId,
+  });
+  const criteri = [...raggruppaPerCriterio(righe).values()].map(valutaCriterio);
+  const nucleo = valutaInsiemeDiCriteri(criteri, righe);
+  return { ...nucleo.risultatoCorrente, cumulativoDaInizioAnno: nucleo.cumulativoDaInizioAnno };
+}
+
+/**
+ * Iscrizioni ATTIVE della classe/anno di un insegnamento, con i dati della
+ * persona. La fonte degli studenti è solo `iscrizioni`: nessuna attività
+ * è coinvolta, quindi compare anche chi non ha alcuna osservazione.
+ * Con `iscrizioneId` restituisce al massimo quella sola iscrizione.
+ */
+async function getIscrizioniAttiveDellaClasse(client, insegnamentoInfo, iscrizioneId = null) {
+  const { rows } = await client.query(
+    `SELECT s.id AS iscrizione_id, s.persona_id, p.cognome, p.nome,
+            cl.nome AS classe, an.nome AS anno_scolastico
+     FROM iscrizioni s
+     JOIN persone p          ON p.id = s.persona_id
+     JOIN classi cl          ON cl.id = s.classe_id
+     JOIN anni_scolastici an ON an.id = s.anno_scolastico_id
+     WHERE s.classe_id = $1 AND s.anno_scolastico_id = $2 AND s.attiva = true
+       AND ($3::bigint IS NULL OR s.id = $3)
+     ORDER BY p.cognome, p.nome, s.id`,
+    [insegnamentoInfo.classe_id, insegnamentoInfo.anno_scolastico_id, iscrizioneId]
+  );
+  return rows;
+}
+
+/**
+ * Nuclei tematici della materia con i rispettivi criteri, nell'ordine
+ * configurato. Un nucleo senza criteri resta nell'elenco con criteri = []
+ * ("griglia non configurata", R12).
+ */
+async function getStrutturaMateria(client, materiaId) {
+  const { rows } = await client.query(
+    `SELECT n.id AS nucleo_id, n.nome AS nucleo, c.id AS criterio_id, c.nome AS criterio, c.ordine
+     FROM nuclei_tematici n
+     LEFT JOIN criteri_osservazione c ON c.nucleo_tematico_id = n.id
+     WHERE n.materia_id = $1
+     ORDER BY n.nome, n.id, c.ordine`,
+    [materiaId]
+  );
+  const nuclei = new Map();
+  rows.forEach((r) => {
+    if (!nuclei.has(r.nucleo_id)) nuclei.set(r.nucleo_id, { id: r.nucleo_id, nome: r.nucleo, criteri: [] });
+    if (r.criterio_id !== null) {
+      nuclei.get(r.nucleo_id).criteri.push({ id: r.criterio_id, nome: r.criterio, ordine: r.ordine });
+    }
+  });
+  return [...nuclei.values()];
+}
+
+/**
+ * Progresso di UNO studente a partire dalle sue valutazioni (righe di
+ * getValutazioniNellAmbito), con la stessa logica di Q4 e Q5:
+ * osservazioni -> risultato corrente del criterio -> nucleo (media dei
+ * criteri valutati) -> materia (media di tutti i criteri valutati).
+ */
+function costruisciProgresso(struttura, valutazioni) {
+  const nuclei = struttura.map((nucleo) => {
+    const righeNucleo = valutazioni.filter((v) => v.nucleo_id === nucleo.id);
+    const criteri = nucleo.criteri.map((criterio) => ({
+      ...criterio,
+      ...valutaCriterio(righeNucleo.filter((v) => v.criterio_id === criterio.id)),
+    }));
+    return {
+      id: nucleo.id,
+      nome: nucleo.nome,
+      grigliaNonConfigurata: criteri.length === 0,
+      ...valutaInsiemeDiCriteri(criteri, righeNucleo),
+      criteriValutati: criteri.filter((c) => c.osservazioni.length > 0).length,
+      criteriTotali: criteri.length,
+      criteri,
+    };
+  });
+  return {
+    complessivo: {
+      ...valutaInsiemeDiCriteri(nuclei.flatMap((n) => n.criteri), valutazioni),
+      criteriValutati: nuclei.reduce((totale, n) => totale + n.criteriValutati, 0),
+      criteriTotali: nuclei.reduce((totale, n) => totale + n.criteriTotali, 0),
+    },
+    nuclei,
+  };
+}
+
+function descriviInsegnamento(ins) {
+  return { id: ins.id, materia: ins.materia, classe: ins.classe, annoScolastico: ins.anno_scolastico };
+}
+
+/**
+ * Studenti della classe di un insegnamento del docente (iscrizioni attive),
+ * ciascuno con il progresso complessivo e per nucleo. Il dettaglio dei
+ * criteri è omesso qui: lo restituisce getProgressoStudente.
+ */
+async function getStudentiDellInsegnamento(client, insegnamentoId, docenteId) {
+  const ins = await verificaInsegnamentoDelDocente(client, insegnamentoId, docenteId);
+  const studenti = await getIscrizioniAttiveDellaClasse(client, ins);
+  const struttura = await getStrutturaMateria(client, ins.materia_id);
+  const valutazioni = await getValutazioniNellAmbito(client, docenteId, { insegnamentoId: ins.id });
+
+  const valutazioniPerIscrizione = new Map();
+  valutazioni.forEach((v) => {
+    if (!valutazioniPerIscrizione.has(v.iscrizione_id)) valutazioniPerIscrizione.set(v.iscrizione_id, []);
+    valutazioniPerIscrizione.get(v.iscrizione_id).push(v);
+  });
+
+  return {
+    insegnamento: descriviInsegnamento(ins),
+    nuclei: struttura.map((n) => ({ id: n.id, nome: n.nome, criteriTotali: n.criteri.length })),
+    studenti: studenti.map((s) => {
+      const progresso = costruisciProgresso(struttura, valutazioniPerIscrizione.get(s.iscrizione_id) || []);
+      return {
+        iscrizioneId: s.iscrizione_id,
+        personaId: s.persona_id,
+        cognome: s.cognome,
+        nome: s.nome,
+        complessivo: progresso.complessivo,
+        nuclei: progresso.nuclei.map(({ criteri, ...riepilogo }) => riepilogo),
+      };
+    }),
+  };
+}
+
+/**
+ * Progresso complessivo di uno studente (iscrizione attiva della classe
+ * dell'insegnamento): complessivo -> nuclei -> criteri -> livelli osservati.
+ */
+async function getProgressoStudente(client, { insegnamentoId, iscrizioneId, docenteId }) {
+  const ins = await verificaInsegnamentoDelDocente(client, insegnamentoId, docenteId);
+  const [studente] = await getIscrizioniAttiveDellaClasse(client, ins, iscrizioneId);
+  if (!studente) throw nonTrovato('Studente non trovato tra gli iscritti attivi di questa classe.');
+  const struttura = await getStrutturaMateria(client, ins.materia_id);
+  const valutazioni = await getValutazioniNellAmbito(client, docenteId, {
+    insegnamentoId: ins.id, iscrizioneId: studente.iscrizione_id,
+  });
+  return {
+    insegnamento: descriviInsegnamento(ins),
+    iscrizioneId: studente.iscrizione_id,
+    personaId: studente.persona_id,
+    alunno: { cognome: studente.cognome, nome: studente.nome },
+    ...costruisciProgresso(struttura, valutazioni),
+  };
 }
 
 /** Insegnamenti del docente autenticato (per la navigazione iniziale). */
@@ -350,6 +576,8 @@ module.exports = {
   getSchedaAlunno,
   getStoricoCriterio,
   getRiepilogoNucleo,
+  getStudentiDellInsegnamento,
+  getProgressoStudente,
   getInsegnamentiDelDocente,
   getAttivitaDellInsegnamento,
   getNucleiDellaMateria,

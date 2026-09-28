@@ -44,6 +44,22 @@ router.get('/insegnamenti/:insegnamentoId/nuclei', asincrono(async (req, res) =>
   res.json(righe);
 }));
 
+// GET /api/insegnamenti/:insegnamentoId/studenti — iscritti attivi della classe/anno, con progresso complessivo
+router.get('/insegnamenti/:insegnamentoId/studenti', asincrono(async (req, res) => {
+  const esito = await q.getStudentiDellInsegnamento(pool, Number(req.params.insegnamentoId), req.docenteId);
+  res.json(esito);
+}));
+
+// GET /api/insegnamenti/:insegnamentoId/studenti/:iscrizioneId/progresso — nuclei, criteri e livelli osservati
+router.get('/insegnamenti/:insegnamentoId/studenti/:iscrizioneId/progresso', asincrono(async (req, res) => {
+  const esito = await q.getProgressoStudente(pool, {
+    insegnamentoId: Number(req.params.insegnamentoId),
+    iscrizioneId: Number(req.params.iscrizioneId),
+    docenteId: req.docenteId,
+  });
+  res.json(esito);
+}));
+
 // POST /api/insegnamenti/:insegnamentoId/attivita — crea una nuova attività
 // body: { nome: string, dataAttivita: 'YYYY-MM-DD', nucleoTematicoId: number }
 router.post('/insegnamenti/:insegnamentoId/attivita', asincrono(async (req, res) => {

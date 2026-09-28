@@ -342,6 +342,450 @@ test('Nessuna valutazione presente: percentuale nulla e giudizio vuoto (Caso D c
   });
 });
 
+// --- Studenti della classe e progresso complessivo -------------------------
+//
+// Dati creati DENTRO la transazione di prova (annullata alla fine), a partire
+// solo dalla struttura di base: insegnamento 1 (docente 1, Matematica, 3A,
+// anno 1), nuclei 1-3 con criteri 1-6 (nucleo 1) e 7-12 (nucleo 2).
+
+const NUCLEO_1 = 1;
+const NUCLEO_2 = 2;
+const NUCLEO_3 = 3;
+const CRITERIO_2_NUCLEO_1 = 2;
+
+async function creaPersona(client, nome, cognome) {
+  const { rows } = await client.query(
+    'INSERT INTO persone (nome, cognome) VALUES ($1, $2) RETURNING id', [nome, cognome]
+  );
+  return rows[0].id;
+}
+
+async function creaIscrizione(client, personaId, { classeId, annoScolasticoId, attiva = true }) {
+  const { rows } = await client.query(
+    `INSERT INTO iscrizioni (persona_id, classe_id, anno_scolastico_id, attiva)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [personaId, classeId, annoScolasticoId, attiva]
+  );
+  return rows[0].id;
+}
+
+/**
+ * Scenario:
+ * - "Senzavoti": iscritto attivo in 3A, nessuna valutazione.
+ * - "Multi": iscritto attivo in 3A, valutato dal docente 1 su due attività
+ *   del nucleo 1 (criterio 1: 0 poi 2; criterio 2: 2) e una del nucleo 2
+ *   (criterio 7: 1).
+ * - Valutazioni di "Multi" FUORI ambito, che non devono mai essere contate:
+ *   un altro docente sulla stessa classe/materia (criterio 1: 2) e il
+ *   docente 1 su un'altra materia (Scienze, prova).
+ * - "Ritirato": iscrizione NON attiva in 3A.
+ */
+async function preparaScenarioStudenti(client) {
+  const { rows: [ins] } = await client.query(
+    'SELECT materia_id, classe_id, anno_scolastico_id FROM insegnamenti WHERE id = $1', [INSEGNAMENTO_ID]
+  );
+  const classe = { classeId: ins.classe_id, annoScolasticoId: ins.anno_scolastico_id };
+
+  const personaSenzaVoti = await creaPersona(client, 'Zeno', 'Senzavoti');
+  const iscrizioneSenzaVoti = await creaIscrizione(client, personaSenzaVoti, classe);
+  const personaMulti = await creaPersona(client, 'Marta', 'Multi');
+  const iscrizioneMulti = await creaIscrizione(client, personaMulti, classe);
+  const personaRitirata = await creaPersona(client, 'Rita', 'Ritirato');
+  const iscrizioneRitirata = await creaIscrizione(client, personaRitirata, { ...classe, attiva: false });
+
+  const nuovaAttivita = async (insegnamentoId, docenteId, nome, data, nucleoTematicoId) => (
+    await q.creaAttivita(client, { insegnamentoId, docenteId, nome, dataAttivita: data, nucleoTematicoId })
+  ).attivita_id;
+  const valuta = (attivitaId, docenteId, criterioId, punteggio) => q.salvaValutazione(client, {
+    attivitaId, iscrizioneId: iscrizioneMulti, criterioId, punteggio, docenteId,
+  });
+
+  // Ambito corretto: docente 1, insegnamento 1.
+  const attivitaN1a = await nuovaAttivita(INSEGNAMENTO_ID, DOCENTE_ID, 'Prova N1 (a)', '2025-11-03', NUCLEO_1);
+  const attivitaN1b = await nuovaAttivita(INSEGNAMENTO_ID, DOCENTE_ID, 'Prova N1 (b)', '2025-11-17', NUCLEO_1);
+  const attivitaN2 = await nuovaAttivita(INSEGNAMENTO_ID, DOCENTE_ID, 'Prova N2', '2025-11-10', NUCLEO_2);
+  await valuta(attivitaN1a, DOCENTE_ID, CRITERIO_NUCLEO_1, 0);
+  await valuta(attivitaN1a, DOCENTE_ID, CRITERIO_2_NUCLEO_1, 2);
+  await valuta(attivitaN1b, DOCENTE_ID, CRITERIO_NUCLEO_1, 2);
+  await valuta(attivitaN2, DOCENTE_ID, CRITERIO_NUCLEO_2, 1);
+
+  // Fuori ambito (1): un altro docente, stessa materia e stessa classe/anno.
+  const altroDocente = await creaPersona(client, 'Altro', 'Docente');
+  const { rows: [altroIns] } = await client.query(
+    `INSERT INTO insegnamenti (docente_id, materia_id, classe_id, anno_scolastico_id)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [altroDocente, ins.materia_id, ins.classe_id, ins.anno_scolastico_id]
+  );
+  const attivitaAltroDocente = await nuovaAttivita(altroIns.id, altroDocente, 'Prova altro docente', '2025-11-05', NUCLEO_1);
+  await valuta(attivitaAltroDocente, altroDocente, CRITERIO_NUCLEO_1, 2);
+
+  // Fuori ambito (2): stesso docente, altra materia sulla stessa classe/anno.
+  const { rows: [scienze] } = await client.query("INSERT INTO materie (nome) VALUES ('Scienze (prova)') RETURNING id");
+  const { rows: [nucleoScienze] } = await client.query(
+    "INSERT INTO nuclei_tematici (materia_id, nome) VALUES ($1, 'Viventi (prova)') RETURNING id", [scienze.id]
+  );
+  const { rows: [criterioScienze] } = await client.query(
+    "INSERT INTO criteri_osservazione (nucleo_tematico_id, nome, ordine) VALUES ($1, 'Osservazione (prova)', 1) RETURNING id",
+    [nucleoScienze.id]
+  );
+  const { rows: [insScienze] } = await client.query(
+    `INSERT INTO insegnamenti (docente_id, materia_id, classe_id, anno_scolastico_id)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [DOCENTE_ID, scienze.id, ins.classe_id, ins.anno_scolastico_id]
+  );
+  const attivitaScienze = await nuovaAttivita(insScienze.id, DOCENTE_ID, 'Prova Scienze', '2025-11-06', nucleoScienze.id);
+  await valuta(attivitaScienze, DOCENTE_ID, criterioScienze.id, 0);
+
+  return {
+    annoScolasticoId: ins.anno_scolastico_id,
+    personaMulti, iscrizioneMulti, iscrizioneSenzaVoti, iscrizioneRitirata,
+    altroDocente, altroInsegnamentoId: altroIns.id,
+    attivitaN1a, attivitaN1b,
+  };
+}
+
+const trovaNucleo = (progresso, id) => progresso.nuclei.find((n) => n.id === id);
+const trovaCriterio = (nucleo, id) => nucleo.criteri.find((c) => c.id === id);
+
+test('Studenti: la lista viene da iscrizioni attive e include chi non ha alcuna valutazione (Non valutato)', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    const dati = await q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ID);
+
+    const senzaVoti = dati.studenti.find((x) => x.iscrizioneId === s.iscrizioneSenzaVoti);
+    assert.ok(senzaVoti, 'lo studente senza valutazioni deve comparire nella lista');
+    assert.equal(senzaVoti.cognome, 'Senzavoti');
+    assert.equal(senzaVoti.complessivo.risultatoCorrente.percentuale, null);
+    assert.equal(senzaVoti.complessivo.risultatoCorrente.giudizio, '');
+    assert.equal(senzaVoti.complessivo.cumulativoDaInizioAnno.percentuale, null);
+    assert.equal(senzaVoti.complessivo.criteriValutati, 0);
+    assert.equal(senzaVoti.complessivo.criteriTotali, 18);
+    assert.equal(senzaVoti.nuclei.length, 3);
+    assert.ok(senzaVoti.nuclei.every((n) => n.risultatoCorrente.percentuale === null && n.criteriValutati === 0));
+
+    const dettaglio = await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneSenzaVoti, docenteId: DOCENTE_ID,
+    });
+    dettaglio.nuclei.forEach((n) => n.criteri.forEach((c) => {
+      assert.deepEqual(c.osservazioni, []);
+      assert.equal(c.risultatoCorrente.percentuale, null);
+      assert.equal(c.risultatoCorrente.media, null);
+    }));
+
+    // Le iscrizioni non attive e quelle di altre classi non compaiono.
+    assert.ok(!dati.studenti.some((x) => x.iscrizioneId === s.iscrizioneRitirata), 'iscrizione non attiva esclusa');
+    assert.ok(!dati.studenti.some((x) => x.iscrizioneId === ISCRIZIONE_ALTRA_CLASSE), 'altra classe esclusa');
+    // L'identificativo dello studente nel report è iscrizioni.id.
+    assert.equal(dettaglio.iscrizioneId, s.iscrizioneSenzaVoti);
+  });
+});
+
+test('Studenti: un criterio valutato in più attività mostra tutta la storia e il risultato corrente', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    const p = await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
+    });
+    const criterio = trovaCriterio(trovaNucleo(p, NUCLEO_1), CRITERIO_NUCLEO_1);
+    assert.deepEqual(
+      criterio.osservazioni.map((o) => [o.attivitaId, o.attivita, o.punteggio, o.etichetta, o.inRisultatoCorrente]),
+      [
+        [s.attivitaN1a, 'Prova N1 (a)', 0, 'Non manifestato', true],
+        [s.attivitaN1b, 'Prova N1 (b)', 2, 'Autonomo', true],
+      ],
+      'storia completa, in ordine di data, senza la valutazione dell\'altro docente'
+    );
+    assert.ok(criterio.osservazioni.every((o) => o.dataAttivita), 'ogni livello osservato riporta la data');
+    // Due osservazioni (meno della finestra): il risultato corrente è la media di entrambe.
+    assert.equal(criterio.risultatoCorrente.media, 1);
+    assert.equal(criterio.risultatoCorrente.percentuale, 50);
+    assert.equal(criterio.risultatoCorrente.giudizio, 'SUFFICIENTE');
+    assert.equal(criterio.risultatoCorrente.osservazioniConsiderate, 2);
+    assert.equal(criterio.cumulativoDaInizioAnno.percentuale, 50);
+  });
+});
+
+test('Studenti: con più di 3 osservazioni il risultato corrente usa le ultime 3, lo storico le mostra tutte', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    const nuovaAttivita = async (nome, data) => (await q.creaAttivita(client, {
+      insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID, nome, dataAttivita: data, nucleoTematicoId: NUCLEO_1,
+    })).attivita_id;
+    // Create volutamente in ordine NON cronologico: l'ordine deve venire dalla data, non dall'inserimento.
+    const ottobre = await nuovaAttivita('Altra attività (ottobre)', '2025-10-15');
+    const novembre = await nuovaAttivita('Altra attività (novembre)', '2025-11-20');
+    const addizioni = await nuovaAttivita('Addizioni e sottrazioni', '2025-09-21');
+    const decimali = await nuovaAttivita('Numeri decimali', '2025-09-21'); // stessa data, id maggiore
+    const valuta = (attivitaId, punteggio) => q.salvaValutazione(client, {
+      attivitaId, iscrizioneId: s.iscrizioneSenzaVoti, criterioId: CRITERIO_2_NUCLEO_1, punteggio, docenteId: DOCENTE_ID,
+    });
+    // Storico: 0 (addizioni, 21/09), 1 (decimali, 21/09), 2 (15/10), 2 (20/11).
+    await valuta(addizioni, 0);
+    await valuta(decimali, 1);
+    await valuta(ottobre, 2);
+    await valuta(novembre, 2);
+
+    const { rows: [prima] } = await client.query('SELECT COUNT(*)::int AS n FROM valutazioni_criteri');
+    const p = await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneSenzaVoti, docenteId: DOCENTE_ID,
+    });
+    const criterio = trovaCriterio(trovaNucleo(p, NUCLEO_1), CRITERIO_2_NUCLEO_1);
+
+    // Storico completo, in ordine cronologico; a parità di data decide l'id dell'attività.
+    assert.deepEqual(
+      criterio.osservazioni.map((o) => [o.attivitaId, o.punteggio, o.inRisultatoCorrente]),
+      [[addizioni, 0, false], [decimali, 1, true], [ottobre, 2, true], [novembre, 2, true]]
+    );
+    // Risultato corrente: (1 + 2 + 2) / 3 = 1,67 -> 83,33% DISTINTO (non (0+1+2+2)/4).
+    assert.equal(criterio.risultatoCorrente.media, 1.67);
+    assert.equal(criterio.risultatoCorrente.percentuale, 83.33);
+    assert.equal(criterio.risultatoCorrente.giudizio, 'DISTINTO');
+    assert.equal(criterio.risultatoCorrente.osservazioniConsiderate, 3);
+    assert.equal(criterio.risultatoCorrente.osservazioniTotali, 4);
+    // Cumulativo da inizio anno ancora disponibile: 5/8 = 62,5%.
+    assert.equal(criterio.cumulativoDaInizioAnno.punteggioOttenuto, 5);
+    assert.equal(criterio.cumulativoDaInizioAnno.punteggioMassimo, 8);
+
+    // Q4 restituisce lo stesso risultato corrente.
+    const q4 = await q.getStoricoCriterio(client, {
+      personaId: p.personaId, annoScolasticoId: s.annoScolasticoId, nucleoId: NUCLEO_1,
+      criterioId: CRITERIO_2_NUCLEO_1, docenteId: DOCENTE_ID,
+    });
+    assert.equal(q4.media, 1.67);
+    assert.equal(q4.percentuale, 83.33);
+
+    // Il calcolo è solo in lettura: nessuna osservazione cancellata o aggiunta.
+    const { rows: [dopo] } = await client.query('SELECT COUNT(*)::int AS n FROM valutazioni_criteri');
+    assert.equal(dopo.n, prima.n);
+    const { rows: [nelDb] } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM valutazioni_criteri v JOIN osservazioni o ON o.id = v.osservazione_id
+       WHERE o.iscrizione_id = $1 AND v.criterio_id = $2`,
+      [s.iscrizioneSenzaVoti, CRITERIO_2_NUCLEO_1]
+    );
+    assert.equal(criterio.osservazioni.length, nelDb.n, 'lo storico mostra tutte le osservazioni presenti nel database');
+  });
+});
+
+test('Studenti: i nuclei restano separati; nucleo e materia sono la media dei risultati correnti dei criteri', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    const p = await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
+    });
+    const n1 = trovaNucleo(p, NUCLEO_1);
+    const n2 = trovaNucleo(p, NUCLEO_2);
+    const n3 = trovaNucleo(p, NUCLEO_3);
+    // Nucleo 1: criterio 1 media 1 (0, 2), criterio 2 media 2 -> (1 + 2) / 2 = 1,5 -> 75% BUONO.
+    // (Mettendo insieme i punteggi sarebbe stato 4/6 = 66,67%: il criterio 1 peserebbe il doppio.)
+    assert.equal(n1.risultatoCorrente.media, 1.5);
+    assert.equal(n1.risultatoCorrente.percentuale, 75);
+    assert.equal(n1.risultatoCorrente.giudizio, 'BUONO');
+    assert.equal(n1.risultatoCorrente.criteriConsiderati, 2);
+    assert.equal(n1.cumulativoDaInizioAnno.percentuale, 66.67);
+    assert.equal(n1.criteriValutati, 2);
+    assert.equal(n1.criteriTotali, 6);
+    // Nucleo 2: solo il criterio 7 (1); nessuna valutazione del nucleo 1 vi confluisce.
+    assert.equal(n2.risultatoCorrente.media, 1);
+    assert.equal(n2.risultatoCorrente.percentuale, 50);
+    assert.equal(n2.criteriValutati, 1);
+    assert.deepEqual(trovaCriterio(n2, CRITERIO_NUCLEO_2).osservazioni.map((o) => o.punteggio), [1]);
+    // Nucleo 3: nessuna attività -> Non valutato.
+    assert.equal(n3.risultatoCorrente.percentuale, null);
+    assert.equal(n3.criteriValutati, 0);
+    // Materia: media dei 3 criteri valutati, a pesi uguali: (1 + 2 + 1) / 3 = 1,33 -> 66,67% DISCRETO.
+    assert.equal(p.complessivo.risultatoCorrente.media, 1.33);
+    assert.equal(p.complessivo.risultatoCorrente.percentuale, 66.67);
+    assert.equal(p.complessivo.risultatoCorrente.giudizio, 'DISCRETO');
+    assert.equal(p.complessivo.risultatoCorrente.criteriConsiderati, 3);
+    // Cumulativo da inizio anno (tutte le valutazioni): 5/8 = 62,5%.
+    assert.equal(p.complessivo.cumulativoDaInizioAnno.percentuale, 62.5);
+    assert.equal(p.complessivo.criteriValutati, 3);
+    assert.equal(p.complessivo.criteriTotali, 18);
+
+    // La lista riporta gli stessi valori del dettaglio.
+    const lista = await q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ID);
+    const riga = lista.studenti.find((x) => x.iscrizioneId === s.iscrizioneMulti);
+    assert.deepEqual(riga.complessivo, p.complessivo);
+    assert.deepEqual(riga.nuclei, p.nuclei.map(({ criteri, ...resto }) => resto));
+  });
+});
+
+test('Studenti: le attività di altri insegnamenti (altro docente o altra materia) sono escluse', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    const p = await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
+    });
+    // Solo i 3 nuclei di Matematica: il nucleo di Scienze non compare.
+    assert.deepEqual(p.nuclei.map((n) => n.id).sort(), [NUCLEO_1, NUCLEO_2, NUCLEO_3]);
+    // Il 2 dato dall'altro docente sul criterio 1 non entra né nella storia né nei risultati.
+    const criterio1 = trovaCriterio(trovaNucleo(p, NUCLEO_1), CRITERIO_NUCLEO_1);
+    assert.equal(criterio1.osservazioni.length, 2);
+    assert.equal(criterio1.risultatoCorrente.media, 1);
+    assert.equal(p.complessivo.cumulativoDaInizioAnno.punteggioMassimo, 8);
+
+    // Specularmente, l'altro docente vede solo la propria valutazione.
+    const pAltro = await q.getProgressoStudente(client, {
+      insegnamentoId: s.altroInsegnamentoId, iscrizioneId: s.iscrizioneMulti, docenteId: s.altroDocente,
+    });
+    assert.equal(pAltro.complessivo.risultatoCorrente.media, 2);
+    assert.equal(pAltro.complessivo.cumulativoDaInizioAnno.punteggioOttenuto, 2);
+    assert.equal(pAltro.complessivo.cumulativoDaInizioAnno.punteggioMassimo, 2);
+  });
+});
+
+test('Studenti: autorizzazione del docente e coerenza iscrizione/classe (404 uniforme)', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    await assert.rejects(
+      () => q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ESTRANEO_ID),
+      (errore) => errore.stato === 404
+    );
+    await assert.rejects(
+      () => q.getProgressoStudente(client, {
+        insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ESTRANEO_ID,
+      }),
+      (errore) => errore.stato === 404
+    );
+    // L'altro docente non può aprire l'insegnamento del docente 1, anche se insegna nella stessa classe.
+    await assert.rejects(
+      () => q.getProgressoStudente(client, {
+        insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: s.altroDocente,
+      }),
+      (errore) => errore.stato === 404
+    );
+    // Iscrizione di un'altra classe o non attiva: 404.
+    for (const iscrizioneId of [ISCRIZIONE_ALTRA_CLASSE, s.iscrizioneRitirata]) {
+      await assert.rejects(
+        () => q.getProgressoStudente(client, { insegnamentoId: INSEGNAMENTO_ID, iscrizioneId, docenteId: DOCENTE_ID }),
+        (errore) => errore.stato === 404
+      );
+    }
+  });
+});
+
+test('Studenti: 0 (Non manifestato) resta distinto da Non valutato, anche dopo la rimozione di un punteggio', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    // Criterio 2 del nucleo 1 portato a 0 nell'attività (a); criterio 3 mai valutato.
+    await q.salvaValutazione(client, {
+      attivitaId: s.attivitaN1a, iscrizioneId: s.iscrizioneMulti, criterioId: CRITERIO_2_NUCLEO_1,
+      punteggio: 0, docenteId: DOCENTE_ID,
+    });
+    let n1 = trovaNucleo(await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
+    }), NUCLEO_1);
+    const zero = trovaCriterio(n1, CRITERIO_2_NUCLEO_1);
+    assert.deepEqual(zero.osservazioni.map((o) => [o.punteggio, o.etichetta]), [[0, 'Non manifestato']]);
+    assert.equal(zero.risultatoCorrente.media, 0);
+    assert.equal(zero.risultatoCorrente.percentuale, 0);
+    assert.equal(zero.risultatoCorrente.giudizio, 'NON SUFFICIENTE');
+    const maiValutato = trovaCriterio(n1, 3);
+    assert.deepEqual(maiValutato.osservazioni, []);
+    assert.equal(maiValutato.risultatoCorrente.percentuale, null);
+    assert.equal(n1.criteriValutati, 2, 'un criterio valutato 0 conta come valutato');
+    // Il criterio a 0 entra nella media del nucleo: (1 + 0) / 2 = 0,5 -> 25%.
+    assert.equal(n1.risultatoCorrente.media, 0.5);
+    assert.equal(n1.risultatoCorrente.percentuale, 25);
+
+    // "Non valutato" (punteggio null) elimina la valutazione: sparisce dalla storia, non diventa 0.
+    await q.salvaValutazione(client, {
+      attivitaId: s.attivitaN1a, iscrizioneId: s.iscrizioneMulti, criterioId: CRITERIO_2_NUCLEO_1,
+      punteggio: null, docenteId: DOCENTE_ID,
+    });
+    n1 = trovaNucleo(await q.getProgressoStudente(client, {
+      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
+    }), NUCLEO_1);
+    assert.deepEqual(trovaCriterio(n1, CRITERIO_2_NUCLEO_1).osservazioni, []);
+    assert.equal(trovaCriterio(n1, CRITERIO_2_NUCLEO_1).risultatoCorrente.percentuale, null);
+    assert.equal(n1.criteriValutati, 1);
+    // Resta solo il criterio 1 (media 1): il criterio non valutato è escluso, non conta come 0.
+    assert.equal(n1.risultatoCorrente.media, 1);
+    assert.equal(n1.risultatoCorrente.percentuale, 50);
+    assert.equal(n1.cumulativoDaInizioAnno.punteggioMassimo, 4, 'solo le 2 valutazioni rimaste del criterio 1');
+  });
+});
+
+test('Studenti: nuclei e criteri coincidono con Q5 (getRiepilogoNucleo) e Q4 (getStoricoCriterio)', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    const lista = await q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ID);
+    // Tutti gli studenti della classe (dati di base compresi), non solo quelli dello scenario.
+    for (const studente of lista.studenti) {
+      const p = await q.getProgressoStudente(client, {
+        insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: studente.iscrizioneId, docenteId: DOCENTE_ID,
+      });
+      for (const nucleo of p.nuclei) {
+        const q5 = await q.getRiepilogoNucleo(client, {
+          personaId: p.personaId, annoScolasticoId: s.annoScolasticoId, nucleoId: nucleo.id, docenteId: DOCENTE_ID,
+        });
+        assert.deepEqual(
+          q5, { ...nucleo.risultatoCorrente, cumulativoDaInizioAnno: nucleo.cumulativoDaInizioAnno },
+          `nucleo ${nucleo.id}, iscrizione ${studente.iscrizioneId}: diverso da Q5`
+        );
+        for (const criterio of nucleo.criteri) {
+          const q4 = await q.getStoricoCriterio(client, {
+            personaId: p.personaId, annoScolasticoId: s.annoScolasticoId, nucleoId: nucleo.id,
+            criterioId: criterio.id, docenteId: DOCENTE_ID,
+          });
+          assert.deepEqual(
+            q4, { ...criterio.risultatoCorrente, cumulativoDaInizioAnno: criterio.cumulativoDaInizioAnno },
+            `criterio ${criterio.id}, iscrizione ${studente.iscrizioneId}: diverso da Q4`
+          );
+        }
+      }
+    }
+  });
+});
+
+test('Esito della singola attività invariato: la griglia usa solo le valutazioni di quell\'attività', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioStudenti(client);
+    // Attività (b): per "Multi" c'è solo il criterio 1 = 2 -> esito dell'attività 2/2 = 100%,
+    // anche se il risultato corrente del criterio (media di 0 e 2) è 50%.
+    const griglia = await q.getGrigliaAttivita(client, s.attivitaN1b, DOCENTE_ID);
+    const riga = griglia.righe.find((r) => r.iscrizioneId === s.iscrizioneMulti);
+    assert.equal(riga.valutazionePresenti, 1);
+    assert.deepEqual(riga.esito, { punteggioOttenuto: 2, punteggioMassimo: 2, percentuale: 100, giudizio: 'OTTIMO' });
+    const scheda = await q.getSchedaAlunno(client, {
+      attivitaId: s.attivitaN1b, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
+    });
+    assert.deepEqual(scheda.esito, riga.esito);
+  });
+});
+
+test('Studenti: le rotte HTTP rispondono 200 al docente titolare e 404 a un docente estraneo', async () => {
+  const express = require('express');
+  const routeAttivita = require('../server/routes/attivita');
+  const { identificaDocente } = require('../server/auth');
+  const app = express();
+  app.use(express.json());
+  app.use('/api', identificaDocente, routeAttivita);
+
+  await new Promise((risolvi, rifiuta) => {
+    const server = app.listen(0, async () => {
+      try {
+        const base = `http://127.0.0.1:${server.address().port}/api/insegnamenti/${INSEGNAMENTO_ID}/studenti`;
+        const titolare = await fetch(base, { headers: { 'X-Docente-Id': String(DOCENTE_ID) } });
+        assert.equal(titolare.status, 200);
+        const corpo = await titolare.json();
+        assert.ok(Array.isArray(corpo.studenti) && corpo.studenti.length > 0);
+        const dettaglio = await fetch(`${base}/${corpo.studenti[0].iscrizioneId}/progresso`, {
+          headers: { 'X-Docente-Id': String(DOCENTE_ID) },
+        });
+        assert.equal(dettaglio.status, 200);
+        const estraneo = await fetch(base, { headers: { 'X-Docente-Id': String(DOCENTE_ESTRANEO_ID) } });
+        assert.equal(estraneo.status, 404);
+        risolvi();
+      } catch (errore) {
+        rifiuta(errore);
+      } finally {
+        server.close();
+      }
+    });
+  });
+});
+
 test('Regressione: il server rifiuta di avviarsi se la migration 001 non è applicata (causa reale di "Errore interno")', { skip: !process.env.PGTEST_URL_SENZA_MIGRATION && 'PGTEST_URL_SENZA_MIGRATION non impostata: verifica NON eseguita, non dare per superata.' }, async () => {
   const { verificaVincoliRichiesti } = require('../server/db');
   const poolSenzaMigration = new (require('pg').Pool)({ connectionString: process.env.PGTEST_URL_SENZA_MIGRATION });
