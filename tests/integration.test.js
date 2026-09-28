@@ -1,13 +1,13 @@
 'use strict';
 
 /**
- * Test di integrazione eseguiti su un PostgreSQL LOCALE con lo schema
- * migrato (001_vincoli_osservazioni.sql applicata) e dati equivalenti a
- * quelli di Access/Neon, NON sul database Neon reale (questo ambiente
- * non ha accesso di rete a Neon — vedi README).
+ * Test di integrazione su un database di PROVA con lo schema migrato
+ * (001_vincoli_osservazioni.sql applicata), MAI sul database Neon reale.
  *
- * Richiede: PGTEST_URL puntato a un database Postgres locale con lo
- * schema del progetto già migrato (vedi README per come prepararlo).
+ * - Senza PGTEST_URL: PGlite in memoria (tests/support/pglite.js), database
+ *   ricreato da zero a ogni esecuzione; nessuna installazione richiesta.
+ * - Con PGTEST_URL: un PostgreSQL reale già preparato.
+ * Dati e istruzioni: tests/README_DATI_DI_PROVA.md
  */
 
 const test = require('node:test');
@@ -18,10 +18,16 @@ const assert = require('node:assert/strict');
 // che gira in produzione (inclusa la conversione dei bigint in numeri:
 // un Pool creato qui separatamente NON erediterebbe quella correzione,
 // perché è un side-effect globale innescato dal solo require di server/db).
-if (!process.env.PGTEST_URL) {
-  throw new Error('Impostare PGTEST_URL (es. postgres://.../dbe) prima di eseguire questi test.');
+const SU_PGLITE = !process.env.PGTEST_URL;
+if (SU_PGLITE) {
+  require('./support/pglite').installa();
+} else {
+  // Alcuni test fanno COMMIT (Caso I): non devono mai toccare il database reale.
+  if (/neon\.tech/i.test(process.env.PGTEST_URL)) {
+    throw new Error('PGTEST_URL punta a Neon: i test vanno eseguiti solo su un database di prova.');
+  }
+  process.env.DATABASE_URL = process.env.PGTEST_URL;
 }
-process.env.DATABASE_URL = process.env.PGTEST_URL;
 const { pool } = require('../server/db');
 const q = require('../server/queries');
 const { verificaAttivitaDelDocente } = require('../server/lib/autorizzazione');
@@ -46,7 +52,7 @@ const DOCENTE_ESTRANEO_ID = 4; // nessun insegnamento
 const INSEGNAMENTO_ID = 1; // insegnamento del docente 1 (Matematica, 3A)
 const ATTIVITA_ID = 1; // nucleo 1 (Numeri), insegnamento del docente 1
 const ISCRIZIONE_CLASSE_CORRETTA = 1; // classe 3A, stessa classe/anno dell'insegnamento
-const ISCRIZIONE_ALTRA_CLASSE = 3; // classe 3B (persona 5): per il caso K3
+const ISCRIZIONE_ALTRA_CLASSE = 3; // classe 3B (persona 4): per il caso K3
 const CRITERIO_NUCLEO_1 = 1; // "Correttezza numerica", nucleo dell'attività 1
 const CRITERIO_NUCLEO_2 = 7; // "Orientamento e relazioni spaziali", nucleo 2 (estraneo all'attività 1)
 
@@ -254,7 +260,9 @@ test('K3: un alunno di un\'altra classe non può essere valutato in questa attiv
   });
 });
 
-test('Caso I: due inserimenti concorrenti della stessa osservazione non creano un duplicato', async () => {
+test('Caso I: due inserimenti concorrenti della stessa osservazione non creano un duplicato', {
+  skip: SU_PGLITE && 'PGlite ha una sola sessione: la concorrenza richiede un PostgreSQL reale (PGTEST_URL). Verifica NON eseguita.',
+}, async () => {
   // Test SUL VINCOLO DEL DATABASE: due connessioni distinte, transazioni reali
   // (non nella transazione di prova annullabile, perché qui serve il commit
   // per osservare la reale concorrenza). Uso l'iscrizione 4 (classe 3B, dati

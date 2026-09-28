@@ -149,11 +149,17 @@ eseguirla sul database reale:
 
 ```bash
 npm install
-# Test unitari (nessun database):
+# Tutti i test, senza installare PostgreSQL (database di prova PGlite in memoria):
+npm test
+# Solo unitari / solo integrazione:
 npm run test:unit
-# Test di integrazione (richiede un Postgres locale con lo schema migrato):
-PGTEST_URL="postgres://utente@localhost:5432/nome_db_di_prova" npm run test:integration
+npm run test:integration
+# Integrazione su un PostgreSQL reale già preparato (necessario per il Caso I, concorrenza):
+PGTEST_URL="postgres://utente@localhost:5432/nome_db_di_prova" npm test
 ```
+
+Preparazione del database reale, contenuto dei dati di prova e limiti di
+PGlite: `tests/README_DATI_DI_PROVA.md`.
 
 **Risultato dell'ultima esecuzione: 18/18 test passati** (8 unitari + 10
 di integrazione), ripetuta due volte di seguito per escludere fragilità
