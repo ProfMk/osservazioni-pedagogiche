@@ -3,6 +3,7 @@
 const {
   calcolaEsito, isPunteggioValido, valoreMassimo, etichettaPunteggio,
   ordinaCronologicamente, risultatoCorrenteCriterio, aggregaRisultatiCorrenti,
+  calcolaGiudizio, valoriAmmessi,
 } = require('./config/valutazione');
 const { datiNonValidi, nonTrovato } = require('./lib/erroreApplicativo');
 const {
@@ -93,6 +94,104 @@ async function getGrigliaAttivita(client, attivitaId, docenteId) {
     criteri: criteri.map((c) => ({ id: c.criterio_id, nome: c.nome, ordine: c.ordine })),
     grigliaNonConfigurata: criteri.length === 0, // R12
     righe,
+  };
+}
+
+/**
+ * Distribuzione dei punteggi presenti su tutti i valori ammessi dalla scala
+ * attuale (usa valoriAmmessi(), non i letterali 0/1/2, per restare coerente
+ * con la configurazione unica della valutazione).
+ */
+function distribuzionePunteggi(punteggi) {
+  const distribuzione = {};
+  valoriAmmessi().forEach((v) => { distribuzione[v] = 0; });
+  punteggi.forEach((p) => { distribuzione[p] += 1; });
+  return distribuzione;
+}
+
+/**
+ * Esito di UN criterio nella griglia di UNA attività (Report classe): solo i
+ * punteggi presenti in quella colonna, mai un dato di un'altra attività.
+ * Deriva dalle righe già calcolate da getGrigliaAttivita: nessuna nuova query.
+ */
+function calcolaEsitoCriterioInAttivita(righe, criterioId) {
+  const punteggi = righe
+    .map((r) => r.celle.find((c) => c.criterioId === criterioId))
+    .filter((c) => c && c.punteggio !== null)
+    .map((c) => c.punteggio);
+  return {
+    valutati: punteggi.length,
+    nonValutati: righe.length - punteggi.length,
+    distribuzione: distribuzionePunteggi(punteggi),
+    esito: calcolaEsito(punteggi),
+  };
+}
+
+/**
+ * Media aritmetica semplice dei risultati percentuali dei soli criteri
+ * valutati, pesati allo stesso modo (Report classe). NON usa
+ * aggregaRisultatiCorrenti: quella funzione appartiene alla logica del
+ * risultato corrente/media mobile ed è estranea alla fotografia di una
+ * singola attività. Le soglie del giudizio restano quelle di
+ * calcolaGiudizio: nessuna soglia duplicata qui. Il confronto con le soglie
+ * usa il rapporto esatto (non la percentuale già arrotondata di ogni
+ * criterio), come fa calcolaGiudizio altrove nel codice.
+ */
+function mediaSemplicePercentualiCriteri(esitiCriteriValutati) {
+  if (esitiCriteriValutati.length === 0) {
+    return { percentuale: null, giudizio: '', criteriConsiderati: 0 };
+  }
+  const percentualeEsattaMedia = esitiCriteriValutati.reduce(
+    (totale, e) => totale + (e.punteggioOttenuto / e.punteggioMassimo) * 100, 0
+  ) / esitiCriteriValutati.length;
+  return {
+    percentuale: Math.round(percentualeEsattaMedia * 100) / 100,
+    giudizio: calcolaGiudizio(percentualeEsattaMedia),
+    criteriConsiderati: esitiCriteriValutati.length,
+  };
+}
+
+/**
+ * Report di classe per UNA attività: fotografia della sola attività,
+ * organizzata per nucleo tematico (oggi sempre uno solo, perché un'attività
+ * appartiene a un solo nucleo). Nessuna media mobile, nessuna osservazione di
+ * un'altra attività, nessun cumulativo da inizio anno: si riusa integralmente
+ * getGrigliaAttivita (stessa autorizzazione, stessi alunni, stesse celle) e
+ * si aggrega solo in memoria.
+ */
+async function getReportClasseAttivita(client, attivitaId, docenteId) {
+  const griglia = await getGrigliaAttivita(client, attivitaId, docenteId);
+
+  if (griglia.grigliaNonConfigurata) {
+    return {
+      attivita: griglia.attivita,
+      grigliaNonConfigurata: true,
+      totaleAlunni: griglia.righe.length,
+      complessivo: { percentuale: null, giudizio: '', criteriConsiderati: 0 },
+      nuclei: [],
+    };
+  }
+
+  const { rows: nucleoRows } = await client.query(
+    'SELECT nome FROM nuclei_tematici WHERE id = $1', [griglia.nucleoTematicoId]
+  );
+
+  const criteriConDettaglio = griglia.criteri.map((c) => ({
+    id: c.id, nome: c.nome, ordine: c.ordine,
+    ...calcolaEsitoCriterioInAttivita(griglia.righe, c.id),
+  }));
+
+  const esitiValutati = criteriConDettaglio.filter((c) => c.valutati > 0).map((c) => c.esito);
+  const risultato = mediaSemplicePercentualiCriteri(esitiValutati);
+
+  return {
+    attivita: griglia.attivita,
+    grigliaNonConfigurata: false,
+    totaleAlunni: griglia.righe.length,
+    complessivo: risultato, // oggi coincide col nucleo: un'attività ha un solo nucleo tematico
+    nuclei: [
+      { id: griglia.nucleoTematicoId, nome: nucleoRows[0].nome, risultato, criteri: criteriConDettaglio },
+    ],
   };
 }
 
@@ -571,6 +670,7 @@ async function creaAttivita(client, { insegnamentoId, docenteId, nome, dataAttiv
 module.exports = {
   getCriteriDelNucleo,
   getGrigliaAttivita,
+  getReportClasseAttivita,
   salvaValutazione,
   aggiornaNota,
   getSchedaAlunno,

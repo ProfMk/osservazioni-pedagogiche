@@ -762,6 +762,188 @@ test('Esito della singola attività invariato: la griglia usa solo le valutazion
   });
 });
 
+// --- Report classe (fotografia di una singola attività) --------------------
+//
+// Scenario dedicato: una nuova attività (A) del nucleo 1 con punteggi 0/1/2
+// misti sul criterio 1, un secondo criterio valutato da un solo alunno, un
+// terzo criterio mai valutato in A, più due attività successive (B, C) sullo
+// stesso nucleo per verificare che il report ignori sia le altre attività
+// sia la media mobile. Il roster di 3A comprende anche Anna e Luca (dati di
+// base, vedi tests/README_DATI_DI_PROVA.md), mai valutati in queste attività.
+
+const CRITERIO_3_NUCLEO_1 = 3; // "Relazioni quantitative", nucleo 1: mai valutato in questo scenario
+
+async function preparaScenarioReportClasse(client) {
+  const { rows: [ins] } = await client.query(
+    'SELECT materia_id, classe_id, anno_scolastico_id FROM insegnamenti WHERE id = $1', [INSEGNAMENTO_ID]
+  );
+  const classe = { classeId: ins.classe_id, annoScolasticoId: ins.anno_scolastico_id };
+
+  const personaZero = await creaPersona(client, 'Zeta', 'Zero');
+  const iscrizioneZero = await creaIscrizione(client, personaZero, classe);
+  const personaUno = await creaPersona(client, 'Ugo', 'Uno');
+  const iscrizioneUno = await creaIscrizione(client, personaUno, classe);
+  const personaDue = await creaPersona(client, 'Dario', 'Due');
+  const iscrizioneDue = await creaIscrizione(client, personaDue, classe);
+  const personaSenza = await creaPersona(client, 'Sandra', 'Senzapunteggio');
+  const iscrizioneSenza = await creaIscrizione(client, personaSenza, classe);
+
+  const nuovaAttivita = async (nome, data) => (await q.creaAttivita(client, {
+    insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID, nome, dataAttivita: data, nucleoTematicoId: NUCLEO_1,
+  })).attivita_id;
+  const attivitaA = await nuovaAttivita('Report — prova A', '2025-12-01');
+  const attivitaB = await nuovaAttivita('Report — prova B', '2025-12-08');
+  const attivitaC = await nuovaAttivita('Report — prova C', '2025-12-15');
+
+  const valuta = (attivitaId, iscrizioneId, criterioId, punteggio) => q.salvaValutazione(client, {
+    attivitaId, iscrizioneId, criterioId, punteggio, docenteId: DOCENTE_ID,
+  });
+
+  // Attività A: quella sotto test. Criterio 1 misto 0/1/2, criterio 2 valutato da un solo alunno, criterio 3 mai.
+  await valuta(attivitaA, iscrizioneZero, CRITERIO_NUCLEO_1, 0);
+  await valuta(attivitaA, iscrizioneUno, CRITERIO_NUCLEO_1, 1);
+  await valuta(attivitaA, iscrizioneDue, CRITERIO_NUCLEO_1, 2);
+  await valuta(attivitaA, iscrizioneDue, CRITERIO_2_NUCLEO_1, 2);
+
+  // Attività B/C: successive, stesso nucleo/criterio, MAI devono comparire nel report di A.
+  await valuta(attivitaB, iscrizioneSenza, CRITERIO_NUCLEO_1, 2);
+  await valuta(attivitaB, iscrizioneZero, CRITERIO_NUCLEO_1, 2);
+  await valuta(attivitaC, iscrizioneZero, CRITERIO_NUCLEO_1, 2);
+
+  return { iscrizioneZero, iscrizioneUno, iscrizioneDue, iscrizioneSenza, attivitaA, attivitaB, attivitaC };
+}
+
+test('Report classe: criterio con punteggi 0/1/2 misti, distribuzione e percentuale corrette', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    assert.equal(report.grigliaNonConfigurata, false);
+    // Roster: Anna e Luca (seed) + Zero, Uno, Due, Senza = 6 alunni attivi in 3A.
+    assert.equal(report.totaleAlunni, 6);
+    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
+    const c1 = nucleo.criteri.find((c) => c.id === CRITERIO_NUCLEO_1);
+    assert.equal(c1.valutati, 3);
+    assert.equal(c1.nonValutati, 3);
+    assert.deepEqual(c1.distribuzione, { 0: 1, 1: 1, 2: 1 });
+    assert.equal(c1.esito.punteggioOttenuto, 3);
+    assert.equal(c1.esito.punteggioMassimo, 6);
+    assert.equal(c1.esito.percentuale, 50);
+    assert.equal(c1.esito.giudizio, 'SUFFICIENTE');
+  });
+});
+
+test('Report classe: un criterio con alcuni alunni non valutati non li conta come 0', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
+    const c2 = nucleo.criteri.find((c) => c.id === CRITERIO_2_NUCLEO_1);
+    assert.equal(c2.valutati, 1);
+    assert.equal(c2.nonValutati, 5);
+    assert.deepEqual(c2.distribuzione, { 0: 0, 1: 0, 2: 1 });
+    assert.equal(c2.esito.percentuale, 100);
+    assert.equal(c2.esito.giudizio, 'OTTIMO');
+  });
+});
+
+test('Report classe: un criterio mai valutato in questa attività è "Non valutato", non 0%', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
+    const c3 = nucleo.criteri.find((c) => c.id === CRITERIO_3_NUCLEO_1);
+    assert.equal(c3.valutati, 0);
+    assert.equal(c3.nonValutati, 6);
+    assert.deepEqual(c3.distribuzione, { 0: 0, 1: 0, 2: 0 });
+    assert.equal(c3.esito.percentuale, null);
+    assert.equal(c3.esito.giudizio, '');
+  });
+});
+
+test('Report classe: il risultato del nucleo è la media semplice dei risultati percentuali dei criteri valutati, non il pool di tutti i punteggi', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
+    // Criterio 1: 50%, criterio 2: 100% -> media (50+100)/2 = 75%, non il pool (0+1+2+2)/(4*2) = 62,5%.
+    assert.equal(nucleo.risultato.criteriConsiderati, 2);
+    assert.equal(nucleo.risultato.percentuale, 75);
+    assert.equal(nucleo.risultato.giudizio, 'BUONO');
+    assert.notEqual(nucleo.risultato.percentuale, 62.5);
+    // Un'attività appartiene a un solo nucleo tematico: il complessivo coincide col nucleo.
+    assert.deepEqual(report.complessivo, nucleo.risultato);
+  });
+});
+
+test('Report classe: i dati di un\'altra attività sono completamente esclusi', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
+    const c1 = nucleo.criteri.find((c) => c.id === CRITERIO_NUCLEO_1);
+    // "Senza" ha un punteggio SOLO nell'attività B (criterio 1 = 2): non deve comparire nel report di A.
+    assert.equal(c1.valutati, 3, 'il punteggio di "Senza" in un\'altra attività non deve contare');
+    assert.equal(c1.distribuzione[2], 1, 'solo "Due" contribuisce al punteggio 2 in questa attività');
+  });
+});
+
+test('Report classe: la media mobile è completamente esclusa', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    // "Zero" ha punteggio 0 nell'attività A, poi 2 in B e 2 in C sullo stesso criterio: la
+    // media mobile (ultime 3) sarebbe (0+2+2)/3 = 1,33 (66,67%), ma il report di A deve
+    // riflettere solo lo 0 di questa attività.
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
+    const c1 = nucleo.criteri.find((c) => c.id === CRITERIO_NUCLEO_1);
+    assert.deepEqual(c1.distribuzione, { 0: 1, 1: 1, 2: 1 });
+    assert.equal(c1.esito.percentuale, 50);
+    assert.notEqual(c1.esito.percentuale, 66.67);
+  });
+});
+
+test('Report classe: un docente estraneo riceve 404', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    await assert.rejects(
+      () => q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ESTRANEO_ID),
+      (errore) => errore.stato === 404
+    );
+  });
+});
+
+test('Report classe: attività senza alcuna valutazione', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const vuota = (await q.creaAttivita(client, {
+      insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID,
+      nome: 'Report — nessuna valutazione', dataAttivita: '2025-12-20', nucleoTematicoId: NUCLEO_1,
+    })).attivita_id;
+    const report = await q.getReportClasseAttivita(client, vuota, DOCENTE_ID);
+    assert.equal(report.totaleAlunni, 2); // Anna e Luca, i soli iscritti attivi di 3A nei dati di base
+    report.nuclei[0].criteri.forEach((c) => {
+      assert.equal(c.valutati, 0);
+      assert.equal(c.nonValutati, 2);
+      assert.equal(c.esito.percentuale, null);
+    });
+    assert.equal(report.complessivo.percentuale, null);
+    assert.equal(report.complessivo.giudizio, '');
+  });
+});
+
+test('Report classe: coerente con la griglia della stessa attività (stessa fonte dati)', async () => {
+  await conTransazioneDiProva(async (client) => {
+    const s = await preparaScenarioReportClasse(client);
+    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
+    const griglia = await q.getGrigliaAttivita(client, s.attivitaA, DOCENTE_ID);
+    const sommaGriglia = griglia.righe.reduce(
+      (totale, r) => totale + r.celle.filter((c) => c.punteggio !== null).reduce((t, c) => t + c.punteggio, 0), 0
+    );
+    const sommaReport = report.nuclei[0].criteri.reduce((totale, c) => totale + (c.esito.punteggioOttenuto || 0), 0);
+    assert.equal(sommaReport, sommaGriglia);
+    assert.equal(report.totaleAlunni, griglia.righe.length);
+  });
+});
+
 test('Studenti: le rotte HTTP rispondono 200 al docente titolare e 404 a un docente estraneo', async () => {
   const express = require('express');
   const routeAttivita = require('../server/routes/attivita');

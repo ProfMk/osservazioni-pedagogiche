@@ -78,6 +78,14 @@ router.get('/attivita/:attivitaId/griglia', asincrono(async (req, res) => {
   res.json(griglia);
 }));
 
+// GET /api/attivita/:attivitaId/report-classe — report di classe per questa attività
+// (fotografia della sola attività: niente media mobile, niente altre attività)
+router.get('/attivita/:attivitaId/report-classe', asincrono(async (req, res) => {
+  const attivitaId = Number(req.params.attivitaId);
+  const report = await q.getReportClasseAttivita(pool, attivitaId, req.docenteId);
+  res.json(report);
+}));
+
 // PUT /api/attivita/:attivitaId/iscrizioni/:iscrizioneId/criteri/:criterioId
 // body: { punteggio: 0|1|2|null }
 router.put('/attivita/:attivitaId/iscrizioni/:iscrizioneId/criteri/:criterioId', asincrono(async (req, res) => {

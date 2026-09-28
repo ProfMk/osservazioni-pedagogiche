@@ -161,6 +161,9 @@
   .secondario { font-size: .78rem; color: var(--inchiostro-tenue); margin: .2rem 0 0; }
   .criterio tr.in-corrente td { background: color-mix(in srgb, var(--accento) 9%, white); font-weight: 600; }
   .criterio tr.in-corrente td:last-child { color: var(--accento); }
+  .corpo-nucleo > table { width: 100%; border-collapse: collapse; margin-top: .3rem; font-size: .85rem; }
+  .corpo-nucleo > table th, .corpo-nucleo > table td { text-align: left; padding: .35rem .5rem; border-bottom: 1px dotted var(--riga); }
+  .corpo-nucleo > table th { font-weight: 600; color: var(--inchiostro-tenue); font-size: .78rem; }
   @media (max-width: 720px) {
     .form-attivita .campi { grid-template-columns: 1fr; }
   }
@@ -191,7 +194,7 @@
 
 const stato = {
   insegnamenti: [], materiaCorrente: null, insegnamentoCorrente: null, attivitaCorrente: null,
-  studentiAperti: false, studenteCorrente: null,
+  studentiAperti: false, studenteCorrente: null, reportClasseAperto: false,
 };
 
 function docenteId() { return document.getElementById('docenteId').value; }
@@ -235,7 +238,16 @@ function aggiornaPercorso() {
   }
   if (stato.attivitaCorrente) {
     box.append(document.createTextNode(' › '));
-    box.append(el('span', { textContent: stato.attivitaCorrente.nome }));
+    if (stato.reportClasseAperto) {
+      const attivitaRif = stato.attivitaCorrente;
+      box.append(el('button', { textContent: attivitaRif.nome, onclick: () => mostraGriglia(attivitaRif) }));
+    } else {
+      box.append(el('span', { textContent: stato.attivitaCorrente.nome }));
+    }
+  }
+  if (stato.reportClasseAperto) {
+    box.append(document.createTextNode(' › '));
+    box.append(el('span', { textContent: 'Report classe' }));
   }
   if (stato.studentiAperti) {
     box.append(document.createTextNode(' › '));
@@ -253,6 +265,7 @@ function azzeraSottoClasse() {
   stato.attivitaCorrente = null;
   stato.studentiAperti = false;
   stato.studenteCorrente = null;
+  stato.reportClasseAperto = false;
 }
 
 /**
@@ -586,6 +599,7 @@ const OPZIONI_VALUTAZIONE = [
 
 async function mostraGriglia(attivitaRif) {
   stato.attivitaCorrente = attivitaRif;
+  stato.reportClasseAperto = false;
   aggiornaPercorso();
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
@@ -596,6 +610,12 @@ async function mostraGriglia(attivitaRif) {
       contenuto.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
       return;
     }
+    contenuto.append(el('div', { className: 'barra-sezioni' }, [
+      el('button', {
+        className: 'azione', textContent: 'Report classe',
+        onclick: () => mostraReportClasseAttivita(attivitaRif),
+      }),
+    ]));
     contenuto.append(el('div', { className: 'legenda' }, [
       el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--autonomo)' }), document.createTextNode('2 · Autonomo')]),
       el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--supporto)' }), document.createTextNode('1 · Con supporto')]),
@@ -641,6 +661,72 @@ async function mostraGriglia(attivitaRif) {
     });
     tabella.append(corpo);
     contenuto.append(el('div', { className: 'griglia-scroll' }, [tabella]));
+  } catch (errore) {
+    contenuto.textContent = 'Errore: ' + errore.message;
+  }
+}
+
+/**
+ * Report di classe per una singola attività: fotografia di quell'attività
+ * (niente media mobile, niente altre attività, niente cumulativo da inizio
+ * anno), organizzato per nucleo tematico. Il risultato di nucleo/attività è
+ * la media aritmetica semplice dei risultati percentuali dei criteri
+ * valutati, calcolata dal server.
+ */
+async function mostraReportClasseAttivita(attivitaRif) {
+  stato.attivitaCorrente = attivitaRif;
+  stato.reportClasseAperto = true;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const report = await api(`/attivita/${attivitaRif.attivita_id}/report-classe`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('div', { className: 'barra-sezioni' }, [
+      el('button', { className: 'azione', textContent: '← Torna alla griglia', onclick: () => mostraGriglia(attivitaRif) }),
+    ]));
+    contenuto.append(el('h2', { textContent: `Report classe — ${attivitaRif.nome}` }));
+    if (report.grigliaNonConfigurata) {
+      contenuto.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
+      return;
+    }
+    contenuto.append(el('p', {
+      className: 'riepilogo-studente',
+      textContent: `${report.totaleAlunni} alunni · Risultato complessivo dell'attività: ${testoEsito(report.complessivo)}`,
+    }));
+    contenuto.append(el('p', {
+      className: 'spiegazione',
+      textContent: 'Fotografia di questa attività: solo i punteggi presenti qui, nessuna media mobile né dato di altre attività. '
+        + 'Il risultato di nucleo/attività è la media semplice dei risultati percentuali dei criteri valutati, pesati allo stesso modo.',
+    }));
+
+    report.nuclei.forEach((nucleo) => {
+      const corpo = el('div', { className: 'corpo-nucleo' });
+      const tabella = el('table', {}, [
+        el('tr', {}, ['Criterio', 'Valutati', 'Non valutati', '0', '1', '2', 'Risultato', 'Giudizio']
+          .map((t) => el('th', { textContent: t }))),
+      ]);
+      nucleo.criteri.forEach((c) => {
+        tabella.append(el('tr', {}, [
+          el('td', { textContent: c.nome }),
+          el('td', { textContent: String(c.valutati) }),
+          el('td', { textContent: String(c.nonValutati) }),
+          el('td', { textContent: String(c.distribuzione[0] ?? 0) }),
+          el('td', { textContent: String(c.distribuzione[1] ?? 0) }),
+          el('td', { textContent: String(c.distribuzione[2] ?? 0) }),
+          el('td', { textContent: c.esito.percentuale === null ? '—' : `${numeroIt(c.esito.percentuale)}%` }),
+          el('td', { textContent: c.esito.giudizio || '—' }),
+        ]));
+      });
+      corpo.append(tabella);
+      contenuto.append(el('details', { className: 'nucleo', open: true }, [
+        el('summary', {}, [
+          document.createTextNode(nucleo.nome),
+          el('span', { className: 'sub', textContent: `Risultato: ${testoEsito(nucleo.risultato)}` }),
+        ]),
+        corpo,
+      ]));
+    });
   } catch (errore) {
     contenuto.textContent = 'Errore: ' + errore.message;
   }
