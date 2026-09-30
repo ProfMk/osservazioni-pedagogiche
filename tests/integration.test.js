@@ -1,1020 +1,637 @@
 'use strict';
 
 /**
- * Test di integrazione su un database di PROVA con lo schema migrato
- * (001_vincoli_osservazioni.sql applicata), MAI sul database Neon reale.
+ * Test di integrazione della V1 multi-tenant, su un database di prova
+ * costruito da migrations/000-002 + seed/seed_multitenant.sql (vedi
+ * tests/support/pglite.js). Copre: sessione/autenticazione, CSRF, contesto
+ * tenant/switch, RBAC con scope, audit, integrità del database (FK
+ * composte cross-tenant/anno/classe/materia), Report classe.
  *
- * - Senza PGTEST_URL: PGlite in memoria (tests/support/pglite.js), database
- *   ricreato da zero a ogni esecuzione; nessuna installazione richiesta.
- * - Con PGTEST_URL: un PostgreSQL reale già preparato.
- * Dati e istruzioni: tests/README_DATI_DI_PROVA.md
+ * Password di sviluppo per tutti gli account del seed: "Sviluppo!2026".
  */
-
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-// IMPORTANTE: uso lo stesso modulo di connessione del server (server/db.js),
-// non un Pool creato a parte, per verificare esattamente lo stesso codice
-// che gira in produzione (inclusa la conversione dei bigint in numeri:
-// un Pool creato qui separatamente NON erediterebbe quella correzione,
-// perché è un side-effect globale innescato dal solo require di server/db).
-const SU_PGLITE = !process.env.PGTEST_URL;
-if (SU_PGLITE) {
-  require('./support/pglite').installa();
-} else {
-  // Alcuni test fanno COMMIT (Caso I): non devono mai toccare il database reale.
-  if (/neon\.tech/i.test(process.env.PGTEST_URL)) {
-    throw new Error('PGTEST_URL punta a Neon: i test vanno eseguiti solo su un database di prova.');
-  }
-  process.env.DATABASE_URL = process.env.PGTEST_URL;
-}
+require('./support/pglite').installa();
+const express = require('express');
 const { pool } = require('../server/db');
-const q = require('../server/queries');
-const { verificaAttivitaDelDocente } = require('../server/lib/autorizzazione');
+const routeApi = require('../server/routes/index');
+const dominio = require('../server/queries/dominio');
+const { creaRoleAssignment } = require('../server/queries/rbac');
+const { creaSessione, trovaSessioneValida, revocaSessione, revocaTutteLeSessioni } = require('../server/lib/sessioni');
 
-async function conTransazioneDiProva(fn) {
-  // Ogni test lavora dentro una transazione che viene sempre annullata
-  // (ROLLBACK) alla fine, così i test non lasciano tracce nel database
-  // di prova e sono ripetibili.
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await fn(client);
-  } finally {
-    await client.query('ROLLBACK');
-    client.release();
-  }
-}
+const PASSWORD_SVILUPPO = 'Sviluppo!2026';
 
-// --- Dati noti nel database di prova (vedi tests/README_DATI_DI_PROVA.md) ---
-const DOCENTE_ID = 1;
-const DOCENTE_ESTRANEO_ID = 4; // nessun insegnamento
-const INSEGNAMENTO_ID = 1; // insegnamento del docente 1 (Matematica, 3A)
-const ATTIVITA_ID = 1; // nucleo 1 (Numeri), insegnamento del docente 1
-const ISCRIZIONE_CLASSE_CORRETTA = 1; // classe 3A, stessa classe/anno dell'insegnamento
-const ISCRIZIONE_ALTRA_CLASSE = 3; // classe 3B (persona 4): per il caso K3
-const CRITERIO_NUCLEO_1 = 1; // "Correttezza numerica", nucleo dell'attività 1
-const CRITERIO_NUCLEO_2 = 7; // "Orientamento e relazioni spaziali", nucleo 2 (estraneo all'attività 1)
+// --- Server HTTP di prova, condiviso da tutti i test -----------------------
 
-test('Round-trip: salva un punteggio, lo aggiorna, poi lo elimina (Non valutato)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const r1 = await q.salvaValutazione(client, {
-      attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-      punteggio: 1, docenteId: DOCENTE_ID,
-    });
-    assert.ok(r1.osservazioneId);
+let server;
+let base;
 
-    // Stesso criterio, valore aggiornato: non deve creare una seconda riga (UNIQUE osservazione+criterio).
-    await q.salvaValutazione(client, {
-      attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-      punteggio: 2, docenteId: DOCENTE_ID,
-    });
-    const { rows: dopoAggiornamento } = await client.query(
-      'SELECT punteggio FROM valutazioni_criteri WHERE osservazione_id = $1 AND criterio_id = $2',
-      [r1.osservazioneId, CRITERIO_NUCLEO_1]
-    );
-    assert.equal(dopoAggiornamento.length, 1);
-    assert.equal(dopoAggiornamento[0].punteggio, 2);
-
-    // "Non valutato": la riga deve sparire, non diventare 0 o NULL.
-    const r2 = await q.salvaValutazione(client, {
-      attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-      punteggio: null, docenteId: DOCENTE_ID,
-    });
-    assert.equal(r2.eliminato, true);
-    const { rows: dopoEliminazione } = await client.query(
-      'SELECT * FROM valutazioni_criteri WHERE osservazione_id = $1 AND criterio_id = $2',
-      [r1.osservazioneId, CRITERIO_NUCLEO_1]
-    );
-    assert.equal(dopoEliminazione.length, 0);
-  });
-});
-
-test('Caso F: punteggio 3 è rifiutato dal livello applicativo', async () => {
-  await conTransazioneDiProva(async (client) => {
-    await assert.rejects(
-      () => q.salvaValutazione(client, {
-        attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-        punteggio: 3, docenteId: DOCENTE_ID,
-      }),
-      /Punteggio non valido/
-    );
-  });
-});
-
-test('Caso F (seconda linea di difesa): il database rifiuta punteggio=3 anche bypassando il livello applicativo', async () => {
-  await conTransazioneDiProva(async (client) => {
-    // Uso l'osservazione 2 (attivita 1, iscrizione 2) e il criterio 3, MAI
-    // valutato nei dati di prova per questa osservazione: così l'errore
-    // atteso è certamente il CHECK sul punteggio, non un vincolo UNIQUE
-    // per una coppia (osservazione, criterio) già esistente nei dati seme.
-    const { rows } = await client.query(
-      'SELECT id FROM osservazioni WHERE attivita_id=$1 AND iscrizione_id=$2', [ATTIVITA_ID, 2]
-    );
-    await assert.rejects(
-      () => client.query(
-        'INSERT INTO valutazioni_criteri (osservazione_id, criterio_id, punteggio) VALUES ($1,$2,3)',
-        [rows[0].id, 3]
-      ),
-      (errore) => errore.code === '23514' // check_violation
-    );
-  });
-});
-
-test('Caso G: un criterio di un altro nucleo viene rifiutato', async () => {
-  await conTransazioneDiProva(async (client) => {
-    await assert.rejects(
-      () => q.salvaValutazione(client, {
-        attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_2,
-        punteggio: 2, docenteId: DOCENTE_ID,
-      }),
-      /non appartenente al nucleo/
-    );
-  });
-});
-
-// --- Casi A-J richiesti nella correzione funzionale (mappatura nel README/riepilogo finale) ---
-
-test('Casi B/C/D: 0, 1 e 2 sono tutti accettati e distinti tra loro e da "non valutato"', async () => {
-  await conTransazioneDiProva(async (client) => {
-    for (const valore of [0, 1, 2]) {
-      const r = await q.salvaValutazione(client, {
-        attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-        punteggio: valore, docenteId: DOCENTE_ID,
-      });
-      const { rows } = await client.query(
-        'SELECT punteggio FROM valutazioni_criteri WHERE osservazione_id=$1 AND criterio_id=$2',
-        [r.osservazioneId, CRITERIO_NUCLEO_1]
-      );
-      assert.equal(rows.length, 1, `il valore ${valore} deve produrre esattamente una riga`);
-      assert.equal(rows[0].punteggio, valore, `la riga deve contenere esattamente il punteggio ${valore}, non un altro valore`);
-    }
-  });
-});
-
-test('Caso G (esplicito): un criterio del nucleo corretto viene accettato', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const r = await q.salvaValutazione(client, {
-      attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-      punteggio: 2, docenteId: DOCENTE_ID,
-    });
-    assert.ok(r.osservazioneId, 'un criterio del nucleo giusto deve essere accettato senza errori');
-  });
-});
-
-test('Caso J: la griglia restituisce il NOME di ciascun criterio, non solo l\'ordine numerico', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const griglia = await q.getGrigliaAttivita(client, ATTIVITA_ID, DOCENTE_ID);
-    assert.equal(griglia.criteri.length, 6);
-    griglia.criteri.forEach((c) => {
-      assert.equal(typeof c.nome, 'string');
-      assert.ok(c.nome.length > 3, 'il nome del criterio deve essere un testo descrittivo, non un numero');
-      assert.notEqual(c.nome, String(c.ordine));
-    });
-    // Nomi reali attesi per il nucleo "Numeri" (dati di prova).
-    const nomi = griglia.criteri.map((c) => c.nome);
-    assert.deepEqual(nomi, [
-      'Correttezza numerica', 'Valore posizionale', 'Relazioni quantitative',
-      'Calcolo', 'Autonomia', 'Linguaggio matematico',
-    ]);
-  });
-});
-
-test('Nuova attività: i nuclei proposti sono solo quelli della materia dell\'insegnamento', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const nuclei = await q.getNucleiDellaMateria(client, INSEGNAMENTO_ID, DOCENTE_ID);
-    assert.equal(nuclei.length, 3);
-    assert.deepEqual(nuclei.map((n) => n.nome).sort(), [
-      'Numeri', 'Relazioni, dati e previsioni', 'Spazio e figure',
-    ]);
-  });
-});
-
-test('Nuova attività: creazione con un nucleo della materia giusta riesce', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const risultato = await q.creaAttivita(client, {
-      insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID,
-      nome: 'Prova di creazione', dataAttivita: '2025-11-10', nucleoTematicoId: 1,
-    });
-    assert.ok(risultato.attivita_id);
-    const { rows } = await client.query('SELECT nucleo_tematico_id FROM attivita WHERE id=$1', [risultato.attivita_id]);
-    assert.equal(rows[0].nucleo_tematico_id, 1);
-  });
-});
-
-test('Nuova attività: creazione con un nucleo di un\'altra materia è rifiutata (400)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    // Creo, dentro la transazione di prova, una materia e un nucleo estranei a Matematica.
-    const { rows: materia } = await client.query("INSERT INTO materie (nome) VALUES ('Italiano (prova)') RETURNING id");
-    const { rows: nucleo } = await client.query(
-      'INSERT INTO nuclei_tematici (materia_id, nome) VALUES ($1, $2) RETURNING id',
-      [materia[0].id, 'Lettura (prova)']
-    );
-    await assert.rejects(
-      () => q.creaAttivita(client, {
-        insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID,
-        nome: 'Prova errata', dataAttivita: '2025-11-10', nucleoTematicoId: nucleo[0].id,
-      }),
-      (errore) => errore.stato === 400
-    );
-  });
-});
-
-test('Nuova attività: creazione su un insegnamento non proprio è rifiutata (404)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    await assert.rejects(
-      () => q.creaAttivita(client, {
-        insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ESTRANEO_ID,
-        nome: 'Prova', dataAttivita: '2025-11-10', nucleoTematicoId: 1,
-      }),
-      (errore) => errore.stato === 404
-    );
-  });
-});
-
-test('Caso H: un docente non può leggere/scrivere un\'attività che non è sua', async () => {
-  await conTransazioneDiProva(async (client) => {
-    await assert.rejects(
-      () => verificaAttivitaDelDocente(client, ATTIVITA_ID, DOCENTE_ESTRANEO_ID),
-      (errore) => errore.stato === 404
-    );
-    await assert.rejects(
-      () => q.salvaValutazione(client, {
-        attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_CLASSE_CORRETTA, criterioId: CRITERIO_NUCLEO_1,
-        punteggio: 2, docenteId: DOCENTE_ESTRANEO_ID,
-      }),
-      (errore) => errore.stato === 404
-    );
-  });
-});
-
-test('K3: un alunno di un\'altra classe non può essere valutato in questa attività', async () => {
-  await conTransazioneDiProva(async (client) => {
-    await assert.rejects(
-      () => q.salvaValutazione(client, {
-        attivitaId: ATTIVITA_ID, iscrizioneId: ISCRIZIONE_ALTRA_CLASSE, criterioId: CRITERIO_NUCLEO_1,
-        punteggio: 2, docenteId: DOCENTE_ID,
-      }),
-      (errore) => errore.stato === 404
-    );
-  });
-});
-
-test('Caso I: due inserimenti concorrenti della stessa osservazione non creano un duplicato', {
-  skip: SU_PGLITE && 'PGlite ha una sola sessione: la concorrenza richiede un PostgreSQL reale (PGTEST_URL). Verifica NON eseguita.',
-}, async () => {
-  // Test SUL VINCOLO DEL DATABASE: due connessioni distinte, transazioni reali
-  // (non nella transazione di prova annullabile, perché qui serve il commit
-  // per osservare la reale concorrenza). Uso l'iscrizione 4 (classe 3B, dati
-  // aggiuntivi): nessuna osservazione preesistente per questa coppia, quindi
-  // il conflitto che osserviamo è generato SOLO da questo test.
-  const ISCRIZIONE_LIBERA = ISCRIZIONE_ALTRA_CLASSE;
-  const c1 = await pool.connect();
-  const c2 = await pool.connect();
-  try {
-    try {
-      await c1.query('BEGIN');
-      await c2.query('BEGIN');
-      await c1.query(
-        'INSERT INTO osservazioni (attivita_id, iscrizione_id, docente_id, data_osservazione) VALUES ($1,$2,$3,CURRENT_DATE)',
-        [ATTIVITA_ID, ISCRIZIONE_LIBERA, DOCENTE_ID]
-      );
-      // c2 tenta lo stesso inserimento mentre c1 non ha ancora fatto COMMIT: deve attendere, poi fallire.
-      const c2Promise = c2.query(
-        'INSERT INTO osservazioni (attivita_id, iscrizione_id, docente_id, data_osservazione) VALUES ($1,$2,$3,CURRENT_DATE)',
-        [ATTIVITA_ID, ISCRIZIONE_LIBERA, DOCENTE_ID]
-      ).then(() => ({ ok: true })).catch((e) => ({ ok: false, code: e.code }));
-
-      await new Promise((r) => setTimeout(r, 100)); // lascia che c2 si metta in attesa del lock
-      await c1.query('COMMIT');
-      const esitoC2 = await c2Promise;
-      assert.equal(esitoC2.ok, false);
-      assert.equal(esitoC2.code, '23505'); // unique_violation: il vincolo ha impedito il duplicato
-    } finally {
-      await c1.query('ROLLBACK').catch(() => {});
-      await c2.query('ROLLBACK').catch(() => {});
-      // La riga inserita da c1 è stata comunque committata (era prima del COMMIT sopra):
-      // la rimuovo esplicitamente per non sporcare il database di prova tra un'esecuzione e l'altra.
-      await pool.query(
-        'DELETE FROM osservazioni WHERE attivita_id=$1 AND iscrizione_id=$2 AND docente_id=$3 '
-        + 'AND NOT EXISTS (SELECT 1 FROM valutazioni_criteri v WHERE v.osservazione_id = osservazioni.id)',
-        [ATTIVITA_ID, ISCRIZIONE_LIBERA, DOCENTE_ID]
-      ).catch(() => {});
-    }
-  } finally {
-    c1.release();
-    c2.release();
-  }
-});
-
-test('Griglia dell\'attività: struttura e "Non valutato" reso come null, non come 0', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const griglia = await q.getGrigliaAttivita(client, ATTIVITA_ID, DOCENTE_ID);
-    assert.equal(griglia.grigliaNonConfigurata, false);
-    assert.equal(griglia.criteri.length, 6);
-    const alunno1 = griglia.righe.find((r) => r.iscrizioneId === 1);
-    assert.ok(alunno1, 'l\'alunno con iscrizione 1 deve comparire in griglia');
-    // Nei dati di prova l'osservazione 1 ha 6 criteri valutati: 0,2,1,1,2,2
-    assert.equal(alunno1.valutazionePresenti, 6);
-    assert.equal(alunno1.esito.percentuale, 66.67);
-    assert.equal(alunno1.esito.giudizio, 'DISCRETO');
-    const alunno2 = griglia.righe.find((r) => r.iscrizioneId === 2);
-    // L'alunno 2 ha un solo criterio valutato (2): le altre celle devono essere null, non 0.
-    const celleNonValutate = alunno2.celle.filter((c) => c.criterioId !== CRITERIO_NUCLEO_1);
-    assert.ok(celleNonValutate.every((c) => c.punteggio === null));
-  });
-});
-
-test('Sviluppo cumulativo del criterio: due attività diverse si sommano (Caso E con dati reali)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    // Nei dati di prova: persona 2 (iscrizione 1) ha criterio 1 valutato 0
-    // nell'attività 1 e 1 nell'attività 2 (stesso nucleo, stessa persona).
-    const esito = await q.getStoricoCriterio(client, {
-      personaId: 2, annoScolasticoId: 1, nucleoId: 1, criterioId: CRITERIO_NUCLEO_1, docenteId: DOCENTE_ID,
-    });
-    assert.equal(esito.punteggioOttenuto, 1);
-    assert.equal(esito.punteggioMassimo, 4);
-    assert.equal(esito.percentuale, 25);
-  });
-});
-
-test('Nessuna valutazione presente: percentuale nulla e giudizio vuoto (Caso D con dati reali)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    // Nucleo 2: nei dati di prova non esiste alcuna attività su questo nucleo,
-    // quindi nessuna valutazione può esistere per costruzione (non solo per assenza di dati).
-    const esito = await q.getStoricoCriterio(client, {
-      personaId: 2, annoScolasticoId: 1, nucleoId: 2, criterioId: CRITERIO_NUCLEO_2, docenteId: DOCENTE_ID,
-    });
-    assert.equal(esito.percentuale, null);
-    assert.equal(esito.giudizio, '');
-  });
-});
-
-// --- Studenti della classe e progresso complessivo -------------------------
-//
-// Dati creati DENTRO la transazione di prova (annullata alla fine), a partire
-// solo dalla struttura di base: insegnamento 1 (docente 1, Matematica, 3A,
-// anno 1), nuclei 1-3 con criteri 1-6 (nucleo 1) e 7-12 (nucleo 2).
-
-const NUCLEO_1 = 1;
-const NUCLEO_2 = 2;
-const NUCLEO_3 = 3;
-const CRITERIO_2_NUCLEO_1 = 2;
-
-async function creaPersona(client, nome, cognome) {
-  const { rows } = await client.query(
-    'INSERT INTO persone (nome, cognome) VALUES ($1, $2) RETURNING id', [nome, cognome]
-  );
-  return rows[0].id;
-}
-
-async function creaIscrizione(client, personaId, { classeId, annoScolasticoId, attiva = true }) {
-  const { rows } = await client.query(
-    `INSERT INTO iscrizioni (persona_id, classe_id, anno_scolastico_id, attiva)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [personaId, classeId, annoScolasticoId, attiva]
-  );
-  return rows[0].id;
-}
-
-/**
- * Scenario:
- * - "Senzavoti": iscritto attivo in 3A, nessuna valutazione.
- * - "Multi": iscritto attivo in 3A, valutato dal docente 1 su due attività
- *   del nucleo 1 (criterio 1: 0 poi 2; criterio 2: 2) e una del nucleo 2
- *   (criterio 7: 1).
- * - Valutazioni di "Multi" FUORI ambito, che non devono mai essere contate:
- *   un altro docente sulla stessa classe/materia (criterio 1: 2) e il
- *   docente 1 su un'altra materia (Scienze, prova).
- * - "Ritirato": iscrizione NON attiva in 3A.
- */
-async function preparaScenarioStudenti(client) {
-  const { rows: [ins] } = await client.query(
-    'SELECT materia_id, classe_id, anno_scolastico_id FROM insegnamenti WHERE id = $1', [INSEGNAMENTO_ID]
-  );
-  const classe = { classeId: ins.classe_id, annoScolasticoId: ins.anno_scolastico_id };
-
-  const personaSenzaVoti = await creaPersona(client, 'Zeno', 'Senzavoti');
-  const iscrizioneSenzaVoti = await creaIscrizione(client, personaSenzaVoti, classe);
-  const personaMulti = await creaPersona(client, 'Marta', 'Multi');
-  const iscrizioneMulti = await creaIscrizione(client, personaMulti, classe);
-  const personaRitirata = await creaPersona(client, 'Rita', 'Ritirato');
-  const iscrizioneRitirata = await creaIscrizione(client, personaRitirata, { ...classe, attiva: false });
-
-  const nuovaAttivita = async (insegnamentoId, docenteId, nome, data, nucleoTematicoId) => (
-    await q.creaAttivita(client, { insegnamentoId, docenteId, nome, dataAttivita: data, nucleoTematicoId })
-  ).attivita_id;
-  const valuta = (attivitaId, docenteId, criterioId, punteggio) => q.salvaValutazione(client, {
-    attivitaId, iscrizioneId: iscrizioneMulti, criterioId, punteggio, docenteId,
-  });
-
-  // Ambito corretto: docente 1, insegnamento 1.
-  const attivitaN1a = await nuovaAttivita(INSEGNAMENTO_ID, DOCENTE_ID, 'Prova N1 (a)', '2025-11-03', NUCLEO_1);
-  const attivitaN1b = await nuovaAttivita(INSEGNAMENTO_ID, DOCENTE_ID, 'Prova N1 (b)', '2025-11-17', NUCLEO_1);
-  const attivitaN2 = await nuovaAttivita(INSEGNAMENTO_ID, DOCENTE_ID, 'Prova N2', '2025-11-10', NUCLEO_2);
-  await valuta(attivitaN1a, DOCENTE_ID, CRITERIO_NUCLEO_1, 0);
-  await valuta(attivitaN1a, DOCENTE_ID, CRITERIO_2_NUCLEO_1, 2);
-  await valuta(attivitaN1b, DOCENTE_ID, CRITERIO_NUCLEO_1, 2);
-  await valuta(attivitaN2, DOCENTE_ID, CRITERIO_NUCLEO_2, 1);
-
-  // Fuori ambito (1): un altro docente, stessa materia e stessa classe/anno.
-  const altroDocente = await creaPersona(client, 'Altro', 'Docente');
-  const { rows: [altroIns] } = await client.query(
-    `INSERT INTO insegnamenti (docente_id, materia_id, classe_id, anno_scolastico_id)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [altroDocente, ins.materia_id, ins.classe_id, ins.anno_scolastico_id]
-  );
-  const attivitaAltroDocente = await nuovaAttivita(altroIns.id, altroDocente, 'Prova altro docente', '2025-11-05', NUCLEO_1);
-  await valuta(attivitaAltroDocente, altroDocente, CRITERIO_NUCLEO_1, 2);
-
-  // Fuori ambito (2): stesso docente, altra materia sulla stessa classe/anno.
-  const { rows: [scienze] } = await client.query("INSERT INTO materie (nome) VALUES ('Scienze (prova)') RETURNING id");
-  const { rows: [nucleoScienze] } = await client.query(
-    "INSERT INTO nuclei_tematici (materia_id, nome) VALUES ($1, 'Viventi (prova)') RETURNING id", [scienze.id]
-  );
-  const { rows: [criterioScienze] } = await client.query(
-    "INSERT INTO criteri_osservazione (nucleo_tematico_id, nome, ordine) VALUES ($1, 'Osservazione (prova)', 1) RETURNING id",
-    [nucleoScienze.id]
-  );
-  const { rows: [insScienze] } = await client.query(
-    `INSERT INTO insegnamenti (docente_id, materia_id, classe_id, anno_scolastico_id)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [DOCENTE_ID, scienze.id, ins.classe_id, ins.anno_scolastico_id]
-  );
-  const attivitaScienze = await nuovaAttivita(insScienze.id, DOCENTE_ID, 'Prova Scienze', '2025-11-06', nucleoScienze.id);
-  await valuta(attivitaScienze, DOCENTE_ID, criterioScienze.id, 0);
-
-  return {
-    annoScolasticoId: ins.anno_scolastico_id,
-    personaMulti, iscrizioneMulti, iscrizioneSenzaVoti, iscrizioneRitirata,
-    altroDocente, altroInsegnamentoId: altroIns.id,
-    attivitaN1a, attivitaN1b,
-  };
-}
-
-const trovaNucleo = (progresso, id) => progresso.nuclei.find((n) => n.id === id);
-const trovaCriterio = (nucleo, id) => nucleo.criteri.find((c) => c.id === id);
-
-test('Studenti: la lista viene da iscrizioni attive e include chi non ha alcuna valutazione (Non valutato)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    const dati = await q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ID);
-
-    const senzaVoti = dati.studenti.find((x) => x.iscrizioneId === s.iscrizioneSenzaVoti);
-    assert.ok(senzaVoti, 'lo studente senza valutazioni deve comparire nella lista');
-    assert.equal(senzaVoti.cognome, 'Senzavoti');
-    assert.equal(senzaVoti.complessivo.risultatoCorrente.percentuale, null);
-    assert.equal(senzaVoti.complessivo.risultatoCorrente.giudizio, '');
-    assert.equal(senzaVoti.complessivo.cumulativoDaInizioAnno.percentuale, null);
-    assert.equal(senzaVoti.complessivo.criteriValutati, 0);
-    assert.equal(senzaVoti.complessivo.criteriTotali, 18);
-    assert.equal(senzaVoti.nuclei.length, 3);
-    assert.ok(senzaVoti.nuclei.every((n) => n.risultatoCorrente.percentuale === null && n.criteriValutati === 0));
-
-    const dettaglio = await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneSenzaVoti, docenteId: DOCENTE_ID,
-    });
-    dettaglio.nuclei.forEach((n) => n.criteri.forEach((c) => {
-      assert.deepEqual(c.osservazioni, []);
-      assert.equal(c.risultatoCorrente.percentuale, null);
-      assert.equal(c.risultatoCorrente.media, null);
-    }));
-
-    // Le iscrizioni non attive e quelle di altre classi non compaiono.
-    assert.ok(!dati.studenti.some((x) => x.iscrizioneId === s.iscrizioneRitirata), 'iscrizione non attiva esclusa');
-    assert.ok(!dati.studenti.some((x) => x.iscrizioneId === ISCRIZIONE_ALTRA_CLASSE), 'altra classe esclusa');
-    // L'identificativo dello studente nel report è iscrizioni.id.
-    assert.equal(dettaglio.iscrizioneId, s.iscrizioneSenzaVoti);
-  });
-});
-
-test('Studenti: un criterio valutato in più attività mostra tutta la storia e il risultato corrente', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    const p = await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
-    });
-    const criterio = trovaCriterio(trovaNucleo(p, NUCLEO_1), CRITERIO_NUCLEO_1);
-    assert.deepEqual(
-      criterio.osservazioni.map((o) => [o.attivitaId, o.attivita, o.punteggio, o.etichetta, o.inRisultatoCorrente]),
-      [
-        [s.attivitaN1a, 'Prova N1 (a)', 0, 'Non manifestato', true],
-        [s.attivitaN1b, 'Prova N1 (b)', 2, 'Autonomo', true],
-      ],
-      'storia completa, in ordine di data, senza la valutazione dell\'altro docente'
-    );
-    assert.ok(criterio.osservazioni.every((o) => o.dataAttivita), 'ogni livello osservato riporta la data');
-    // Due osservazioni (meno della finestra): il risultato corrente è la media di entrambe.
-    assert.equal(criterio.risultatoCorrente.media, 1);
-    assert.equal(criterio.risultatoCorrente.percentuale, 50);
-    assert.equal(criterio.risultatoCorrente.giudizio, 'SUFFICIENTE');
-    assert.equal(criterio.risultatoCorrente.osservazioniConsiderate, 2);
-    assert.equal(criterio.cumulativoDaInizioAnno.percentuale, 50);
-  });
-});
-
-test('Studenti: con più di 3 osservazioni il risultato corrente usa le ultime 3, lo storico le mostra tutte', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    const nuovaAttivita = async (nome, data) => (await q.creaAttivita(client, {
-      insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID, nome, dataAttivita: data, nucleoTematicoId: NUCLEO_1,
-    })).attivita_id;
-    // Create volutamente in ordine NON cronologico: l'ordine deve venire dalla data, non dall'inserimento.
-    const ottobre = await nuovaAttivita('Altra attività (ottobre)', '2025-10-15');
-    const novembre = await nuovaAttivita('Altra attività (novembre)', '2025-11-20');
-    const addizioni = await nuovaAttivita('Addizioni e sottrazioni', '2025-09-21');
-    const decimali = await nuovaAttivita('Numeri decimali', '2025-09-21'); // stessa data, id maggiore
-    const valuta = (attivitaId, punteggio) => q.salvaValutazione(client, {
-      attivitaId, iscrizioneId: s.iscrizioneSenzaVoti, criterioId: CRITERIO_2_NUCLEO_1, punteggio, docenteId: DOCENTE_ID,
-    });
-    // Storico: 0 (addizioni, 21/09), 1 (decimali, 21/09), 2 (15/10), 2 (20/11).
-    await valuta(addizioni, 0);
-    await valuta(decimali, 1);
-    await valuta(ottobre, 2);
-    await valuta(novembre, 2);
-
-    const { rows: [prima] } = await client.query('SELECT COUNT(*)::int AS n FROM valutazioni_criteri');
-    const p = await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneSenzaVoti, docenteId: DOCENTE_ID,
-    });
-    const criterio = trovaCriterio(trovaNucleo(p, NUCLEO_1), CRITERIO_2_NUCLEO_1);
-
-    // Storico completo, in ordine cronologico; a parità di data decide l'id dell'attività.
-    assert.deepEqual(
-      criterio.osservazioni.map((o) => [o.attivitaId, o.punteggio, o.inRisultatoCorrente]),
-      [[addizioni, 0, false], [decimali, 1, true], [ottobre, 2, true], [novembre, 2, true]]
-    );
-    // Risultato corrente: (1 + 2 + 2) / 3 = 1,67 -> 83,33% DISTINTO (non (0+1+2+2)/4).
-    assert.equal(criterio.risultatoCorrente.media, 1.67);
-    assert.equal(criterio.risultatoCorrente.percentuale, 83.33);
-    assert.equal(criterio.risultatoCorrente.giudizio, 'DISTINTO');
-    assert.equal(criterio.risultatoCorrente.osservazioniConsiderate, 3);
-    assert.equal(criterio.risultatoCorrente.osservazioniTotali, 4);
-    // Cumulativo da inizio anno ancora disponibile: 5/8 = 62,5%.
-    assert.equal(criterio.cumulativoDaInizioAnno.punteggioOttenuto, 5);
-    assert.equal(criterio.cumulativoDaInizioAnno.punteggioMassimo, 8);
-
-    // Q4 restituisce lo stesso risultato corrente.
-    const q4 = await q.getStoricoCriterio(client, {
-      personaId: p.personaId, annoScolasticoId: s.annoScolasticoId, nucleoId: NUCLEO_1,
-      criterioId: CRITERIO_2_NUCLEO_1, docenteId: DOCENTE_ID,
-    });
-    assert.equal(q4.media, 1.67);
-    assert.equal(q4.percentuale, 83.33);
-
-    // Il calcolo è solo in lettura: nessuna osservazione cancellata o aggiunta.
-    const { rows: [dopo] } = await client.query('SELECT COUNT(*)::int AS n FROM valutazioni_criteri');
-    assert.equal(dopo.n, prima.n);
-    const { rows: [nelDb] } = await client.query(
-      `SELECT COUNT(*)::int AS n FROM valutazioni_criteri v JOIN osservazioni o ON o.id = v.osservazione_id
-       WHERE o.iscrizione_id = $1 AND v.criterio_id = $2`,
-      [s.iscrizioneSenzaVoti, CRITERIO_2_NUCLEO_1]
-    );
-    assert.equal(criterio.osservazioni.length, nelDb.n, 'lo storico mostra tutte le osservazioni presenti nel database');
-  });
-});
-
-test('Studenti: i nuclei restano separati; nucleo e materia sono la media dei risultati correnti dei criteri', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    const p = await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
-    });
-    const n1 = trovaNucleo(p, NUCLEO_1);
-    const n2 = trovaNucleo(p, NUCLEO_2);
-    const n3 = trovaNucleo(p, NUCLEO_3);
-    // Nucleo 1: criterio 1 media 1 (0, 2), criterio 2 media 2 -> (1 + 2) / 2 = 1,5 -> 75% BUONO.
-    // (Mettendo insieme i punteggi sarebbe stato 4/6 = 66,67%: il criterio 1 peserebbe il doppio.)
-    assert.equal(n1.risultatoCorrente.media, 1.5);
-    assert.equal(n1.risultatoCorrente.percentuale, 75);
-    assert.equal(n1.risultatoCorrente.giudizio, 'BUONO');
-    assert.equal(n1.risultatoCorrente.criteriConsiderati, 2);
-    assert.equal(n1.cumulativoDaInizioAnno.percentuale, 66.67);
-    assert.equal(n1.criteriValutati, 2);
-    assert.equal(n1.criteriTotali, 6);
-    // Nucleo 2: solo il criterio 7 (1); nessuna valutazione del nucleo 1 vi confluisce.
-    assert.equal(n2.risultatoCorrente.media, 1);
-    assert.equal(n2.risultatoCorrente.percentuale, 50);
-    assert.equal(n2.criteriValutati, 1);
-    assert.deepEqual(trovaCriterio(n2, CRITERIO_NUCLEO_2).osservazioni.map((o) => o.punteggio), [1]);
-    // Nucleo 3: nessuna attività -> Non valutato.
-    assert.equal(n3.risultatoCorrente.percentuale, null);
-    assert.equal(n3.criteriValutati, 0);
-    // Materia: media dei 3 criteri valutati, a pesi uguali: (1 + 2 + 1) / 3 = 1,33 -> 66,67% DISCRETO.
-    assert.equal(p.complessivo.risultatoCorrente.media, 1.33);
-    assert.equal(p.complessivo.risultatoCorrente.percentuale, 66.67);
-    assert.equal(p.complessivo.risultatoCorrente.giudizio, 'DISCRETO');
-    assert.equal(p.complessivo.risultatoCorrente.criteriConsiderati, 3);
-    // Cumulativo da inizio anno (tutte le valutazioni): 5/8 = 62,5%.
-    assert.equal(p.complessivo.cumulativoDaInizioAnno.percentuale, 62.5);
-    assert.equal(p.complessivo.criteriValutati, 3);
-    assert.equal(p.complessivo.criteriTotali, 18);
-
-    // La lista riporta gli stessi valori del dettaglio.
-    const lista = await q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ID);
-    const riga = lista.studenti.find((x) => x.iscrizioneId === s.iscrizioneMulti);
-    assert.deepEqual(riga.complessivo, p.complessivo);
-    assert.deepEqual(riga.nuclei, p.nuclei.map(({ criteri, ...resto }) => resto));
-  });
-});
-
-test('Studenti: le attività di altri insegnamenti (altro docente o altra materia) sono escluse', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    const p = await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
-    });
-    // Solo i 3 nuclei di Matematica: il nucleo di Scienze non compare.
-    assert.deepEqual(p.nuclei.map((n) => n.id).sort(), [NUCLEO_1, NUCLEO_2, NUCLEO_3]);
-    // Il 2 dato dall'altro docente sul criterio 1 non entra né nella storia né nei risultati.
-    const criterio1 = trovaCriterio(trovaNucleo(p, NUCLEO_1), CRITERIO_NUCLEO_1);
-    assert.equal(criterio1.osservazioni.length, 2);
-    assert.equal(criterio1.risultatoCorrente.media, 1);
-    assert.equal(p.complessivo.cumulativoDaInizioAnno.punteggioMassimo, 8);
-
-    // Specularmente, l'altro docente vede solo la propria valutazione.
-    const pAltro = await q.getProgressoStudente(client, {
-      insegnamentoId: s.altroInsegnamentoId, iscrizioneId: s.iscrizioneMulti, docenteId: s.altroDocente,
-    });
-    assert.equal(pAltro.complessivo.risultatoCorrente.media, 2);
-    assert.equal(pAltro.complessivo.cumulativoDaInizioAnno.punteggioOttenuto, 2);
-    assert.equal(pAltro.complessivo.cumulativoDaInizioAnno.punteggioMassimo, 2);
-  });
-});
-
-test('Studenti: autorizzazione del docente e coerenza iscrizione/classe (404 uniforme)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    await assert.rejects(
-      () => q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ESTRANEO_ID),
-      (errore) => errore.stato === 404
-    );
-    await assert.rejects(
-      () => q.getProgressoStudente(client, {
-        insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ESTRANEO_ID,
-      }),
-      (errore) => errore.stato === 404
-    );
-    // L'altro docente non può aprire l'insegnamento del docente 1, anche se insegna nella stessa classe.
-    await assert.rejects(
-      () => q.getProgressoStudente(client, {
-        insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: s.altroDocente,
-      }),
-      (errore) => errore.stato === 404
-    );
-    // Iscrizione di un'altra classe o non attiva: 404.
-    for (const iscrizioneId of [ISCRIZIONE_ALTRA_CLASSE, s.iscrizioneRitirata]) {
-      await assert.rejects(
-        () => q.getProgressoStudente(client, { insegnamentoId: INSEGNAMENTO_ID, iscrizioneId, docenteId: DOCENTE_ID }),
-        (errore) => errore.stato === 404
-      );
-    }
-  });
-});
-
-test('Studenti: 0 (Non manifestato) resta distinto da Non valutato, anche dopo la rimozione di un punteggio', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    // Criterio 2 del nucleo 1 portato a 0 nell'attività (a); criterio 3 mai valutato.
-    await q.salvaValutazione(client, {
-      attivitaId: s.attivitaN1a, iscrizioneId: s.iscrizioneMulti, criterioId: CRITERIO_2_NUCLEO_1,
-      punteggio: 0, docenteId: DOCENTE_ID,
-    });
-    let n1 = trovaNucleo(await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
-    }), NUCLEO_1);
-    const zero = trovaCriterio(n1, CRITERIO_2_NUCLEO_1);
-    assert.deepEqual(zero.osservazioni.map((o) => [o.punteggio, o.etichetta]), [[0, 'Non manifestato']]);
-    assert.equal(zero.risultatoCorrente.media, 0);
-    assert.equal(zero.risultatoCorrente.percentuale, 0);
-    assert.equal(zero.risultatoCorrente.giudizio, 'NON SUFFICIENTE');
-    const maiValutato = trovaCriterio(n1, 3);
-    assert.deepEqual(maiValutato.osservazioni, []);
-    assert.equal(maiValutato.risultatoCorrente.percentuale, null);
-    assert.equal(n1.criteriValutati, 2, 'un criterio valutato 0 conta come valutato');
-    // Il criterio a 0 entra nella media del nucleo: (1 + 0) / 2 = 0,5 -> 25%.
-    assert.equal(n1.risultatoCorrente.media, 0.5);
-    assert.equal(n1.risultatoCorrente.percentuale, 25);
-
-    // "Non valutato" (punteggio null) elimina la valutazione: sparisce dalla storia, non diventa 0.
-    await q.salvaValutazione(client, {
-      attivitaId: s.attivitaN1a, iscrizioneId: s.iscrizioneMulti, criterioId: CRITERIO_2_NUCLEO_1,
-      punteggio: null, docenteId: DOCENTE_ID,
-    });
-    n1 = trovaNucleo(await q.getProgressoStudente(client, {
-      insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
-    }), NUCLEO_1);
-    assert.deepEqual(trovaCriterio(n1, CRITERIO_2_NUCLEO_1).osservazioni, []);
-    assert.equal(trovaCriterio(n1, CRITERIO_2_NUCLEO_1).risultatoCorrente.percentuale, null);
-    assert.equal(n1.criteriValutati, 1);
-    // Resta solo il criterio 1 (media 1): il criterio non valutato è escluso, non conta come 0.
-    assert.equal(n1.risultatoCorrente.media, 1);
-    assert.equal(n1.risultatoCorrente.percentuale, 50);
-    assert.equal(n1.cumulativoDaInizioAnno.punteggioMassimo, 4, 'solo le 2 valutazioni rimaste del criterio 1');
-  });
-});
-
-test('Studenti: nuclei e criteri coincidono con Q5 (getRiepilogoNucleo) e Q4 (getStoricoCriterio)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    const lista = await q.getStudentiDellInsegnamento(client, INSEGNAMENTO_ID, DOCENTE_ID);
-    // Tutti gli studenti della classe (dati di base compresi), non solo quelli dello scenario.
-    for (const studente of lista.studenti) {
-      const p = await q.getProgressoStudente(client, {
-        insegnamentoId: INSEGNAMENTO_ID, iscrizioneId: studente.iscrizioneId, docenteId: DOCENTE_ID,
-      });
-      for (const nucleo of p.nuclei) {
-        const q5 = await q.getRiepilogoNucleo(client, {
-          personaId: p.personaId, annoScolasticoId: s.annoScolasticoId, nucleoId: nucleo.id, docenteId: DOCENTE_ID,
-        });
-        assert.deepEqual(
-          q5, { ...nucleo.risultatoCorrente, cumulativoDaInizioAnno: nucleo.cumulativoDaInizioAnno },
-          `nucleo ${nucleo.id}, iscrizione ${studente.iscrizioneId}: diverso da Q5`
-        );
-        for (const criterio of nucleo.criteri) {
-          const q4 = await q.getStoricoCriterio(client, {
-            personaId: p.personaId, annoScolasticoId: s.annoScolasticoId, nucleoId: nucleo.id,
-            criterioId: criterio.id, docenteId: DOCENTE_ID,
-          });
-          assert.deepEqual(
-            q4, { ...criterio.risultatoCorrente, cumulativoDaInizioAnno: criterio.cumulativoDaInizioAnno },
-            `criterio ${criterio.id}, iscrizione ${studente.iscrizioneId}: diverso da Q4`
-          );
-        }
-      }
-    }
-  });
-});
-
-test('Esito della singola attività invariato: la griglia usa solo le valutazioni di quell\'attività', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioStudenti(client);
-    // Attività (b): per "Multi" c'è solo il criterio 1 = 2 -> esito dell'attività 2/2 = 100%,
-    // anche se il risultato corrente del criterio (media di 0 e 2) è 50%.
-    const griglia = await q.getGrigliaAttivita(client, s.attivitaN1b, DOCENTE_ID);
-    const riga = griglia.righe.find((r) => r.iscrizioneId === s.iscrizioneMulti);
-    assert.equal(riga.valutazionePresenti, 1);
-    assert.deepEqual(riga.esito, { punteggioOttenuto: 2, punteggioMassimo: 2, percentuale: 100, giudizio: 'OTTIMO' });
-    const scheda = await q.getSchedaAlunno(client, {
-      attivitaId: s.attivitaN1b, iscrizioneId: s.iscrizioneMulti, docenteId: DOCENTE_ID,
-    });
-    assert.deepEqual(scheda.esito, riga.esito);
-  });
-});
-
-// --- Report classe (fotografia di una singola attività) --------------------
-//
-// Scenario dedicato: una nuova attività (A) del nucleo 1 con punteggi 0/1/2
-// misti sul criterio 1, un secondo criterio valutato da un solo alunno, un
-// terzo criterio mai valutato in A, più due attività successive (B, C) sullo
-// stesso nucleo per verificare che il report ignori sia le altre attività
-// sia la media mobile. Il roster di 3A comprende anche Anna e Luca (dati di
-// base, vedi tests/README_DATI_DI_PROVA.md), mai valutati in queste attività.
-
-const CRITERIO_3_NUCLEO_1 = 3; // "Relazioni quantitative", nucleo 1: mai valutato in questo scenario
-
-async function preparaScenarioReportClasse(client) {
-  const { rows: [ins] } = await client.query(
-    'SELECT materia_id, classe_id, anno_scolastico_id FROM insegnamenti WHERE id = $1', [INSEGNAMENTO_ID]
-  );
-  const classe = { classeId: ins.classe_id, annoScolasticoId: ins.anno_scolastico_id };
-
-  const personaZero = await creaPersona(client, 'Zeta', 'Zero');
-  const iscrizioneZero = await creaIscrizione(client, personaZero, classe);
-  const personaUno = await creaPersona(client, 'Ugo', 'Uno');
-  const iscrizioneUno = await creaIscrizione(client, personaUno, classe);
-  const personaDue = await creaPersona(client, 'Dario', 'Due');
-  const iscrizioneDue = await creaIscrizione(client, personaDue, classe);
-  const personaSenza = await creaPersona(client, 'Sandra', 'Senzapunteggio');
-  const iscrizioneSenza = await creaIscrizione(client, personaSenza, classe);
-
-  const nuovaAttivita = async (nome, data) => (await q.creaAttivita(client, {
-    insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID, nome, dataAttivita: data, nucleoTematicoId: NUCLEO_1,
-  })).attivita_id;
-  const attivitaA = await nuovaAttivita('Report — prova A', '2025-12-01');
-  const attivitaB = await nuovaAttivita('Report — prova B', '2025-12-08');
-  const attivitaC = await nuovaAttivita('Report — prova C', '2025-12-15');
-
-  const valuta = (attivitaId, iscrizioneId, criterioId, punteggio) => q.salvaValutazione(client, {
-    attivitaId, iscrizioneId, criterioId, punteggio, docenteId: DOCENTE_ID,
-  });
-
-  // Attività A: quella sotto test. Criterio 1 misto 0/1/2, criterio 2 valutato da un solo alunno, criterio 3 mai.
-  await valuta(attivitaA, iscrizioneZero, CRITERIO_NUCLEO_1, 0);
-  await valuta(attivitaA, iscrizioneUno, CRITERIO_NUCLEO_1, 1);
-  await valuta(attivitaA, iscrizioneDue, CRITERIO_NUCLEO_1, 2);
-  await valuta(attivitaA, iscrizioneDue, CRITERIO_2_NUCLEO_1, 2);
-
-  // Attività B/C: successive, stesso nucleo/criterio, MAI devono comparire nel report di A.
-  await valuta(attivitaB, iscrizioneSenza, CRITERIO_NUCLEO_1, 2);
-  await valuta(attivitaB, iscrizioneZero, CRITERIO_NUCLEO_1, 2);
-  await valuta(attivitaC, iscrizioneZero, CRITERIO_NUCLEO_1, 2);
-
-  return { iscrizioneZero, iscrizioneUno, iscrizioneDue, iscrizioneSenza, attivitaA, attivitaB, attivitaC };
-}
-
-test('Report classe: criterio con punteggi 0/1/2 misti, distribuzione e percentuale corrette', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    assert.equal(report.grigliaNonConfigurata, false);
-    // Roster: Anna e Luca (seed) + Zero, Uno, Due, Senza = 6 alunni attivi in 3A.
-    assert.equal(report.totaleAlunni, 6);
-    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
-    const c1 = nucleo.criteri.find((c) => c.id === CRITERIO_NUCLEO_1);
-    assert.equal(c1.valutati, 3);
-    assert.equal(c1.nonValutati, 3);
-    assert.deepEqual(c1.distribuzione, { 0: 1, 1: 1, 2: 1 });
-    assert.equal(c1.esito.punteggioOttenuto, 3);
-    assert.equal(c1.esito.punteggioMassimo, 6);
-    assert.equal(c1.esito.percentuale, 50);
-    assert.equal(c1.esito.giudizio, 'SUFFICIENTE');
-  });
-});
-
-test('Report classe: un criterio con alcuni alunni non valutati non li conta come 0', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
-    const c2 = nucleo.criteri.find((c) => c.id === CRITERIO_2_NUCLEO_1);
-    assert.equal(c2.valutati, 1);
-    assert.equal(c2.nonValutati, 5);
-    assert.deepEqual(c2.distribuzione, { 0: 0, 1: 0, 2: 1 });
-    assert.equal(c2.esito.percentuale, 100);
-    assert.equal(c2.esito.giudizio, 'OTTIMO');
-  });
-});
-
-test('Report classe: un criterio mai valutato in questa attività è "Non valutato", non 0%', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
-    const c3 = nucleo.criteri.find((c) => c.id === CRITERIO_3_NUCLEO_1);
-    assert.equal(c3.valutati, 0);
-    assert.equal(c3.nonValutati, 6);
-    assert.deepEqual(c3.distribuzione, { 0: 0, 1: 0, 2: 0 });
-    assert.equal(c3.esito.percentuale, null);
-    assert.equal(c3.esito.giudizio, '');
-  });
-});
-
-test('Report classe: il risultato del nucleo è la media semplice dei risultati percentuali dei criteri valutati, non il pool di tutti i punteggi', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
-    // Criterio 1: 50%, criterio 2: 100% -> media (50+100)/2 = 75%, non il pool (0+1+2+2)/(4*2) = 62,5%.
-    assert.equal(nucleo.risultato.criteriConsiderati, 2);
-    assert.equal(nucleo.risultato.percentuale, 75);
-    assert.equal(nucleo.risultato.giudizio, 'BUONO');
-    assert.notEqual(nucleo.risultato.percentuale, 62.5);
-    // Un'attività appartiene a un solo nucleo tematico: il complessivo coincide col nucleo.
-    assert.deepEqual(report.complessivo, nucleo.risultato);
-  });
-});
-
-test('Report classe: i dati di un\'altra attività sono completamente esclusi', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
-    const c1 = nucleo.criteri.find((c) => c.id === CRITERIO_NUCLEO_1);
-    // "Senza" ha un punteggio SOLO nell'attività B (criterio 1 = 2): non deve comparire nel report di A.
-    assert.equal(c1.valutati, 3, 'il punteggio di "Senza" in un\'altra attività non deve contare');
-    assert.equal(c1.distribuzione[2], 1, 'solo "Due" contribuisce al punteggio 2 in questa attività');
-  });
-});
-
-test('Report classe: la media mobile è completamente esclusa', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    // "Zero" ha punteggio 0 nell'attività A, poi 2 in B e 2 in C sullo stesso criterio: la
-    // media mobile (ultime 3) sarebbe (0+2+2)/3 = 1,33 (66,67%), ma il report di A deve
-    // riflettere solo lo 0 di questa attività.
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    const nucleo = report.nuclei.find((n) => n.id === NUCLEO_1);
-    const c1 = nucleo.criteri.find((c) => c.id === CRITERIO_NUCLEO_1);
-    assert.deepEqual(c1.distribuzione, { 0: 1, 1: 1, 2: 1 });
-    assert.equal(c1.esito.percentuale, 50);
-    assert.notEqual(c1.esito.percentuale, 66.67);
-  });
-});
-
-test('Report classe: un docente estraneo riceve 404', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    await assert.rejects(
-      () => q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ESTRANEO_ID),
-      (errore) => errore.stato === 404
-    );
-  });
-});
-
-test('Report classe: attività senza alcuna valutazione', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const vuota = (await q.creaAttivita(client, {
-      insegnamentoId: INSEGNAMENTO_ID, docenteId: DOCENTE_ID,
-      nome: 'Report — nessuna valutazione', dataAttivita: '2025-12-20', nucleoTematicoId: NUCLEO_1,
-    })).attivita_id;
-    const report = await q.getReportClasseAttivita(client, vuota, DOCENTE_ID);
-    assert.equal(report.totaleAlunni, 2); // Anna e Luca, i soli iscritti attivi di 3A nei dati di base
-    report.nuclei[0].criteri.forEach((c) => {
-      assert.equal(c.valutati, 0);
-      assert.equal(c.nonValutati, 2);
-      assert.equal(c.esito.percentuale, null);
-    });
-    assert.equal(report.complessivo.percentuale, null);
-    assert.equal(report.complessivo.giudizio, '');
-  });
-});
-
-test('Report classe: coerente con la griglia della stessa attività (stessa fonte dati)', async () => {
-  await conTransazioneDiProva(async (client) => {
-    const s = await preparaScenarioReportClasse(client);
-    const report = await q.getReportClasseAttivita(client, s.attivitaA, DOCENTE_ID);
-    const griglia = await q.getGrigliaAttivita(client, s.attivitaA, DOCENTE_ID);
-    const sommaGriglia = griglia.righe.reduce(
-      (totale, r) => totale + r.celle.filter((c) => c.punteggio !== null).reduce((t, c) => t + c.punteggio, 0), 0
-    );
-    const sommaReport = report.nuclei[0].criteri.reduce((totale, c) => totale + (c.esito.punteggioOttenuto || 0), 0);
-    assert.equal(sommaReport, sommaGriglia);
-    assert.equal(report.totaleAlunni, griglia.righe.length);
-  });
-});
-
-test('Studenti: le rotte HTTP rispondono 200 al docente titolare e 404 a un docente estraneo', async () => {
-  const express = require('express');
-  const routeAttivita = require('../server/routes/attivita');
-  const { identificaDocente } = require('../server/auth');
+test.before(async () => {
   const app = express();
   app.use(express.json());
-  app.use('/api', identificaDocente, routeAttivita);
-
-  await new Promise((risolvi, rifiuta) => {
-    const server = app.listen(0, async () => {
-      try {
-        const base = `http://127.0.0.1:${server.address().port}/api/insegnamenti/${INSEGNAMENTO_ID}/studenti`;
-        const titolare = await fetch(base, { headers: { 'X-Docente-Id': String(DOCENTE_ID) } });
-        assert.equal(titolare.status, 200);
-        const corpo = await titolare.json();
-        assert.ok(Array.isArray(corpo.studenti) && corpo.studenti.length > 0);
-        const dettaglio = await fetch(`${base}/${corpo.studenti[0].iscrizioneId}/progresso`, {
-          headers: { 'X-Docente-Id': String(DOCENTE_ID) },
-        });
-        assert.equal(dettaglio.status, 200);
-        const estraneo = await fetch(base, { headers: { 'X-Docente-Id': String(DOCENTE_ESTRANEO_ID) } });
-        assert.equal(estraneo.status, 404);
-        risolvi();
-      } catch (errore) {
-        rifiuta(errore);
-      } finally {
-        server.close();
-      }
-    });
-  });
-});
-
-test('Regressione: il server rifiuta di avviarsi se la migration 001 non è applicata (causa reale di "Errore interno")', { skip: !process.env.PGTEST_URL_SENZA_MIGRATION && 'PGTEST_URL_SENZA_MIGRATION non impostata: verifica NON eseguita, non dare per superata.' }, async () => {
-  const { verificaVincoliRichiesti } = require('../server/db');
-  const poolSenzaMigration = new (require('pg').Pool)({ connectionString: process.env.PGTEST_URL_SENZA_MIGRATION });
-  try {
-    await assert.rejects(() => verificaVincoliRichiesti(poolSenzaMigration), /Migration non applicata/);
-  } finally {
-    await poolSenzaMigration.end();
-  }
-});
-
-test('Regressione: la diagnostica di un errore inatteso include endpoint, parametri e codice PostgreSQL (bug reale trovato e corretto)', async () => {
-  const express = require('express');
-  const routeAttivita = require('../server/routes/attivita');
-  const app = express();
-  app.use(express.json());
-  app.use('/api', (req, res, next) => { req.docenteId = DOCENTE_ID; next(); }, routeAttivita);
-
-  await new Promise((risolvi) => {
-    const server = app.listen(0, async () => {
-      const porta = server.address().port;
-      const originale = console.error;
-      let catturato = '';
-      console.error = (...pezzi) => { catturato += pezzi.join(' '); };
-      try {
-        // ID non numerico: genera un errore Postgres inatteso (non un ErroreApplicativo),
-        // esattamente lo scenario in cui il bug si manifestava.
-        await fetch(`http://127.0.0.1:${porta}/api/attivita/abc/griglia`);
-      } finally {
-        console.error = originale;
-        server.close(() => risolvi());
-      }
-      const diagnostica = JSON.parse(catturato.replace('[errore] ', ''));
-      assert.equal(diagnostica.endpoint, '/api/attivita/abc/griglia');
-      assert.deepEqual(diagnostica.parametriPercorso, { attivitaId: 'abc' }); // prima della correzione: {}
-      assert.ok(diagnostica.codicePostgres, 'deve riportare il codice PostgreSQL');
-    });
-  });
+  app.use('/api', routeApi);
+  server = app.listen(0);
+  await new Promise((r) => server.once('listening', r));
+  base = `http://127.0.0.1:${server.address().port}/api`;
 });
 
 test.after(async () => {
+  await new Promise((r) => server.close(r));
   await pool.end();
+});
+
+// --- Client HTTP con cookie jar minimale e CSRF ----------------------------
+
+function estraiCookie(risposta, nome) {
+  const grezzo = typeof risposta.headers.getSetCookie === 'function'
+    ? risposta.headers.getSetCookie()
+    : [risposta.headers.get('set-cookie')].filter(Boolean);
+  for (const riga of grezzo) {
+    const m = riga.match(new RegExp(`${nome}=([^;]*)`));
+    if (m) return m[1];
+  }
+  return null;
+}
+
+class SessioneHttp {
+  constructor() { this.token = null; this.csrfToken = null; }
+
+  intestazioni(extra) {
+    const h = { 'Content-Type': 'application/json', ...extra };
+    if (this.token) h.Cookie = `session_token=${this.token}`;
+    if (this.csrfToken) h['X-CSRF-Token'] = this.csrfToken;
+    return h;
+  }
+
+  aggiornaCookie(risposta) {
+    const t = estraiCookie(risposta, 'session_token');
+    if (t !== null) this.token = t === '' ? null : t;
+  }
+
+  async richiesta(metodo, percorso, corpo, opzioni = {}) {
+    const risposta = await fetch(base + percorso, {
+      method: metodo,
+      headers: this.intestazioni(opzioni.senzaCsrf ? { 'X-CSRF-Token': undefined } : {}),
+      body: corpo !== undefined ? JSON.stringify(corpo) : undefined,
+    });
+    this.aggiornaCookie(risposta);
+    const corpoRisposta = risposta.status === 204 ? null : await risposta.json().catch(() => null);
+    if (corpoRisposta && corpoRisposta.csrfToken) this.csrfToken = corpoRisposta.csrfToken;
+    return { status: risposta.status, corpo: corpoRisposta };
+  }
+
+  get(percorso) { return this.richiesta('GET', percorso); }
+  post(percorso, corpo, opzioni) { return this.richiesta('POST', percorso, corpo, opzioni); }
+  put(percorso, corpo, opzioni) { return this.richiesta('PUT', percorso, corpo, opzioni); }
+}
+
+async function login(email, password = PASSWORD_SVILUPPO) {
+  const s = new SessioneHttp();
+  const r = await s.post('/auth/login', { email, password });
+  return { sessione: s, risposta: r };
+}
+
+async function loginESwitch(email, tenantSlug) {
+  const { sessione, risposta } = await login(email);
+  assert.equal(risposta.status, 200, `login di ${email} deve riuscire`);
+  const tenant = risposta.corpo.tenantsDisponibiliPerSwitch.find((t) => t.slug === tenantSlug);
+  assert.ok(tenant, `${email} deve poter selezionare il tenant ${tenantSlug}`);
+  const r2 = await sessione.post('/auth/switch-tenant', { tenantId: tenant.tenant_id ?? tenant.id });
+  assert.equal(r2.status, 200, `switch a ${tenantSlug} deve riuscire per ${email}`);
+  return sessione;
+}
+
+// ===========================================================================
+// SEZIONE A — SESSIONE / AUTENTICAZIONE (sez. 61)
+// ===========================================================================
+
+test('Login: credenziali corrette creano una sessione con cookie HttpOnly e csrfToken', async () => {
+  const { risposta } = await login('teacher.math.a@alfa.test');
+  assert.equal(risposta.status, 200);
+  assert.equal(risposta.corpo.account.email, 'teacher.math.a@alfa.test');
+  assert.ok(risposta.corpo.csrfToken, 'la risposta di login deve includere un csrfToken');
+  assert.equal(risposta.corpo.activeTenantId, null, 'nessun tenant attivo subito dopo il login (sez. 8)');
+});
+
+test('Login: password errata e account inesistente danno lo stesso 401 generico', async () => {
+  const r1 = await login('teacher.math.a@alfa.test', 'password-sbagliata');
+  assert.equal(r1.risposta.status, 401);
+  const r2 = await login('non.esiste@alfa.test', 'qualunque');
+  assert.equal(r2.risposta.status, 401);
+  assert.equal(r1.risposta.corpo.errore, r2.risposta.corpo.errore, 'messaggio identico: non rivelare quale dei due è sbagliato');
+});
+
+test('GET /me senza cookie -> 401; con cookie valido -> 200', async () => {
+  const anonimo = new SessioneHttp();
+  const r1 = await anonimo.get('/auth/me');
+  assert.equal(r1.status, 401);
+
+  const { sessione } = await login('teacher.italian.a@alfa.test');
+  const r2 = await sessione.get('/auth/me');
+  assert.equal(r2.status, 200);
+  assert.equal(r2.corpo.account.email, 'teacher.italian.a@alfa.test');
+});
+
+test('Logout revoca la sessione: dopo logout, /me torna 401', async () => {
+  const { sessione } = await login('teacher.italian.a@alfa.test');
+  const rLogout = await sessione.post('/auth/logout');
+  assert.equal(rLogout.status, 204);
+  const rMe = await sessione.get('/auth/me');
+  assert.equal(rMe.status, 401);
+});
+
+test('Sessione scaduta (timeout assoluto) e sessione revocata sono entrambe rifiutate', async () => {
+  const { sessione, risposta } = await login('teacher.math.a@alfa.test');
+  const rMePrima = await sessione.get('/auth/me');
+  assert.equal(rMePrima.status, 200);
+
+  // Manipolazione diretta del DB per simulare il timeout assoluto (sez. 61).
+  const { rows } = await pool.query(
+    'SELECT id FROM sessions WHERE account_id = $1 ORDER BY id DESC LIMIT 1',
+    [(await pool.query('SELECT id FROM accounts WHERE email = $1', ['teacher.math.a@alfa.test'])).rows[0].id]
+  );
+  await pool.query("UPDATE sessions SET expires_at = now() - interval '1 minute' WHERE id = $1", [rows[0].id]);
+  const rMeScaduta = await sessione.get('/auth/me');
+  assert.equal(rMeScaduta.status, 401);
+
+  // Sessione revocata esplicitamente.
+  const { sessione: sessione2 } = await login('teacher.math.a@alfa.test');
+  const idSessione2 = (await pool.query('SELECT id FROM sessions ORDER BY id DESC LIMIT 1')).rows[0].id;
+  await revocaSessione(pool, idSessione2, 'test');
+  const rMeRevocata = await sessione2.get('/auth/me');
+  assert.equal(rMeRevocata.status, 401);
+});
+
+test('Sessione scaduta per inattività (idle timeout) viene rifiutata e marcata revocata', async () => {
+  const { rows: account } = await pool.query('SELECT id FROM accounts WHERE email = $1', ['tenant.admin.b@beta.test']);
+  const { token, sessione } = await creaSessione(pool, { accountId: account[0].id });
+  await pool.query("UPDATE sessions SET last_seen_at = now() - interval '31 minutes' WHERE id = $1", [sessione.id]);
+  const esito = await trovaSessioneValida(pool, token);
+  assert.equal(esito, null, 'una sessione inattiva da più del timeout deve risultare invalida');
+  const { rows: dopo } = await pool.query('SELECT revoked_at, revoked_reason FROM sessions WHERE id = $1', [sessione.id]);
+  assert.ok(dopo[0].revoked_at, 'la sessione scaduta per inattività deve essere revocata esplicitamente');
+  assert.equal(dopo[0].revoked_reason, 'idle_timeout');
+});
+
+test('Invalidazione globale (cambio password): revocaTutteLeSessioni chiude tutte le sessioni dell\'account', async () => {
+  const { rows: account } = await pool.query('SELECT id FROM accounts WHERE email = $1', ['coordinator.a@alfa.test']);
+  const s1 = await creaSessione(pool, { accountId: account[0].id });
+  const s2 = await creaSessione(pool, { accountId: account[0].id });
+  assert.ok(await trovaSessioneValida(pool, s1.token));
+  await revocaTutteLeSessioni(pool, account[0].id, 'cambio_password');
+  assert.equal(await trovaSessioneValida(pool, s1.token), null);
+  assert.equal(await trovaSessioneValida(pool, s2.token), null);
+});
+
+test('Account disabilitato non può autenticarsi', async () => {
+  await pool.query("UPDATE accounts SET stato = 'disabilitato' WHERE email = 'teacher.italian.a@alfa.test'");
+  const { risposta } = await login('teacher.italian.a@alfa.test');
+  assert.equal(risposta.status, 401);
+  await pool.query("UPDATE accounts SET stato = 'attivo' WHERE email = 'teacher.italian.a@alfa.test'");
+});
+
+// ===========================================================================
+// SEZIONE B — CSRF (sez. 62)
+// ===========================================================================
+
+test('CSRF: mutazione senza token, con token errato, con token corretto', async () => {
+  const { sessione, risposta } = await login('teacher.math.a@alfa.test');
+  const tenantId = risposta.corpo.tenantsDisponibiliPerSwitch[0].tenant_id;
+
+  const senzaToken = await fetch(base + '/auth/switch-tenant', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: `session_token=${sessione.token}` },
+    body: JSON.stringify({ tenantId }),
+  });
+  assert.equal(senzaToken.status, 403);
+
+  const tokenErrato = await fetch(base + '/auth/switch-tenant', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: `session_token=${sessione.token}`, 'X-CSRF-Token': 'x'.repeat(64) },
+    body: JSON.stringify({ tenantId }),
+  });
+  assert.equal(tokenErrato.status, 403);
+
+  const rCorretto = await sessione.post('/auth/switch-tenant', { tenantId });
+  assert.equal(rCorretto.status, 200);
+});
+
+// ===========================================================================
+// SEZIONE C — TENANT ATTIVO / SWITCH (sez. 63) E ACCOUNT MULTI-TENANT (sez. 55)
+// ===========================================================================
+
+test('Utente multi-tenant: login -> nessun tenant attivo -> switch A -> switch B -> switch a un tenant senza Membership = 403', async () => {
+  const { sessione, risposta } = await login('multitenant.user@example.test');
+  assert.equal(risposta.corpo.activeTenantId, null);
+  assert.equal(risposta.corpo.memberships.length, 2, 'deve avere Membership in due tenant (Alfa e Beta)');
+
+  const alfa = risposta.corpo.memberships.find((m) => m.slug === 'alfa');
+  const beta = risposta.corpo.memberships.find((m) => m.slug === 'beta');
+
+  const rA = await sessione.post('/auth/switch-tenant', { tenantId: alfa.tenant_id });
+  assert.equal(rA.status, 200);
+  assert.equal(rA.corpo.activeTenantId, alfa.tenant_id);
+
+  const rB = await sessione.post('/auth/switch-tenant', { tenantId: beta.tenant_id });
+  assert.equal(rB.status, 200);
+  assert.equal(rB.corpo.activeTenantId, beta.tenant_id);
+
+  const rInesistente = await sessione.post('/auth/switch-tenant', { tenantId: 999999 });
+  assert.equal(rInesistente.status, 403);
+});
+
+test('Isolamento tenant: una risorsa di Alfa non è raggiungibile con il tenant attivo impostato su Beta', async () => {
+  const sessioneA = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessioneA.get('/teachings');
+  const teachingAlfa = teachings.corpo[0].teaching_id;
+  const activities = await sessioneA.get(`/teachings/${teachingAlfa}/activities`);
+  const activityAlfa = activities.corpo[0].activity_id;
+  const grigliaOk = await sessioneA.get(`/activities/${activityAlfa}/griglia`);
+  assert.equal(grigliaOk.status, 200);
+
+  // Stesso account, ma multitenant.user con tenant attivo Beta non deve MAI vedere risorse di Alfa:
+  // usiamo qui lo stesso teachingId/activityId con un account che ha Membership in entrambi i tenant.
+  const sessioneMulti = await loginESwitch('multitenant.user@example.test', 'beta');
+  const rTeachingAltroTenant = await sessioneMulti.get(`/teachings/${teachingAlfa}/pedagogical-units`);
+  assert.equal(rTeachingAltroTenant.status, 404, 'un Teaching di Alfa non deve esistere nel contesto Beta');
+  const rGrigliaAltroTenant = await sessioneMulti.get(`/activities/${activityAlfa}/griglia`);
+  assert.equal(rGrigliaAltroTenant.status, 404, "un'Activity di Alfa non deve esistere nel contesto Beta");
+});
+
+// ===========================================================================
+// SEZIONE D — PLATFORM ADMIN (sez. 64)
+// ===========================================================================
+
+test('Platform admin: nessuna Membership, ma può impostare come tenant attivo qualunque tenant e vederli tutti', async () => {
+  const { sessione, risposta } = await login('platform.admin@platform.test');
+  assert.equal(risposta.corpo.memberships.length, 0, 'PLATFORM_ADMIN non ha Membership (sez. 7)');
+  assert.equal(risposta.corpo.isPlatformAdmin, true);
+
+  const rTenants = await sessione.get('/platform/tenants');
+  assert.equal(rTenants.status, 200);
+  const slugs = rTenants.corpo.map((t) => t.slug);
+  assert.ok(slugs.includes('alfa') && slugs.includes('beta'));
+
+  const alfaId = rTenants.corpo.find((t) => t.slug === 'alfa').id;
+  const rSwitch = await sessione.post('/auth/switch-tenant', { tenantId: alfaId });
+  assert.equal(rSwitch.status, 200, 'PLATFORM_ADMIN può attivare un tenant senza avervi Membership (sez. 9)');
+});
+
+test('Un account non-platform-admin non può amministrare i tenant', async () => {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const r = await sessione.get('/platform/tenants');
+  assert.equal(r.status, 403);
+});
+
+// ===========================================================================
+// SEZIONE E — SCOPE DEL DOCENTE (sez. 65)
+// ===========================================================================
+
+test('Teacher: vede solo i propri Teaching, non quelli di altri docenti dello stesso tenant', async () => {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const r = await sessione.get('/teachings');
+  assert.equal(r.status, 200);
+  assert.equal(r.corpo.length, 2, 'teacher.math.a insegna su due Teaching (Matematica 2A e 2B)');
+  assert.ok(r.corpo.every((t) => t.materia === 'Matematica'));
+});
+
+test('Teacher: può leggere/scrivere sulle proprie Activity, non su quelle di un altro Teaching', async () => {
+  const sessioneMath = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachingsMath = await sessioneMath.get('/teachings');
+  const teaching2A = teachingsMath.corpo.find((t) => t.classe === '2A').teaching_id;
+  const attivitaMath = await sessioneMath.get(`/teachings/${teaching2A}/activities`);
+  const activityId = attivitaMath.corpo[0].activity_id;
+
+  const griglia = await sessioneMath.get(`/activities/${activityId}/griglia`);
+  assert.equal(griglia.status, 200);
+  const enrollmentId = griglia.corpo.righe[0].enrollmentId;
+  const criterionId = griglia.corpo.criteri[0].id;
+  const rScrittura = await sessioneMath.put(`/activities/${activityId}/enrollments/${enrollmentId}/criteria/${criterionId}`, { valore: 2 });
+  assert.equal(rScrittura.status, 200);
+
+  // teacher.italian.a NON ha alcun RoleAssignment su questo Teaching di Matematica: deve ricevere 403.
+  const sessioneItalian = await loginESwitch('teacher.italian.a@alfa.test', 'alfa');
+  const rNegato = await sessioneItalian.get(`/activities/${activityId}/griglia`);
+  assert.equal(rNegato.status, 403);
+  const rScritturaNegata = await sessioneItalian.put(`/activities/${activityId}/enrollments/${enrollmentId}/criteria/${criterionId}`, { valore: 1 });
+  assert.equal(rScritturaNegata.status, 403);
+});
+
+test('Teacher: non può assegnare a se stesso un ruolo di autorità superiore (TENANT_ADMIN)', async () => {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const me = await sessione.get('/auth/me');
+  const r = await sessione.post('/role-assignments', {
+    accountId: me.corpo.account.id, roleCodice: 'TENANT_ADMIN', scopeType: 'TENANT', tenantId: me.corpo.activeTenantId,
+  });
+  assert.equal(r.status, 403);
+});
+
+test('Tenant admin: può assegnare TEACHER/COORDINATOR nel proprio tenant (audit incluso)', async () => {
+  const sessioneAdmin = await loginESwitch('tenant.admin.a@alfa.test', 'alfa');
+  const me = await sessioneAdmin.get('/auth/me');
+  const teachingsMath = await (await loginESwitch('teacher.math.a@alfa.test', 'alfa')).get('/teachings');
+  const teachingId = teachingsMath.corpo[0].teaching_id;
+  const r = await sessioneAdmin.post('/role-assignments', {
+    accountId: (await pool.query("SELECT id FROM accounts WHERE email='teacher.italian.a@alfa.test'")).rows[0].id,
+    roleCodice: 'TEACHER', scopeType: 'TEACHING', tenantId: me.corpo.activeTenantId, scopeIds: { teachingId },
+  });
+  assert.equal(r.status, 201);
+  const { rows: audit } = await pool.query(
+    "SELECT * FROM audit_log WHERE azione = 'role_assignment.create' AND risorsa_id = $1", [r.corpo.id]
+  );
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].tenant_id, me.corpo.activeTenantId);
+});
+
+// ===========================================================================
+// SEZIONE F — REPORT CLASSE (fotografia di una singola attività)
+// ===========================================================================
+
+test('Report classe (Alfa, scala 0-2): numeri coerenti con i dati seminati', async () => {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessione.get('/teachings');
+  const teaching2A = teachings.corpo.find((t) => t.classe === '2A').teaching_id;
+  const attivita = await sessione.get(`/teachings/${teaching2A}/activities`);
+  const activityId = attivita.corpo.find((a) => a.nome === 'Numeri entro il cento').activity_id;
+
+  const report = await sessione.get(`/activities/${activityId}/report-classe`);
+  assert.equal(report.status, 200);
+  assert.equal(report.corpo.totaleAlunni, 2);
+  const unita = report.corpo.unitaPedagogiche[0];
+  const num1 = unita.criteri.find((c) => c.codice === 'NUM-1');
+  assert.equal(num1.valutati, 2);
+  assert.equal(num1.nonValutati, 0);
+  assert.deepEqual(num1.distribuzione, { 0: 1, 1: 0, 2: 1 });
+  assert.equal(num1.esito.percentuale, 50);
+  const num2 = unita.criteri.find((c) => c.codice === 'NUM-2');
+  assert.equal(num2.valutati, 0);
+  assert.equal(num2.esito.percentuale, null);
+  assert.equal(unita.risultato.percentuale, 50, 'un solo criterio valutato: il risultato coincide con quello del criterio');
+  assert.deepEqual(report.corpo.complessivo, unita.risultato, "un'attività ha una sola unità pedagogica");
+});
+
+test('Report classe (Beta, scala 1-4): distribuzione usa i valori REALI della scala, non 0/1/2', async () => {
+  const sessione = await loginESwitch('teacher.math.b@beta.test', 'beta');
+  const teachings = await sessione.get('/teachings');
+  const attivita = await sessione.get(`/teachings/${teachings.corpo[0].teaching_id}/activities`);
+  const activityId = attivita.corpo.find((a) => a.nome === 'Conteggio fino a 20').activity_id;
+
+  const report = await sessione.get(`/activities/${activityId}/report-classe`);
+  assert.equal(report.status, 200);
+  const num1 = report.corpo.unitaPedagogiche[0].criteri.find((c) => c.codice === 'NUM-1');
+  assert.deepEqual(num1.distribuzione, { 1: 0, 2: 1, 3: 0, 4: 1 }, 'chiavi della distribuzione = valori della scala di Beta (1-4)');
+  assert.equal(num1.esito.punteggioOttenuto, 6);
+  assert.equal(num1.esito.punteggioMassimo, 8);
+  assert.equal(num1.esito.percentuale, 75);
+  assert.equal(num1.esito.giudizio, 'BUONO', 'soglie di Beta: 85 ECCELLENTE/70 BUONO/55 SUFFICIENTE/0 INSUFFICIENTE');
+});
+
+test('Report classe: i dati di un\'altra attività sono completamente esclusi (niente media mobile, niente altre attività)', async () => {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessione.get('/teachings');
+  const teaching2A = teachings.corpo.find((t) => t.classe === '2A').teaching_id;
+  const unita = await sessione.get(`/teachings/${teaching2A}/pedagogical-units`);
+  const numeri = unita.corpo.find((u) => u.nome === 'Numeri');
+
+  const nuovaAttivita = await sessione.post(`/teachings/${teaching2A}/activities`, {
+    nome: 'Seconda prova', dataAttivita: '2026-11-01', pedagogicalUnitId: numeri.id,
+  });
+  assert.equal(nuovaAttivita.status, 201);
+  const grigliaNuova = await sessione.get(`/activities/${nuovaAttivita.corpo.activity_id}/griglia`);
+  const enrollmentId = grigliaNuova.corpo.righe[0].enrollmentId;
+  const criterionId = grigliaNuova.corpo.criteri[0].id;
+  await sessione.put(`/activities/${nuovaAttivita.corpo.activity_id}/enrollments/${enrollmentId}/criteria/${criterionId}`, { valore: 0 });
+
+  const attivitaOriginali = await sessione.get(`/teachings/${teaching2A}/activities`);
+  const originale = attivitaOriginali.corpo.find((a) => a.nome === 'Numeri entro il cento');
+  const reportOriginale = await sessione.get(`/activities/${originale.activity_id}/report-classe`);
+  const num1 = reportOriginale.corpo.unitaPedagogiche[0].criteri.find((c) => c.codice === 'NUM-1');
+  assert.equal(num1.valutati, 2, 'il nuovo punteggio inserito in un\'altra attività non deve comparire qui');
+  assert.deepEqual(num1.distribuzione, { 0: 1, 1: 0, 2: 1 });
+});
+
+// ===========================================================================
+// SEZIONE G — AUDIT (sez. 40/42/66)
+// ===========================================================================
+
+test('Audit: creare/aggiornare una Observation produce una riga di audit con prima/dopo nella stessa transazione', async () => {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessione.get('/teachings');
+  const teaching2B = teachings.corpo.find((t) => t.classe === '2B').teaching_id;
+  const attivita = await sessione.get(`/teachings/${teaching2B}/activities`);
+  const activityId = attivita.corpo[0].activity_id;
+  const griglia = await sessione.get(`/activities/${activityId}/griglia`);
+  const enrollmentId = griglia.corpo.righe[0].enrollmentId;
+  const criterionId = griglia.corpo.criteri.find((c) => griglia.corpo.righe[0].celle.every((cella) => cella.criterionId !== c.id) || true).id;
+
+  const r1 = await sessione.put(`/activities/${activityId}/enrollments/${enrollmentId}/criteria/${criterionId}`, { valore: 1 });
+  assert.equal(r1.status, 200);
+  const r2 = await sessione.put(`/activities/${activityId}/enrollments/${enrollmentId}/criteria/${criterionId}`, { valore: 2 });
+  assert.equal(r2.status, 200);
+
+  const { rows: audit } = await pool.query(
+    "SELECT * FROM audit_log WHERE risorsa = 'observation' AND azione = 'observation.upsert' ORDER BY id DESC LIMIT 2"
+  );
+  assert.equal(audit.length, 2);
+  const [ultimo, precedente] = audit;
+  assert.equal(JSON.parse(JSON.stringify(ultimo.dopo)).valore, 2);
+  assert.equal(precedente.dopo.valore, 1);
+  assert.equal(ultimo.prima.valore, 1, 'il secondo audit deve registrare come "prima" il valore impostato dal primo');
+  assert.ok(ultimo.actor_account_id);
+  assert.ok(ultimo.tenant_id);
+  assert.ok(ultimo.created_at);
+});
+
+test('Audit: audit_log è realmente append-only per l\'applicazione (app_role non può UPDATE/DELETE)', async () => {
+  const { rows } = await pool.query('SELECT id FROM audit_log LIMIT 1');
+  await assert.rejects(
+    () => pool.query('UPDATE audit_log SET azione = $1 WHERE id = $2', ['manomesso', rows[0].id]),
+    (errore) => /permission denied/i.test(errore.message)
+  );
+  await assert.rejects(
+    () => pool.query('DELETE FROM audit_log WHERE id = $1', [rows[0].id]),
+    (errore) => /permission denied/i.test(errore.message)
+  );
+});
+
+// ===========================================================================
+// SEZIONE H — INTEGRITÀ DEL DATABASE (query dirette, FK composte, trigger)
+// ===========================================================================
+
+test('DB: slug di tenant duplicato è rifiutato (UNIQUE)', async () => {
+  await assert.rejects(
+    () => pool.query("INSERT INTO tenants (slug, nome) VALUES ('alfa', 'Duplicato')"),
+    (e) => e.code === '23505'
+  );
+});
+
+test('DB: due classi "2A" di tenant diversi coesistono come righe distinte e isolate', async () => {
+  const { rows } = await pool.query("SELECT tenant_id, id FROM classes WHERE nome = '2A' ORDER BY tenant_id");
+  assert.equal(rows.length, 2);
+  assert.notEqual(rows[0].tenant_id, rows[1].tenant_id);
+  assert.notEqual(rows[0].id, rows[1].id);
+});
+
+test('DB (cross-tenant): un\'Activity non può referenziare una PedagogicalUnit di un altro tenant', async () => {
+  const teaching = (await pool.query(
+    "SELECT t.id, t.tenant_id, t.school_year_id, t.class_id, t.subject_id FROM teachings t JOIN tenants te ON te.id = t.tenant_id WHERE te.slug = 'alfa' LIMIT 1"
+  )).rows[0];
+  const unitaBeta = (await pool.query(
+    "SELECT p.id FROM pedagogical_units p JOIN tenants te ON te.id = p.tenant_id WHERE te.slug = 'beta' LIMIT 1"
+  )).rows[0];
+  await assert.rejects(
+    () => pool.query(
+      'INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [teaching.tenant_id, teaching.school_year_id, teaching.id, teaching.class_id, teaching.subject_id, unitaBeta.id, 'x', '2026-10-06']
+    ),
+    (e) => e.code === '23503'
+  );
+});
+
+test('DB (cross-class): un\'Observation non può riferirsi a un Enrollment di una classe diversa da quella dell\'Activity', async () => {
+  const activity2A = (await pool.query(
+    "SELECT a.* FROM activities a JOIN classes c ON c.id = a.class_id WHERE c.nome = '2A' AND a.tenant_id = (SELECT id FROM tenants WHERE slug='alfa') LIMIT 1"
+  )).rows[0];
+  const enroll2B = (await pool.query(
+    "SELECT e.* FROM enrollments e JOIN classes c ON c.id = e.class_id WHERE c.nome = '2B' AND e.tenant_id = (SELECT id FROM tenants WHERE slug='alfa') LIMIT 1"
+  )).rows[0];
+  const criterio = (await pool.query('SELECT * FROM criteria WHERE tenant_id = $1 AND pedagogical_unit_id = $2 LIMIT 1', [activity2A.tenant_id, activity2A.pedagogical_unit_id])).rows[0];
+  const scala = (await pool.query('SELECT id FROM observation_scales WHERE tenant_id = $1 AND school_level_id IS NULL', [activity2A.tenant_id])).rows[0];
+  const docente = (await pool.query("SELECT id FROM accounts WHERE email = 'teacher.math.a@alfa.test'")).rows[0];
+  await assert.rejects(
+    () => pool.query(
+      `INSERT INTO observations (tenant_id, school_year_id, activity_id, enrollment_id, class_id, criterion_id, pedagogical_unit_id, scale_id, valore, recorded_by_account_id, data_osservazione)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,2,$9,$10)`,
+      [activity2A.tenant_id, activity2A.school_year_id, activity2A.id, enroll2B.id, enroll2B.class_id, criterio.id, criterio.pedagogical_unit_id, scala.id, docente.id, '2026-10-06']
+    ),
+    (e) => e.code === '23503'
+  );
+});
+
+test('DB (fuori scala): un valore assente dalla scala applicabile è rifiutato dalla FK (scale_id, valore)', async () => {
+  const activity = (await pool.query(
+    "SELECT a.* FROM activities a JOIN tenants t ON t.id = a.tenant_id WHERE t.slug = 'alfa' AND a.nome = 'Numeri entro il cento' AND a.class_id = (SELECT id FROM classes WHERE nome='2A' AND tenant_id=(SELECT id FROM tenants WHERE slug='alfa')) LIMIT 1"
+  )).rows[0];
+  const enroll = (await pool.query('SELECT * FROM enrollments WHERE class_id = $1 LIMIT 1', [activity.class_id])).rows[0];
+  const criterio = (await pool.query("SELECT * FROM criteria WHERE tenant_id = $1 AND pedagogical_unit_id = $2 AND codice = 'NUM-3'", [activity.tenant_id, activity.pedagogical_unit_id])).rows[0];
+  const scala = (await pool.query('SELECT id FROM observation_scales WHERE tenant_id = $1 AND school_level_id IS NULL', [activity.tenant_id])).rows[0];
+  const docente = (await pool.query("SELECT id FROM accounts WHERE email = 'teacher.math.a@alfa.test'")).rows[0];
+  await assert.rejects(
+    () => pool.query(
+      `INSERT INTO observations (tenant_id, school_year_id, activity_id, enrollment_id, class_id, criterion_id, pedagogical_unit_id, scale_id, valore, recorded_by_account_id, data_osservazione)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,5,$9,$10)`,
+      [activity.tenant_id, activity.school_year_id, activity.id, enroll.id, enroll.class_id, criterio.id, criterio.pedagogical_unit_id, scala.id, docente.id, '2026-10-06']
+    ),
+    (e) => e.code === '23503'
+  );
+});
+
+test('DB: DELETE di una PedagogicalUnit referenziata da un\'Activity è rifiutato (RESTRICT, sez. 39)', async () => {
+  const unita = (await pool.query(
+    "SELECT id FROM pedagogical_units WHERE id = (SELECT pedagogical_unit_id FROM activities LIMIT 1)"
+  )).rows[0];
+  await assert.rejects(
+    () => pool.query('DELETE FROM pedagogical_units WHERE id = $1', [unita.id]),
+    (e) => e.code === '23503'
+  );
+});
+
+test('DB: immutabilità strutturale di un Teaching dopo la creazione di un\'Activity (trigger, sez. 28/38)', async () => {
+  const teaching = (await pool.query('SELECT teaching_id FROM activities LIMIT 1')).rows[0];
+  const altraClasse = (await pool.query(
+    'SELECT id FROM classes WHERE id <> (SELECT class_id FROM teachings WHERE id = $1) LIMIT 1', [teaching.teaching_id]
+  )).rows[0];
+  await assert.rejects(
+    () => pool.query('UPDATE teachings SET class_id = $1 WHERE id = $2', [altraClasse.id, teaching.teaching_id]),
+    (e) => /immutabili/i.test(e.message)
+  );
+  // Una colonna NON strutturale (stato) resta modificabile senza problemi.
+  await pool.query("UPDATE teachings SET stato = 'attivo' WHERE id = $1", [teaching.teaching_id]);
+});
+
+test('DB (cross-year): un\'Activity non può usare una PedagogicalUnit di un anno scolastico diverso, anche nello stesso tenant', async () => {
+  const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0];
+  const { rows: [nuovoAnno] } = await pool.query(
+    "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine) VALUES ($1, '2027/2028', '2027-09-01', '2028-06-30') RETURNING id",
+    [alfa.id]
+  );
+  const livello = (await pool.query("SELECT id FROM school_levels WHERE tenant_id = $1 AND nome = 'Primaria'", [alfa.id])).rows[0];
+  const { rows: [nuovaMateria] } = await pool.query(
+    "INSERT INTO subjects (tenant_id, school_level_id, school_year_id, nome) VALUES ($1,$2,$3,'Matematica') RETURNING id",
+    [alfa.id, livello.id, nuovoAnno.id]
+  );
+  const { rows: [nuovaUnita] } = await pool.query(
+    'INSERT INTO pedagogical_units (tenant_id, school_year_id, subject_id, nome) VALUES ($1,$2,$3,\'Numeri\') RETURNING id',
+    [alfa.id, nuovoAnno.id, nuovaMateria.id]
+  );
+  const teachingEsistente = (await pool.query(
+    "SELECT id, tenant_id, school_year_id, class_id, subject_id FROM teachings WHERE tenant_id = $1 LIMIT 1", [alfa.id]
+  )).rows[0];
+  await assert.rejects(
+    () => dominio.creaActivity(pool, {
+      teachingId: teachingEsistente.id, tenantId: alfa.id, nome: 'Cross year', dataAttivita: '2026-10-06', pedagogicalUnitId: nuovaUnita.id,
+    }),
+    (e) => e.stato === 400
+  );
+});
+
+test('DB (cross-subject): un\'Observation non può usare un Criterion di un\'unità pedagogica diversa da quella dell\'Activity', async () => {
+  const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0];
+  const attivitaItaliano = (await pool.query(
+    "SELECT id FROM activities WHERE tenant_id = $1 AND nome = 'Lettura silenziosa'", [alfa.id]
+  )).rows[0];
+  const criterioMatematica = (await pool.query(
+    "SELECT id FROM criteria WHERE tenant_id = $1 AND codice = 'NUM-1'", [alfa.id]
+  )).rows[0];
+  const enrollment = (await pool.query(
+    "SELECT id FROM enrollments WHERE tenant_id = $1 AND class_id = (SELECT class_id FROM activities WHERE id = $2) LIMIT 1",
+    [alfa.id, attivitaItaliano.id]
+  )).rows[0];
+  const docente = (await pool.query("SELECT id FROM accounts WHERE email = 'teacher.italian.a@alfa.test'")).rows[0];
+  await assert.rejects(
+    () => dominio.salvaObservation(pool, {
+      activityId: attivitaItaliano.id, enrollmentId: enrollment.id, criterionId: criterioMatematica.id,
+      valore: 2, tenantId: alfa.id, accountId: docente.id,
+    }),
+    (e) => e.stato === 404
+  );
+});
+
+test('DB (cross-class, livello applicativo): salvaObservation rifiuta un Enrollment di un\'altra classe con 404, non con un errore generico', async () => {
+  const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0];
+  const attivita2A = (await pool.query(
+    "SELECT id, pedagogical_unit_id FROM activities WHERE tenant_id = $1 AND nome = 'Numeri entro il cento' AND class_id = (SELECT id FROM classes WHERE nome='2A' AND tenant_id=$1)",
+    [alfa.id]
+  )).rows[0];
+  const enrollment2B = (await pool.query(
+    "SELECT id FROM enrollments WHERE tenant_id = $1 AND class_id = (SELECT id FROM classes WHERE nome='2B' AND tenant_id=$1) LIMIT 1", [alfa.id]
+  )).rows[0];
+  const criterio = (await pool.query('SELECT id FROM criteria WHERE pedagogical_unit_id = $1 LIMIT 1', [attivita2A.pedagogical_unit_id])).rows[0];
+  const docente = (await pool.query("SELECT id FROM accounts WHERE email = 'teacher.math.a@alfa.test'")).rows[0];
+  await assert.rejects(
+    () => dominio.salvaObservation(pool, {
+      activityId: attivita2A.id, enrollmentId: enrollment2B.id, criterionId: criterio.id, valore: 2,
+      tenantId: alfa.id, accountId: docente.id,
+    }),
+    (e) => e.stato === 404
+  );
+});
+
+// ===========================================================================
+// SEZIONE I — PLATFORM: creazione tenant (sez. 46, con audit)
+// ===========================================================================
+
+test('Platform admin: crea un nuovo tenant (audit incluso)', async () => {
+  const { sessione: sessioneAdmin, risposta } = await login('platform.admin@platform.test');
+  const alfaId = risposta.corpo.tenantsDisponibiliPerSwitch.find((t) => t.slug === 'alfa').id;
+  await sessioneAdmin.post('/auth/switch-tenant', { tenantId: alfaId });
+
+  const r = await sessioneAdmin.post('/platform/tenants', { slug: 'gamma', nome: 'Istituto Comprensivo Gamma' });
+  assert.equal(r.status, 201);
+  const { rows: audit } = await pool.query(
+    "SELECT * FROM audit_log WHERE azione = 'tenant.create' AND risorsa_id = $1", [r.corpo.id]
+  );
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].actor_account_id, (await pool.query("SELECT id FROM accounts WHERE email='platform.admin@platform.test'")).rows[0].id);
 });

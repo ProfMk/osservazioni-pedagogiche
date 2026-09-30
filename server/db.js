@@ -9,15 +9,8 @@ const { Pool, types } = require('pg');
 // confronto (es. "1" === 1 è falso) in tutto il resto del codice.
 types.setTypeParser(20 /* int8/bigint */, (valore) => parseInt(valore, 10));
 
-// La stringa di connessione (host, utente, password del database Neon) viene
-// SEMPRE da una variabile d'ambiente, mai scritta nel codice. Questo è
-// intenzionale: le credenziali del file Access erano incorporate nella
-// connessione ODBC (rischio segnalato nell'analisi, sezione 1.3); qui non
-// deve ripetersi lo stesso problema.
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  // Non si tenta un valore di default: è meglio fermarsi in modo esplicito
-  // che connettersi per sbaglio al database sbagliato.
   // eslint-disable-next-line no-console
   console.error('Variabile d\'ambiente DATABASE_URL non impostata. Impostarla prima di avviare il server.');
   process.exit(1);
@@ -27,7 +20,20 @@ const pool = new Pool({
   connectionString,
   ssl: connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
     ? false
-    : { rejectUnauthorized: true }, // Neon richiede SSL
+    : { rejectUnauthorized: true },
+});
+
+// Isolamento dei privilegi (sez. 41): l'applicazione non opera MAI con
+// l'identità piena del ruolo di connessione (quello di DATABASE_URL), ma
+// sempre come app_role, a cui 002_audit_append_only.sql concede INSERT e
+// SELECT su audit_log ma non UPDATE/DELETE. SET ROLE è applicato a OGNI
+// nuova connessione fisica del pool (evento 'connect'), quindi copre anche
+// le connessioni aperte più tardi sotto carico.
+pool.on('connect', (client) => {
+  client.query('SET ROLE app_role').catch((errore) => {
+    // eslint-disable-next-line no-console
+    console.error('Impossibile impostare app_role sulla connessione:', errore.message);
+  });
 });
 
 /** Esegue una query con parametri (mai concatenazione di stringhe: previene SQL injection). */
@@ -39,6 +45,9 @@ function query(testo, parametri) {
  * Esegue una funzione dentro una transazione. La funzione riceve un client
  * dedicato e deve usarlo per tutte le query della transazione.
  * Se la funzione lancia un errore, viene fatto ROLLBACK automaticamente.
+ * Audit transazionale (sez. 42): chi chiama transazione() e scrive anche
+ * nell'audit_log con lo stesso client ottiene automaticamente "modifica e
+ * audit nella stessa transazione, o nessuno dei due".
  */
 async function transazione(fn) {
   const client = await pool.connect();
@@ -56,34 +65,32 @@ async function transazione(fn) {
 }
 
 /**
- * Verifica all'avvio che i vincoli della migration 001 esistano davvero.
- * Senza UNIQUE(attivita_id, iscrizione_id) il salvataggio di qualunque
- * valutazione fallisce con l'errore Postgres 42P10 ("no unique or
- * exclusion constraint matching the ON CONFLICT specification"), che
- * arriva al docente come un generico "Errore interno" senza alcun
- * indizio sulla causa reale. Meglio fermarsi qui, con un messaggio
- * chiaro, che fallire in modo confuso a ogni tentativo di salvataggio.
+ * Verifica all'avvio che lo schema V1 (multi-tenant) sia stato applicato:
+ * tabelle chiave presenti e ruolo applicativo app_role configurato. Senza
+ * questo controllo, un database non migrato fallirebbe in modo confuso al
+ * primo login invece che con un messaggio chiaro all'avvio.
  */
 async function verificaVincoliRichiesti(pool) {
   const { rows } = await pool.query(`
     SELECT
-      EXISTS (SELECT 1 FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid
-              WHERE c.relname = 'osservazioni' AND con.contype = 'u'
-                AND pg_get_constraintdef(con.oid) ILIKE '%(attivita_id, iscrizione_id)%') AS ha_unique_osservazioni,
-      EXISTS (SELECT 1 FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid
-              WHERE c.relname = 'valutazioni_criteri' AND con.contype = 'u'
-                AND pg_get_constraintdef(con.oid) ILIKE '%(osservazione_id, criterio_id)%') AS ha_unique_valutazioni
+      to_regclass('public.tenants') IS NOT NULL AS ha_tenants,
+      to_regclass('public.role_assignments') IS NOT NULL AS ha_role_assignments,
+      to_regclass('public.sessions') IS NOT NULL AS ha_sessions,
+      to_regclass('public.audit_log') IS NOT NULL AS ha_audit_log,
+      EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_role') AS ha_app_role
   `);
-  const { ha_unique_osservazioni: haOsservazioni, ha_unique_valutazioni: haValutazioni } = rows[0];
-  if (!haOsservazioni || !haValutazioni) {
-    const mancanti = [
-      !haOsservazioni && 'UNIQUE(attivita_id, iscrizione_id) su osservazioni',
-      !haValutazioni && 'UNIQUE(osservazione_id, criterio_id) su valutazioni_criteri',
-    ].filter(Boolean).join('; ');
+  const stato = rows[0];
+  const mancanti = [
+    !stato.ha_tenants && 'tabella tenants',
+    !stato.ha_role_assignments && 'tabella role_assignments',
+    !stato.ha_sessions && 'tabella sessions',
+    !stato.ha_audit_log && 'tabella audit_log',
+    !stato.ha_app_role && 'ruolo app_role (002_audit_append_only.sql)',
+  ].filter(Boolean);
+  if (mancanti.length > 0) {
     throw new Error(
-      `Migration non applicata: manca ${mancanti}. `
-      + 'Il salvataggio delle valutazioni non può funzionare senza questo vincolo (errore Postgres 42P10 a ogni tentativo). '
-      + 'Eseguire migrations/001_vincoli_osservazioni.sql su questo database prima di avviare il server.'
+      `Migration non applicata: manca ${mancanti.join('; ')}. `
+      + 'Eseguire tutte le migration in migrations/ (in ordine numerico) su questo database prima di avviare il server.'
     );
   }
 }

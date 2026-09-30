@@ -7,15 +7,15 @@
  * Sostituisce, SOLO nel processo dei test, il modulo `pg` con PGlite
  * (PostgreSQL reale compilato in WebAssembly). Il codice applicativo
  * (server/) non cambia: esegue lo stesso `require('pg')` e le stesse query,
- * su un vero motore PostgreSQL con gli stessi vincoli, CHECK e codici
- * d'errore.
+ * su un vero motore PostgreSQL con gli stessi vincoli, trigger, ruoli
+ * (CREATE ROLE/GRANT/REVOKE/SET ROLE funzionano davvero, verificato) e
+ * codici d'errore.
  *
  * Database disponibili, ricreati da zero a ogni esecuzione:
- *   pglite://completo         schema base + migration 001 + seed + dati di prova dei test
- *   pglite://senza-migration  solo schema base (test di regressione sulla migration 001)
+ *   pglite://completo         schema V1 + ruoli/permessi + audit + seed multi-tenant
+ *   pglite://senza-migration  solo schema base (test di regressione sulla migration)
  *
  * Limite: una sola sessione per database, quindi nessuna concorrenza reale.
- * Il test di concorrenza (Caso I) richiede un PostgreSQL vero (PGTEST_URL).
  */
 
 const Module = require('module');
@@ -31,9 +31,9 @@ const URL_SENZA_MIGRATION = 'pglite://senza-migration';
 const SCRIPT_PER_DATABASE = {
   [URL_COMPLETO]: [
     'migrations/000_schema_base.sql',
-    'migrations/001_vincoli_osservazioni.sql',
-    'seed/dati_esempio_matematica.sql',
-    'tests/dati_di_prova.sql',
+    'migrations/001_ruoli_permessi_sistema.sql',
+    'migrations/002_audit_append_only.sql',
+    'seed/seed_multitenant.sql',
   ],
   [URL_SENZA_MIGRATION]: ['migrations/000_schema_base.sql'],
 };
@@ -57,10 +57,12 @@ function apriDatabase(url) {
   return istanze.get(url);
 }
 
-/** Sottoinsieme dell'interfaccia di pg.Pool usato dal progetto: query, connect/release, end. */
+/** Sottoinsieme dell'interfaccia di pg.Pool usato dal progetto: query, connect/release, end, on('connect'). */
 class Pool {
   constructor({ connectionString } = {}) {
     this.url = connectionString;
+    this._onConnect = null;
+    this._connectEseguito = false;
   }
 
   async query(testo, parametri) {
@@ -69,8 +71,24 @@ class Pool {
   }
 
   async connect() {
-    // Unica sessione: il "client" è il database stesso.
-    return { query: (testo, parametri) => this.query(testo, parametri), release() {} };
+    // Assicura che schema/migration/seed siano già applicati (servono privilegi pieni,
+    // prima di eseguire SET ROLE app_role qui sotto).
+    await apriDatabase(this.url);
+    const client = { query: (testo, parametri) => this.query(testo, parametri), release() {} };
+    // PGlite è una sessione unica e condivisa: SET ROLE eseguito una sola volta la prima
+    // volta che un client viene "aperto" resta valido per tutta la vita di quella sessione,
+    // esattamente come una connessione fisica reale con pg.Pool in produzione.
+    if (this._onConnect && !this._connectEseguito) {
+      this._connectEseguito = true;
+      await this._onConnect(client);
+    }
+    return client;
+  }
+
+  /** Sottoinsieme di EventEmitter usato da server/db.js: solo l'evento 'connect'. */
+  on(evento, listener) {
+    if (evento === 'connect') this._onConnect = listener;
+    return this;
   }
 
   async end() {
@@ -98,6 +116,7 @@ function installa() {
   };
   process.env.DATABASE_URL = URL_COMPLETO;
   if (!process.env.PGTEST_URL_SENZA_MIGRATION) process.env.PGTEST_URL_SENZA_MIGRATION = URL_SENZA_MIGRATION;
+  if (!process.env.SESSION_SECRET) process.env.SESSION_SECRET = 'segreto-di-test-non-usare-in-produzione';
 }
 
 module.exports = { installa, URL_COMPLETO, URL_SENZA_MIGRATION };

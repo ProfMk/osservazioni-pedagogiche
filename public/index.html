@@ -3,213 +3,75 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Osservazioni pedagogiche</title>
+<title>Osservazioni pedagogiche — V1 multi-tenant</title>
 <style>
   :root {
-    --carta: #f6f4ee;
-    --carta-scura: #ece8dc;
-    --inchiostro: #232620;
-    --inchiostro-tenue: #5b5d54;
-    --riga: #d8d3c3;
-    --accento: #2f4d3a;      /* verde muschio: identità della materia/azione primaria */
-    --autonomo: #2f7d3c;      /* verde: Autonomo (2) */
-    --supporto: #b8960b;      /* giallo (dorato, leggibile): Con supporto (1) */
-    --non-manifestato: #b3261e; /* rosso: Non manifestato (0) */
-    --non-valutato: #78766e;  /* grigio: Non valutato (—) */
-    --ombra: 0 1px 2px rgba(35,38,32,.08);
+    --carta: #f6f4ee; --carta-scura: #ece8dc; --inchiostro: #232620; --inchiostro-tenue: #5b5d54;
+    --riga: #d8d3c3; --accento: #2f4d3a; --ombra: 0 1px 2px rgba(35,38,32,.08);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body {
-    margin: 0;
-    background: var(--carta);
-    color: var(--inchiostro);
-    font: 15px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  }
-  header.app {
-    display: flex; align-items: center; gap: 1rem;
-    padding: .85rem 1.25rem;
-    background: var(--accento); color: #f3f1e8;
-    position: sticky; top: 0; z-index: 20;
-  }
+  body { margin: 0; background: var(--carta); color: var(--inchiostro); font: 15px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header.app { display: flex; align-items: center; gap: 1rem; padding: .85rem 1.25rem; background: var(--accento); color: #f3f1e8; position: sticky; top: 0; z-index: 20; flex-wrap: wrap; }
   header.app h1 { font-size: 1.05rem; font-weight: 600; margin: 0; letter-spacing: .01em; }
-  header.app .filo { flex: 1; opacity: .85; font-size: .85rem; }
-  header.app input {
-    width: 5rem; padding: .3rem .5rem; border-radius: 5px; border: 1px solid transparent;
-    font: inherit;
-  }
-  header.app label { font-size: .8rem; opacity: .9; }
+  header.app .filo { flex: 1; opacity: .9; font-size: .85rem; }
+  header.app select, header.app button { font: inherit; padding: .3rem .5rem; border-radius: 5px; border: 1px solid transparent; }
+  header.app button.link { background: none; border: none; color: #f3f1e8; text-decoration: underline; cursor: pointer; }
   main { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
-
-  .avviso {
-    background: #fbf0d9; border: 1px solid #e3c583; color: #6b4d16;
-    padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem;
-  }
-
+  .avviso { background: #fbf0d9; border: 1px solid #e3c583; color: #6b4d16; padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem; }
+  .errore-box { background: #fbe2e0; border: 1px solid #d98b84; color: #7a241d; padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem; }
   nav.percorso { font-size: .85rem; color: var(--inchiostro-tenue); margin-bottom: 1rem; }
-  nav.percorso button {
-    background: none; border: none; color: var(--accento); cursor: pointer;
-    font: inherit; padding: 0; text-decoration: underline;
-  }
-
+  nav.percorso button { background: none; border: none; color: var(--accento); cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
   .elenco { display: grid; gap: .5rem; }
-  .scelta {
-    text-align: left; background: #fff; border: 1px solid var(--riga); border-radius: 8px;
-    padding: .75rem .9rem; cursor: pointer; font: inherit; color: inherit; box-shadow: var(--ombra);
-  }
+  .scelta { text-align: left; background: #fff; border: 1px solid var(--riga); border-radius: 8px; padding: .75rem .9rem; cursor: pointer; font: inherit; color: inherit; box-shadow: var(--ombra); }
   .scelta:hover { border-color: var(--accento); }
-  .scelta .tit { font-weight: 600; }
-  .scelta .sub { color: var(--inchiostro-tenue); font-size: .85rem; }
-
+  .scelta .tit { font-weight: 600; } .scelta .sub { color: var(--inchiostro-tenue); font-size: .85rem; }
+  .form-carta { background: #fff; border: 1px solid var(--riga); border-radius: 8px; padding: 1.1rem 1.2rem; box-shadow: var(--ombra); max-width: 380px; margin: 3rem auto; }
+  .form-carta h2 { margin-top: 0; }
+  .form-carta label { display: block; font-size: .8rem; color: var(--inchiostro-tenue); margin: .6rem 0 .2rem; }
+  .form-carta input, .form-carta select { width: 100%; padding: .5rem .6rem; border: 1px solid var(--riga); border-radius: 5px; font: inherit; }
+  button.azione { background: var(--accento); color: #fff; border: none; border-radius: 6px; padding: .5rem 1rem; font: inherit; cursor: pointer; margin-top: .8rem; }
+  button.azione:disabled { opacity: .6; cursor: default; }
   table.griglia { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; box-shadow: var(--ombra); }
   .griglia-scroll { overflow-x: auto; border-radius: 8px; }
   table.griglia th, table.griglia td { border-bottom: 1px solid var(--riga); padding: .5rem .55rem; text-align: center; }
-  table.griglia th { background: var(--carta-scura); font-weight: 600; font-size: .78rem; vertical-align: bottom; }
-  table.griglia th.criterio { min-width: 6.5rem; max-width: 9rem; white-space: normal; line-height: 1.25; }
-  table.griglia th.alunno, table.griglia td.alunno { text-align: left; position: sticky; left: 0; background: #fff; min-width: 9rem; }
+  table.griglia th { background: var(--carta-scura); font-weight: 600; font-size: .78rem; }
+  table.griglia td.alunno, table.griglia th.alunno { text-align: left; position: sticky; left: 0; background: #fff; min-width: 9rem; }
   table.griglia th.alunno { background: var(--carta-scura); }
-  table.griglia td.alunno button {
-    background: none; border: none; font: inherit; color: var(--inchiostro); cursor: pointer;
-    text-decoration: underline; text-align: left; padding: 0;
-  }
-  td.esito { font-size: .8rem; color: var(--inchiostro-tenue); white-space: nowrap; min-width: 9rem; text-align: left; }
-
-  .cella {
-    width: 2.4rem; height: 2.1rem; border-radius: 6px; border: 1px solid var(--riga);
-    background: #fff; cursor: pointer; font-weight: 700; font-variant-numeric: tabular-nums;
-    color: var(--inchiostro-tenue);
-  }
-  .cella[data-p="0"] { background: color-mix(in srgb, var(--non-manifestato) 18%, white); border-color: var(--non-manifestato); color: var(--non-manifestato); }
-  .cella[data-p="1"] { background: color-mix(in srgb, var(--supporto) 18%, white); border-color: var(--supporto); color: var(--supporto); }
-  .cella[data-p="2"] { background: color-mix(in srgb, var(--autonomo) 18%, white); border-color: var(--autonomo); color: var(--autonomo); }
-  .cella[data-p=""] { border-style: dashed; color: var(--non-valutato); }
-
-  .menu-valutazione {
-    position: fixed; z-index: 50; background: #fff; border-radius: 8px;
-    box-shadow: 0 6px 20px rgba(35,38,32,.25); padding: .35rem; min-width: 11rem;
-    display: flex; flex-direction: column; gap: .25rem;
-  }
-  .menu-valutazione button {
-    display: flex; align-items: center; gap: .55rem; border: none; border-radius: 6px;
-    padding: .5rem .6rem; font: inherit; font-size: .88rem; cursor: pointer; text-align: left;
-    background: #fff; color: var(--inchiostro);
-  }
-  .menu-valutazione button:hover, .menu-valutazione button:focus-visible { background: var(--carta-scura); }
-  .menu-valutazione .pallino-opzione { width: .95rem; height: .95rem; border-radius: 50%; flex: none; }
-  .menu-valutazione button[data-p="2"] .pallino-opzione { background: var(--autonomo); }
-  .menu-valutazione button[data-p="1"] .pallino-opzione { background: var(--supporto); }
-  .menu-valutazione button[data-p="0"] .pallino-opzione { background: var(--non-manifestato); }
-  .menu-valutazione button[data-p=""] .pallino-opzione { background: var(--non-valutato); }
-  .menu-valutazione button.selezionata { font-weight: 600; }
-  .menu-valutazione button.selezionata::after { content: '✓'; margin-left: auto; color: var(--accento); }
-
-  .legenda { display: flex; gap: 1rem; font-size: .8rem; color: var(--inchiostro-tenue); margin: .75rem 0 1rem; flex-wrap: wrap; }
-  .legenda span.pallino { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .35rem; }
-
-  dialog.scheda { border: none; border-radius: 10px; padding: 0; width: min(560px, 92vw); box-shadow: 0 10px 30px rgba(0,0,0,.2); }
-  dialog.scheda::backdrop { background: rgba(35,38,32,.35); }
-  .scheda-corpo { padding: 1.25rem 1.4rem; }
-  .scheda-corpo h2 { margin: 0 0 .1rem; font-size: 1.15rem; }
-  .scheda-corpo .meta { color: var(--inchiostro-tenue); font-size: .85rem; margin-bottom: 1rem; }
-  .scheda-corpo table { width: 100%; border-collapse: collapse; margin-bottom: .9rem; }
-  .scheda-corpo td, .scheda-corpo th { padding: .35rem 0; border-bottom: 1px solid var(--riga); text-align: left; font-size: .9rem; }
-  .scheda-corpo textarea { width: 100%; min-height: 4.5rem; font: inherit; padding: .5rem; border: 1px solid var(--riga); border-radius: 6px; }
-  .barra { height: .45rem; border-radius: 3px; background: var(--carta-scura); overflow: hidden; margin-top: .25rem; }
-  .barra > i { display: block; height: 100%; background: var(--accento); }
-  .storico-riga { display: flex; align-items: center; gap: .6rem; font-size: .85rem; margin-bottom: .35rem; }
-  .storico-riga .nome { flex: 0 0 11rem; }
-  .storico-riga .barra { flex: 1; }
-  .storico-riga .val { flex: 0 0 3.4rem; text-align: right; color: var(--inchiostro-tenue); }
-  .chiudi { margin-top: .5rem; }
-  button.azione { background: var(--accento); color: #fff; border: none; border-radius: 6px; padding: .45rem .9rem; font: inherit; cursor: pointer; }
-  button.azione:disabled { opacity: .6; cursor: default; }
-
-  .form-attivita {
-    background: #fff; border: 1px solid var(--riga); border-radius: 8px; padding: 1rem 1.1rem;
-    margin-bottom: 1.25rem; box-shadow: var(--ombra);
-  }
-  .form-attivita h2 { font-size: .95rem; margin: 0 0 .75rem; }
+  select.cella { width: 4.2rem; padding: .25rem; }
+  td.esito { font-size: .8rem; color: var(--inchiostro-tenue); white-space: nowrap; text-align: left; }
+  .barra-sezioni { margin: 0 0 1rem; display: flex; gap: .5rem; flex-wrap: wrap; }
+  details.nucleo { background: #fff; border: 1px solid var(--riga); border-radius: 8px; box-shadow: var(--ombra); margin-bottom: .6rem; }
+  details.nucleo > summary { cursor: pointer; padding: .7rem .9rem; font-weight: 600; }
+  details.nucleo .corpo-nucleo { padding: 0 .9rem .8rem; }
+  .corpo-nucleo table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: .3rem; }
+  .corpo-nucleo th, .corpo-nucleo td { text-align: left; padding: .35rem .5rem; border-bottom: 1px dotted var(--riga); }
+  .corpo-nucleo th { font-weight: 600; color: var(--inchiostro-tenue); font-size: .78rem; }
+  .badge { display: inline-block; padding: .1rem .5rem; border-radius: 10px; background: var(--carta-scura); font-size: .75rem; margin-left: .4rem; }
+  .form-attivita { background: #fff; border: 1px solid var(--riga); border-radius: 8px; padding: 1rem 1.1rem; margin-bottom: 1.25rem; box-shadow: var(--ombra); }
   .form-attivita .campi { display: grid; grid-template-columns: 2fr 1fr 1.6fr auto; gap: .6rem; align-items: end; }
   .form-attivita label { display: block; font-size: .78rem; color: var(--inchiostro-tenue); margin-bottom: .2rem; }
-  .form-attivita input, .form-attivita select {
-    width: 100%; padding: .4rem .5rem; border: 1px solid var(--riga); border-radius: 5px; font: inherit;
-  }
-  .errore-form { color: var(--non-manifestato); font-size: .8rem; margin-top: .5rem; }
-
-  .barra-sezioni { margin: 0 0 1rem; }
-  .riepilogo-studente { color: var(--inchiostro-tenue); font-size: .9rem; margin: 0 0 1rem; }
-  .scelta .nuclei-sintesi { display: flex; flex-wrap: wrap; gap: .3rem .9rem; margin-top: .3rem; font-size: .8rem; color: var(--inchiostro-tenue); }
-  details.nucleo {
-    background: #fff; border: 1px solid var(--riga); border-radius: 8px; box-shadow: var(--ombra);
-    margin-bottom: .6rem;
-  }
-  details.nucleo > summary { cursor: pointer; padding: .7rem .9rem; font-weight: 600; }
-  details.nucleo > summary .sub { font-weight: 400; color: var(--inchiostro-tenue); font-size: .85rem; margin-left: .4rem; }
-  details.nucleo .corpo-nucleo { padding: 0 .9rem .8rem; }
-  .criterio { border-top: 1px solid var(--riga); padding: .6rem 0; }
-  .criterio .intestazione { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-  .criterio .intestazione .cumulativo { color: var(--inchiostro-tenue); font-size: .85rem; }
-  .criterio table { width: 100%; border-collapse: collapse; margin-top: .35rem; font-size: .85rem; }
-  .criterio th, .criterio td { text-align: left; padding: .25rem .4rem .25rem 0; border-bottom: 1px dotted var(--riga); }
-  .criterio th { font-weight: 600; color: var(--inchiostro-tenue); font-size: .78rem; }
-  .livello { display: inline-block; padding: .05rem .45rem; border-radius: 5px; border: 1px solid var(--riga); font-size: .8rem; }
-  .livello[data-p="0"] { color: var(--non-manifestato); border-color: var(--non-manifestato); background: color-mix(in srgb, var(--non-manifestato) 12%, white); }
-  .livello[data-p="1"] { color: var(--supporto); border-color: var(--supporto); background: color-mix(in srgb, var(--supporto) 12%, white); }
-  .livello[data-p="2"] { color: var(--autonomo); border-color: var(--autonomo); background: color-mix(in srgb, var(--autonomo) 12%, white); }
-  .livello[data-p=""] { color: var(--non-valutato); border-style: dashed; }
-  .spiegazione { font-size: .8rem; color: var(--inchiostro-tenue); margin: 0 0 1rem; }
-  .secondario { font-size: .78rem; color: var(--inchiostro-tenue); margin: .2rem 0 0; }
-  .criterio tr.in-corrente td { background: color-mix(in srgb, var(--accento) 9%, white); font-weight: 600; }
-  .criterio tr.in-corrente td:last-child { color: var(--accento); }
-  .corpo-nucleo > table { width: 100%; border-collapse: collapse; margin-top: .3rem; font-size: .85rem; }
-  .corpo-nucleo > table th, .corpo-nucleo > table td { text-align: left; padding: .35rem .5rem; border-bottom: 1px dotted var(--riga); }
-  .corpo-nucleo > table th { font-weight: 600; color: var(--inchiostro-tenue); font-size: .78rem; }
-  @media (max-width: 720px) {
-    .form-attivita .campi { grid-template-columns: 1fr; }
-  }
+  .form-attivita input, .form-attivita select { width: 100%; padding: .4rem .5rem; border: 1px solid var(--riga); border-radius: 5px; font: inherit; }
+  @media (max-width: 720px) { .form-attivita .campi { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<header class="app">
+<header class="app" id="intestazione" style="display:none">
   <h1>Osservazioni pedagogiche</h1>
-  <span class="filo" id="filoPercorso"></span>
-  <label>Docente (ID) <input id="docenteId" type="number" min="1" value="1" /></label>
+  <span class="filo" id="filoUtente"></span>
+  <select id="selectTenant"></select>
+  <button class="link" id="bottoneLogout">Esci</button>
 </header>
 <main>
-  <p class="avviso">
-    Modalità di sviluppo: l'identità del docente è impostata a mano nel campo qui sopra
-    (header <code>X-Docente-Id</code>). Non è un login: va sostituita da un'autenticazione
-    reale prima di qualunque uso con dati veri (vedi <code>server/auth.js</code>).
-  </p>
+  <div id="erroreGlobale"></div>
   <nav class="percorso" id="percorso"></nav>
   <div id="contenuto">Caricamento…</div>
 </main>
 
-<dialog class="scheda" id="dialogoScheda">
-  <div class="scheda-corpo" id="corpoScheda"></div>
-</dialog>
-
 <script>
 'use strict';
 
-const stato = {
-  insegnamenti: [], materiaCorrente: null, insegnamentoCorrente: null, attivitaCorrente: null,
-  studentiAperti: false, studenteCorrente: null, reportClasseAperto: false,
-};
-
-function docenteId() { return document.getElementById('docenteId').value; }
-
-async function api(percorso, opzioni) {
-  const risposta = await fetch('/api' + percorso, {
-    ...opzioni,
-    headers: { 'Content-Type': 'application/json', 'X-Docente-Id': docenteId(), ...(opzioni && opzioni.headers) },
-  });
-  if (!risposta.ok) {
-    const corpo = await risposta.json().catch(() => ({}));
-    throw new Error(corpo.errore || ('Errore HTTP ' + risposta.status));
-  }
-  return risposta.status === 204 ? null : risposta.json();
-}
+const stato = { me: null, teachingCorrente: null, activityCorrente: null };
 
 function el(tag, props, figli) {
   const nodo = document.createElement(tag);
@@ -218,705 +80,332 @@ function el(tag, props, figli) {
   return nodo;
 }
 
+async function api(percorso, opzioni) {
+  const risposta = await fetch('/api' + percorso, {
+    ...opzioni,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(stato.me && stato.me.csrfToken ? { 'X-CSRF-Token': stato.me.csrfToken } : {}),
+      ...(opzioni && opzioni.headers),
+    },
+  });
+  if (!risposta.ok) {
+    const corpo = await risposta.json().catch(() => ({}));
+    const errore = new Error(corpo.errore || ('Errore HTTP ' + risposta.status));
+    errore.status = risposta.status;
+    throw errore;
+  }
+  return risposta.status === 204 ? null : risposta.json();
+}
+
+function mostraErrore(messaggio) {
+  document.getElementById('erroreGlobale').innerHTML = '';
+  if (messaggio) document.getElementById('erroreGlobale').append(el('div', { className: 'errore-box', textContent: messaggio }));
+}
+
+function numeroIt(v) { return v === null || v === undefined ? '—' : Number(v).toLocaleString('it-IT', { maximumFractionDigits: 2 }); }
+function testoEsito(esito) { return esito.percentuale === null ? 'Non valutato' : `${numeroIt(esito.percentuale)}% · ${esito.giudizio || ''}`; }
+
+// --- Schermata di login ------------------------------------------------
+
+function mostraLogin() {
+  document.getElementById('intestazione').style.display = 'none';
+  document.getElementById('percorso').innerHTML = '';
+  const email = el('input', { type: 'email', placeholder: 'nome@istituto.test', required: true });
+  const password = el('input', { type: 'password', required: true });
+  const erroreForm = el('div', { className: 'errore-box', style: 'display:none' });
+  const bottone = el('button', { className: 'azione', type: 'submit', textContent: 'Accedi' });
+  const form = el('form', {
+    className: 'form-carta',
+    onsubmit: async (evento) => {
+      evento.preventDefault();
+      erroreForm.style.display = 'none';
+      bottone.disabled = true;
+      try {
+        const corpo = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email: email.value, password: password.value }) });
+        stato.me = corpo;
+        avviaApp();
+      } catch (errore) {
+        erroreForm.textContent = errore.message;
+        erroreForm.style.display = 'block';
+        bottone.disabled = false;
+      }
+    },
+  }, [
+    el('h2', { textContent: 'Accedi' }),
+    el('label', { textContent: 'Email' }), email,
+    el('label', { textContent: 'Password' }), password,
+    erroreForm, bottone,
+  ]);
+  document.getElementById('contenuto').innerHTML = '';
+  document.getElementById('contenuto').append(form);
+}
+
+// --- Intestazione con tenant attivo/switch ------------------------------
+
+function aggiornaIntestazione() {
+  const header = document.getElementById('intestazione');
+  header.style.display = 'flex';
+  document.getElementById('filoUtente').textContent =
+    `${stato.me.account.nome} ${stato.me.account.cognome}${stato.me.isPlatformAdmin ? ' · PLATFORM_ADMIN' : ''}`;
+  const select = document.getElementById('selectTenant');
+  select.innerHTML = '';
+  select.append(el('option', { value: '', textContent: 'Nessun tenant attivo' }));
+  stato.me.tenantsDisponibiliPerSwitch.forEach((t) => {
+    const id = t.tenant_id ?? t.id;
+    select.append(el('option', { value: id, textContent: t.nome, selected: id === stato.me.activeTenantId }));
+  });
+  select.onchange = async () => {
+    if (!select.value) return;
+    try {
+      stato.me = await api('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenantId: Number(select.value) }) });
+      mostraTeachings();
+    } catch (errore) { mostraErrore(errore.message); }
+  };
+}
+
+document.getElementById('bottoneLogout').addEventListener('click', async () => {
+  await api('/auth/logout', { method: 'POST' }).catch(() => {});
+  stato.me = null;
+  mostraLogin();
+});
+
+async function avviaApp() {
+  aggiornaIntestazione();
+  if (stato.me.activeTenantId) mostraTeachings();
+  else mostraSceltaTenant();
+}
+
+function mostraSceltaTenant() {
+  document.getElementById('contenuto').innerHTML = '';
+  document.getElementById('contenuto').append(
+    el('p', { textContent: 'Seleziona un tenant attivo dal menu in alto per iniziare.' })
+  );
+  if (stato.me.isPlatformAdmin) mostraPannelloPlatform();
+}
+
+async function mostraPannelloPlatform() {
+  const tenants = await api('/platform/tenants');
+  const box = el('div', { className: 'form-attivita' }, [el('h2', { textContent: 'Tenant della piattaforma' })]);
+  const lista = el('div', { className: 'elenco' });
+  tenants.forEach((t) => lista.append(el('div', { className: 'scelta' }, [
+    el('div', { className: 'tit', textContent: t.nome }), el('div', { className: 'sub', textContent: `${t.slug} · ${t.stato}` }),
+  ])));
+  box.append(lista);
+  document.getElementById('contenuto').append(box);
+}
+
+// --- Percorso di navigazione ---------------------------------------------
+
 function aggiornaPercorso() {
   const box = document.getElementById('percorso');
   box.innerHTML = '';
-  const home = el('button', { textContent: 'I miei insegnamenti', onclick: mostraInsegnamenti });
-  box.append(home);
-  if (stato.materiaCorrente) {
+  box.append(el('button', { textContent: 'I miei Teaching', onclick: mostraTeachings }));
+  if (stato.teachingCorrente) {
     box.append(document.createTextNode(' › '));
-    const materia = stato.materiaCorrente;
-    box.append(el('button', { textContent: materia, onclick: () => mostraClassi(materia) }));
-  }
-  if (stato.insegnamentoCorrente) {
-    box.append(document.createTextNode(' › '));
-    const ins = stato.insegnamentoCorrente;
     box.append(el('button', {
-      textContent: `${ins.classe} (${ins.anno_scolastico})`,
-      onclick: () => mostraAttivita(ins),
+      textContent: `${stato.teachingCorrente.materia} — ${stato.teachingCorrente.classe}`,
+      onclick: () => mostraActivities(stato.teachingCorrente),
     }));
   }
-  if (stato.attivitaCorrente) {
+  if (stato.activityCorrente) {
     box.append(document.createTextNode(' › '));
-    if (stato.reportClasseAperto) {
-      const attivitaRif = stato.attivitaCorrente;
-      box.append(el('button', { textContent: attivitaRif.nome, onclick: () => mostraGriglia(attivitaRif) }));
-    } else {
-      box.append(el('span', { textContent: stato.attivitaCorrente.nome }));
-    }
-  }
-  if (stato.reportClasseAperto) {
-    box.append(document.createTextNode(' › '));
-    box.append(el('span', { textContent: 'Report classe' }));
-  }
-  if (stato.studentiAperti) {
-    box.append(document.createTextNode(' › '));
-    const ins = stato.insegnamentoCorrente;
-    box.append(el('button', { textContent: 'Studenti', onclick: () => mostraStudenti(ins) }));
-  }
-  if (stato.studenteCorrente) {
-    box.append(document.createTextNode(' › '));
-    box.append(el('span', { textContent: `${stato.studenteCorrente.cognome} ${stato.studenteCorrente.nome}` }));
+    box.append(el('span', { textContent: stato.activityCorrente.nome }));
   }
 }
 
-/** Azzera la posizione nella navigazione sotto il livello "classe". */
-function azzeraSottoClasse() {
-  stato.attivitaCorrente = null;
-  stato.studentiAperti = false;
-  stato.studenteCorrente = null;
-  stato.reportClasseAperto = false;
-}
+// --- I miei Teaching -------------------------------------------------------
 
-/**
- * Primo livello di navigazione: le MATERIE del docente, ciascuna una sola volta.
- * I dati sono quelli di /api/insegnamenti (una riga per materia/classe/anno),
- * raggruppati qui per nome della materia (UNIQUE nel database).
- */
-async function mostraInsegnamenti() {
-  stato.materiaCorrente = null;
-  stato.insegnamentoCorrente = null;
-  azzeraSottoClasse();
+async function mostraTeachings() {
+  stato.teachingCorrente = null; stato.activityCorrente = null;
   aggiornaPercorso();
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
-    const insegnamenti = await api('/insegnamenti');
-    stato.insegnamenti = insegnamenti;
-    if (insegnamenti.length === 0) {
-      contenuto.textContent = 'Nessun insegnamento trovato per questo docente.';
+    const teachings = await api('/teachings');
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: 'I miei Teaching' }));
+    if (teachings.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessun Teaching assegnato in questo tenant.' }));
       return;
     }
-    const materie = [...new Set(insegnamenti.map((ins) => ins.materia))]
-      .sort((a, b) => a.localeCompare(b, 'it'));
     const lista = el('div', { className: 'elenco' });
-    materie.forEach((materia) => {
-      const numeroClassi = insegnamenti.filter((ins) => ins.materia === materia).length;
-      lista.append(el('button', {
-        className: 'scelta',
-        onclick: () => mostraClassi(materia),
-      }, [
-        el('div', { className: 'tit', textContent: materia }),
-        el('div', { className: 'sub', textContent: numeroClassi === 1 ? '1 classe' : `${numeroClassi} classi` }),
-      ]));
-    });
-    contenuto.innerHTML = '';
-    contenuto.append(lista);
-  } catch (errore) {
-    contenuto.textContent = 'Errore: ' + errore.message;
-  }
-}
-
-/**
- * Secondo livello: le CLASSI in cui il docente insegna la materia scelta.
- * Usa gli insegnamenti già caricati da mostraInsegnamenti (nessuna nuova chiamata).
- */
-function mostraClassi(materia) {
-  stato.materiaCorrente = materia;
-  stato.insegnamentoCorrente = null;
-  azzeraSottoClasse();
-  aggiornaPercorso();
-  const contenuto = document.getElementById('contenuto');
-  const classi = stato.insegnamenti
-    .filter((ins) => ins.materia === materia)
-    .sort((a, b) => a.classe.localeCompare(b.classe, 'it', { numeric: true })
-      || b.anno_scolastico.localeCompare(a.anno_scolastico));
-  const lista = el('div', { className: 'elenco' });
-  classi.forEach((ins) => {
-    lista.append(el('button', {
-      className: 'scelta',
-      onclick: () => mostraAttivita(ins),
+    teachings.forEach((t) => lista.append(el('button', {
+      className: 'scelta', onclick: () => mostraActivities(t),
     }, [
-      el('div', { className: 'tit', textContent: ins.classe }),
-      el('div', { className: 'sub', textContent: `Anno scolastico ${ins.anno_scolastico}` }),
-    ]));
-  });
-  contenuto.innerHTML = '';
-  contenuto.append(el('h2', { textContent: materia }), lista);
-}
-
-async function mostraAttivita(insegnamento) {
-  stato.materiaCorrente = insegnamento.materia;
-  stato.insegnamentoCorrente = insegnamento;
-  azzeraSottoClasse();
-  aggiornaPercorso();
-  const contenuto = document.getElementById('contenuto');
-  contenuto.textContent = 'Caricamento…';
-  try {
-    const [attivita, nuclei] = await Promise.all([
-      api(`/insegnamenti/${insegnamento.insegnamento_id}/attivita`),
-      api(`/insegnamenti/${insegnamento.insegnamento_id}/nuclei`),
-    ]);
-    contenuto.innerHTML = '';
-    contenuto.append(el('h2', { textContent: `${insegnamento.materia} — ${insegnamento.classe}` }));
-    contenuto.append(el('div', { className: 'barra-sezioni' }, [
-      el('button', { className: 'azione', textContent: 'Studenti della classe', onclick: () => mostraStudenti(insegnamento) }),
-    ]));
-    contenuto.append(costruisciFormNuovaAttivita(insegnamento, nuclei));
-
-    if (attivita.length === 0) {
-      contenuto.append(el('p', { textContent: 'Nessuna attività per questo insegnamento: creane una qui sopra.' }));
-      return;
-    }
-    const lista = el('div', { className: 'elenco' });
-    attivita.forEach((a) => {
-      lista.append(el('button', {
-        className: 'scelta',
-        onclick: () => mostraGriglia(a),
-      }, [
-        el('div', { className: 'tit', textContent: a.nome }),
-        el('div', { className: 'sub', textContent: `${a.nucleo} · ${new Date(a.data_attivita).toLocaleDateString('it-IT')}` }),
-      ]));
-    });
+      el('div', { className: 'tit', textContent: `${t.materia} — ${t.classe}` }),
+      el('div', { className: 'sub', textContent: `Anno scolastico ${t.anno_scolastico}` }),
+    ])));
     contenuto.append(lista);
-  } catch (errore) {
-    contenuto.textContent = 'Errore: ' + errore.message;
-  }
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-/** Numero in formato italiano (es. 1,67), al massimo 2 decimali. */
-function numeroIt(valore) {
-  return Number(valore).toLocaleString('it-IT', { maximumFractionDigits: 2 });
-}
+// --- Attività di un Teaching -----------------------------------------------
 
-/** Percentuale e giudizio calcolati dal server: "Non valutato" se non c'è alcuna valutazione presente. */
-function testoEsito(esito) {
-  return esito.percentuale === null ? 'Non valutato' : `${numeroIt(esito.percentuale)}% · ${esito.giudizio}`;
-}
-
-/** Risultato corrente di un criterio: media delle ultime osservazioni (ultime N di M). */
-function testoRisultatoCorrenteCriterio(r) {
-  if (r.percentuale === null) return 'Non valutato';
-  let quante;
-  if (r.osservazioniConsiderate < r.osservazioniTotali) quante = `ultime ${r.osservazioniConsiderate} di ${r.osservazioniTotali}`;
-  else if (r.osservazioniTotali === 1) quante = '1 osservazione';
-  else quante = `tutte le ${r.osservazioniTotali} osservazioni`;
-  return `media ${numeroIt(r.media)} (${quante}) · ${testoEsito(r)}`;
-}
-
-const SPIEGAZIONE_RISULTATO_CORRENTE = 'Risultato corrente = media delle ultime 3 osservazioni di ogni criterio '
-  + '(nucleo e materia: media dei criteri valutati, a pesi uguali). '
-  + 'Storico = tutte le osservazioni disponibili dall\'inizio dell\'anno.';
-
-/**
- * Studenti della classe (iscrizioni attive della classe/anno dell'insegnamento),
- * ciascuno con il risultato corrente complessivo e per nucleo, calcolato dal
- * server su tutte le attività di questo insegnamento.
- */
-async function mostraStudenti(insegnamento) {
-  stato.materiaCorrente = insegnamento.materia;
-  stato.insegnamentoCorrente = insegnamento;
-  azzeraSottoClasse();
-  stato.studentiAperti = true;
-  aggiornaPercorso();
-  const contenuto = document.getElementById('contenuto');
-  contenuto.textContent = 'Caricamento…';
-  try {
-    const dati = await api(`/insegnamenti/${insegnamento.insegnamento_id}/studenti`);
-    contenuto.innerHTML = '';
-    contenuto.append(el('h2', { textContent: `${insegnamento.materia} — ${insegnamento.classe} · Studenti` }));
-    contenuto.append(el('p', { className: 'spiegazione', textContent: SPIEGAZIONE_RISULTATO_CORRENTE }));
-    if (dati.studenti.length === 0) {
-      contenuto.append(el('p', { textContent: 'Nessuno studente iscritto (attivo) in questa classe per questo anno scolastico.' }));
-      return;
-    }
-    const lista = el('div', { className: 'elenco' });
-    dati.studenti.forEach((studente) => {
-      const c = studente.complessivo;
-      lista.append(el('button', {
-        className: 'scelta',
-        onclick: () => mostraProgressoStudente(insegnamento, studente),
-      }, [
-        el('div', { className: 'tit', textContent: `${studente.cognome} ${studente.nome}` }),
-        el('div', {
-          className: 'sub',
-          textContent: `Risultato corrente: ${testoEsito(c.risultatoCorrente)} · ${c.criteriValutati}/${c.criteriTotali} criteri valutati`,
-        }),
-        el('div', { className: 'nuclei-sintesi' }, studente.nuclei.map((n) => el('span', {
-          textContent: `${n.nome}: ${testoEsito(n.risultatoCorrente)} (${n.criteriValutati}/${n.criteriTotali})`,
-        }))),
-        el('div', { className: 'secondario', textContent: `Storico da inizio anno: ${testoEsito(c.cumulativoDaInizioAnno)}` }),
-      ]));
-    });
-    contenuto.append(lista);
-  } catch (errore) {
-    contenuto.textContent = 'Errore: ' + errore.message;
-  }
-}
-
-/**
- * Progresso di uno studente: risultato corrente complessivo -> nuclei
- * (espandibili) -> criteri, ciascuno con il risultato corrente e lo storico
- * completo delle osservazioni (evidenziate quelle usate per il risultato corrente).
- */
-async function mostraProgressoStudente(insegnamento, studente) {
-  stato.studentiAperti = true;
-  stato.studenteCorrente = studente;
-  aggiornaPercorso();
-  const contenuto = document.getElementById('contenuto');
-  contenuto.textContent = 'Caricamento…';
-  try {
-    const p = await api(`/insegnamenti/${insegnamento.insegnamento_id}/studenti/${studente.iscrizioneId}/progresso`);
-    contenuto.innerHTML = '';
-    contenuto.append(el('h2', { textContent: `${p.alunno.cognome} ${p.alunno.nome}` }));
-    contenuto.append(el('p', {
-      className: 'riepilogo-studente',
-      textContent: `${p.insegnamento.materia} — ${p.insegnamento.classe} · ${p.insegnamento.annoScolastico} · `
-        + `Risultato corrente: ${testoEsito(p.complessivo.risultatoCorrente)} · `
-        + `${p.complessivo.criteriValutati}/${p.complessivo.criteriTotali} criteri valutati`,
-    }));
-    contenuto.append(el('p', {
-      className: 'secondario',
-      textContent: `Storico da inizio anno (tutte le osservazioni): ${testoEsito(p.complessivo.cumulativoDaInizioAnno)}`,
-    }));
-    contenuto.append(el('p', { className: 'spiegazione', textContent: SPIEGAZIONE_RISULTATO_CORRENTE }));
-
-    p.nuclei.forEach((nucleo) => {
-      const corpo = el('div', { className: 'corpo-nucleo' });
-      if (nucleo.grigliaNonConfigurata) {
-        corpo.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
-      } else {
-        corpo.append(el('p', {
-          className: 'secondario',
-          textContent: `Storico del nucleo da inizio anno: ${testoEsito(nucleo.cumulativoDaInizioAnno)}`,
-        }));
-      }
-      nucleo.criteri.forEach((criterio) => {
-        const blocco = el('div', { className: 'criterio' }, [
-          el('div', { className: 'intestazione' }, [
-            el('span', { textContent: criterio.nome }),
-            el('span', {
-              className: 'cumulativo',
-              textContent: `Risultato corrente: ${testoRisultatoCorrenteCriterio(criterio.risultatoCorrente)}`,
-            }),
-          ]),
-        ]);
-        if (criterio.osservazioni.length === 0) {
-          const livello = el('span', { className: 'livello', textContent: 'Non valutato' });
-          livello.dataset.p = '';
-          blocco.append(el('div', { style: 'margin-top:.3rem' }, [livello]));
-        } else {
-          const cumulativo = criterio.cumulativoDaInizioAnno;
-          blocco.append(el('div', {
-            className: 'secondario',
-            textContent: `Storico (tutte le ${criterio.osservazioni.length} osservazioni): `
-              + `${cumulativo.punteggioOttenuto}/${cumulativo.punteggioMassimo} · ${testoEsito(cumulativo)}`,
-          }));
-          const tabella = el('table', {}, [
-            el('tr', {}, ['Attività', 'Data', 'Punteggio', 'Livello', 'Risultato corrente'].map((t) => el('th', { textContent: t }))),
-          ]);
-          criterio.osservazioni.forEach((o) => {
-            const livello = el('span', { className: 'livello', textContent: o.etichetta });
-            livello.dataset.p = o.punteggio;
-            tabella.append(el('tr', { className: o.inRisultatoCorrente ? 'in-corrente' : '' }, [
-              el('td', { textContent: o.attivita }),
-              el('td', { textContent: new Date(o.dataAttivita).toLocaleDateString('it-IT') }),
-              el('td', { textContent: String(o.punteggio) }),
-              el('td', {}, [livello]),
-              el('td', { textContent: o.inRisultatoCorrente ? '✓ usata' : '—' }),
-            ]));
-          });
-          blocco.append(tabella);
-        }
-        corpo.append(blocco);
-      });
-      contenuto.append(el('details', { className: 'nucleo' }, [
-        el('summary', {}, [
-          document.createTextNode(nucleo.nome),
-          el('span', {
-            className: 'sub',
-            textContent: `Risultato corrente: ${testoEsito(nucleo.risultatoCorrente)} · `
-              + `${nucleo.criteriValutati}/${nucleo.criteriTotali} criteri valutati`,
-          }),
-        ]),
-        corpo,
-      ]));
-    });
-  } catch (errore) {
-    contenuto.textContent = 'Errore: ' + errore.message;
-  }
-}
-
-/**
- * Modulo per creare una nuova attività: il nucleo tematico si sceglie SOLO tra
- * quelli già configurati per la materia dell'insegnamento (mai scritti qui nel
- * frontend); i criteri non si specificano mai in questa schermata, derivano
- * automaticamente dal nucleo scelto quando l'attività viene aperta.
- */
-function costruisciFormNuovaAttivita(insegnamento, nuclei) {
-  const inputNome = el('input', { type: 'text', placeholder: 'Es. Addizioni e sottrazioni', required: true });
+function costruisciFormNuovaActivity(teaching, unita) {
+  const inputNome = el('input', { type: 'text', placeholder: 'Es. Numeri entro il cento', required: true });
   const inputData = el('input', { type: 'date', required: true });
-  const selectNucleo = el('select', { required: true }, [
-    el('option', { value: '', textContent: nuclei.length ? 'Scegli il nucleo tematico…' : 'Nessun nucleo configurato per questa materia' }),
-    ...nuclei.map((n) => el('option', { value: n.nucleo_id, textContent: n.nome })),
+  const selectUnita = el('select', { required: true }, [
+    el('option', { value: '', textContent: unita.length ? "Scegli l'unità pedagogica…" : 'Nessuna unità configurata per questa materia' }),
+    ...unita.map((u) => el('option', { value: u.id, textContent: u.nome })),
   ]);
-  const messaggioErrore = el('div', { className: 'errore-form' });
-  const bottoneCrea = el('button', { className: 'azione', type: 'submit', textContent: 'Crea attività' });
-
-  const form = el('form', {
+  const erroreForm = el('div', { className: 'errore-form' });
+  const bottone = el('button', { className: 'azione', type: 'submit', textContent: 'Crea attività' });
+  return el('form', {
     className: 'form-attivita',
     onsubmit: async (evento) => {
       evento.preventDefault();
-      messaggioErrore.textContent = '';
-      if (!selectNucleo.value) { messaggioErrore.textContent = 'Scegliere un nucleo tematico.'; return; }
-      bottoneCrea.disabled = true;
+      erroreForm.textContent = '';
+      if (!selectUnita.value) { erroreForm.textContent = "Scegliere un'unità pedagogica."; return; }
+      bottone.disabled = true;
       try {
-        await api(`/insegnamenti/${insegnamento.insegnamento_id}/attivita`, {
+        await api(`/teachings/${teaching.teaching_id}/activities`, {
           method: 'POST',
-          body: JSON.stringify({
-            nome: inputNome.value,
-            dataAttivita: inputData.value,
-            nucleoTematicoId: Number(selectNucleo.value),
-          }),
+          body: JSON.stringify({ nome: inputNome.value, dataAttivita: inputData.value, pedagogicalUnitId: Number(selectUnita.value) }),
         });
-        await mostraAttivita(insegnamento); // ricarica l'elenco con la nuova attività
-      } catch (errore) {
-        messaggioErrore.textContent = 'Impossibile creare l\'attività: ' + errore.message;
-        bottoneCrea.disabled = false;
-      }
+        mostraActivities(teaching);
+      } catch (errore) { erroreForm.textContent = errore.message; bottone.disabled = false; }
     },
   }, [
     el('h2', { textContent: 'Nuova attività' }),
     el('div', { className: 'campi' }, [
       el('div', {}, [el('label', { textContent: 'Titolo' }), inputNome]),
       el('div', {}, [el('label', { textContent: 'Data' }), inputData]),
-      el('div', {}, [el('label', { textContent: 'Nucleo tematico' }), selectNucleo]),
-      bottoneCrea,
+      el('div', {}, [el('label', { textContent: 'Unità pedagogica' }), selectUnita]),
+      bottone,
     ]),
-    messaggioErrore,
+    erroreForm,
   ]);
-  return form;
 }
 
-const ETICHETTA_PUNTEGGIO = { 0: 'Non manifestato', 1: 'Con supporto', 2: 'Autonomo' };
-// Opzioni del menu di valutazione, in ordine di visualizzazione dal basso all'alto.
-const OPZIONI_VALUTAZIONE = [
-  { punteggio: 2, etichetta: 'Autonomo' },
-  { punteggio: 1, etichetta: 'Con supporto' },
-  { punteggio: 0, etichetta: 'Non manifestato' },
-  { punteggio: null, etichetta: 'Non valutato' },
-];
-
-async function mostraGriglia(attivitaRif) {
-  stato.attivitaCorrente = attivitaRif;
-  stato.reportClasseAperto = false;
+async function mostraActivities(teaching) {
+  stato.teachingCorrente = teaching; stato.activityCorrente = null;
   aggiornaPercorso();
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
-    const griglia = await api(`/attivita/${attivitaRif.attivita_id}/griglia`);
+    const [attivita, unita] = await Promise.all([
+      api(`/teachings/${teaching.teaching_id}/activities`),
+      api(`/teachings/${teaching.teaching_id}/pedagogical-units`),
+    ]);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `${teaching.materia} — ${teaching.classe}` }));
+    contenuto.append(costruisciFormNuovaActivity(teaching, unita));
+    if (attivita.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuna attività: creane una qui sopra.' }));
+      return;
+    }
+    const lista = el('div', { className: 'elenco' });
+    attivita.forEach((a) => lista.append(el('button', {
+      className: 'scelta', onclick: () => mostraGriglia(a),
+    }, [
+      el('div', { className: 'tit', textContent: a.nome }),
+      el('div', { className: 'sub', textContent: `${a.unita_pedagogica} · ${new Date(a.data_attivita).toLocaleDateString('it-IT')}` }),
+    ])));
+    contenuto.append(lista);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+// --- Griglia di un'attività --------------------------------------------------
+
+async function mostraGriglia(attivitaRif) {
+  stato.activityCorrente = attivitaRif;
+  aggiornaPercorso();
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const griglia = await api(`/activities/${attivitaRif.activity_id}/griglia`);
     contenuto.innerHTML = '';
     if (griglia.grigliaNonConfigurata) {
-      contenuto.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
+      contenuto.append(el('p', { textContent: "L'unità pedagogica non ha criteri configurati." }));
       return;
     }
     contenuto.append(el('div', { className: 'barra-sezioni' }, [
-      el('button', {
-        className: 'azione', textContent: 'Report classe',
-        onclick: () => mostraReportClasseAttivita(attivitaRif),
-      }),
+      el('button', { className: 'azione', textContent: 'Report classe', onclick: () => mostraReportClasse(attivitaRif) }),
     ]));
-    contenuto.append(el('div', { className: 'legenda' }, [
-      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--autonomo)' }), document.createTextNode('2 · Autonomo')]),
-      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--supporto)' }), document.createTextNode('1 · Con supporto')]),
-      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--non-manifestato)' }), document.createTextNode('0 · Non manifestato')]),
-      el('span', {}, [el('span', { className: 'pallino', style: 'background:var(--non-valutato);border:1px dashed #999' }), document.createTextNode('— · Non valutato · clic sulla cella per scegliere')]),
-    ]));
-
     const tabella = el('table', { className: 'griglia' });
-    const intestazione = el('tr', {}, [
+    tabella.append(el('thead', {}, [el('tr', {}, [
       el('th', { className: 'alunno', textContent: 'Alunno' }),
-      ...griglia.criteri.map((c) => el('th', { className: 'criterio', textContent: c.nome })),
+      ...griglia.criteri.map((c) => el('th', { textContent: c.descrizione })),
       el('th', { textContent: 'Esito' }),
-    ]);
-    tabella.append(el('thead', {}, [intestazione]));
-
+    ])]));
     const corpo = el('tbody');
     griglia.righe.forEach((riga) => {
-      const tr = el('tr');
-      tr.append(el('td', { className: 'alunno' }, [
-        el('button', {
-          textContent: `${riga.cognome} ${riga.nome}`,
-          onclick: () => apriScheda(attivitaRif, riga),
-        }),
-      ]));
+      const tr = el('tr', {}, [el('td', { className: 'alunno', textContent: `${riga.cognome} ${riga.nome}` })]);
       riga.celle.forEach((cella) => {
-        const bottone = el('button', {
-          className: 'cella',
-          textContent: cella.punteggio === null ? '—' : cella.punteggio,
-          title: cella.punteggio === null ? 'Non valutato' : ETICHETTA_PUNTEGGIO[cella.punteggio],
-        });
-        bottone.dataset.p = cella.punteggio === null ? '' : cella.punteggio;
-        bottone.addEventListener('click', () => apriMenuValutazione(attivitaRif, riga, cella, bottone));
-        tr.append(el('td', {}, [bottone]));
+        const select = el('select', { className: 'cella' }, [
+          el('option', { value: '', textContent: '—' }),
+          ...griglia.scala.valori.map((v) => el('option', {
+            value: v.valore, textContent: `${v.valore} · ${v.etichetta}`, selected: cella.valore === v.valore,
+          })),
+        ]);
+        select.onchange = async () => {
+          select.disabled = true;
+          try {
+            const valore = select.value === '' ? null : Number(select.value);
+            await api(`/activities/${attivitaRif.activity_id}/enrollments/${riga.enrollmentId}/criteria/${cella.criterionId}`, {
+              method: 'PUT', body: JSON.stringify({ valore }),
+            });
+            mostraGriglia(attivitaRif);
+          } catch (errore) { mostraErrore(errore.message); select.disabled = false; }
+        };
+        tr.append(el('td', {}, [select]));
       });
-      const esito = riga.esito;
-      tr.append(el('td', {
-        className: 'esito',
-        textContent: esito.percentuale === null
-          ? `${riga.valutazionePresenti}/${riga.valutazioniTotali} valutati`
-          : `${riga.valutazionePresenti}/${riga.valutazioniTotali} · ${esito.percentuale}% · ${esito.giudizio}`,
-      }));
+      tr.append(el('td', { className: 'esito', textContent: `${riga.valutazionePresenti}/${riga.valutazioniTotali} · ${testoEsito(riga.esito)}` }));
       corpo.append(tr);
     });
     tabella.append(corpo);
     contenuto.append(el('div', { className: 'griglia-scroll' }, [tabella]));
-  } catch (errore) {
-    contenuto.textContent = 'Errore: ' + errore.message;
-  }
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-/**
- * Report di classe per una singola attività: fotografia di quell'attività
- * (niente media mobile, niente altre attività, niente cumulativo da inizio
- * anno), organizzato per nucleo tematico. Il risultato di nucleo/attività è
- * la media aritmetica semplice dei risultati percentuali dei criteri
- * valutati, calcolata dal server.
- */
-async function mostraReportClasseAttivita(attivitaRif) {
-  stato.attivitaCorrente = attivitaRif;
-  stato.reportClasseAperto = true;
-  aggiornaPercorso();
+// --- Report classe (fotografia della singola attività) ----------------------
+
+async function mostraReportClasse(attivitaRif) {
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
-    const report = await api(`/attivita/${attivitaRif.attivita_id}/report-classe`);
+    const report = await api(`/activities/${attivitaRif.activity_id}/report-classe`);
     contenuto.innerHTML = '';
     contenuto.append(el('div', { className: 'barra-sezioni' }, [
       el('button', { className: 'azione', textContent: '← Torna alla griglia', onclick: () => mostraGriglia(attivitaRif) }),
     ]));
     contenuto.append(el('h2', { textContent: `Report classe — ${attivitaRif.nome}` }));
-    if (report.grigliaNonConfigurata) {
-      contenuto.append(el('p', { textContent: 'La griglia di osservazione non è configurata per questo nucleo tematico: nessun criterio è stato definito.' }));
-      return;
-    }
-    contenuto.append(el('p', {
-      className: 'riepilogo-studente',
-      textContent: `${report.totaleAlunni} alunni · Risultato complessivo dell'attività: ${testoEsito(report.complessivo)}`,
-    }));
-    contenuto.append(el('p', {
-      className: 'spiegazione',
-      textContent: 'Fotografia di questa attività: solo i punteggi presenti qui, nessuna media mobile né dato di altre attività. '
-        + 'Il risultato di nucleo/attività è la media semplice dei risultati percentuali dei criteri valutati, pesati allo stesso modo.',
-    }));
-
-    report.nuclei.forEach((nucleo) => {
+    if (report.grigliaNonConfigurata) { contenuto.append(el('p', { textContent: 'Griglia non configurata.' })); return; }
+    contenuto.append(el('p', { textContent: `${report.totaleAlunni} alunni · Risultato complessivo: ${testoEsito(report.complessivo)}` }));
+    report.unitaPedagogiche.forEach((unita) => {
       const corpo = el('div', { className: 'corpo-nucleo' });
-      const tabella = el('table', {}, [
-        el('tr', {}, ['Criterio', 'Valutati', 'Non valutati', '0', '1', '2', 'Risultato', 'Giudizio']
-          .map((t) => el('th', { textContent: t }))),
-      ]);
-      nucleo.criteri.forEach((c) => {
+      const tabella = el('table', {}, [el('tr', {}, ['Criterio', 'Valutati', 'Non valutati', 'Distribuzione', 'Risultato', 'Giudizio'].map((t) => el('th', { textContent: t })))]);
+      unita.criteri.forEach((c) => {
+        const distribuzione = Object.entries(c.distribuzione).map(([v, n]) => `${v}:${n}`).join('  ');
         tabella.append(el('tr', {}, [
-          el('td', { textContent: c.nome }),
+          el('td', { textContent: c.descrizione }),
           el('td', { textContent: String(c.valutati) }),
           el('td', { textContent: String(c.nonValutati) }),
-          el('td', { textContent: String(c.distribuzione[0] ?? 0) }),
-          el('td', { textContent: String(c.distribuzione[1] ?? 0) }),
-          el('td', { textContent: String(c.distribuzione[2] ?? 0) }),
+          el('td', { textContent: distribuzione }),
           el('td', { textContent: c.esito.percentuale === null ? '—' : `${numeroIt(c.esito.percentuale)}%` }),
           el('td', { textContent: c.esito.giudizio || '—' }),
         ]));
       });
       corpo.append(tabella);
       contenuto.append(el('details', { className: 'nucleo', open: true }, [
-        el('summary', {}, [
-          document.createTextNode(nucleo.nome),
-          el('span', { className: 'sub', textContent: `Risultato: ${testoEsito(nucleo.risultato)}` }),
-        ]),
+        el('summary', {}, [document.createTextNode(unita.nome), el('span', { className: 'badge', textContent: testoEsito(unita.risultato) })]),
         corpo,
       ]));
     });
-  } catch (errore) {
-    contenuto.textContent = 'Errore: ' + errore.message;
-  }
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-let menuValutazioneAperto = null;
+// --- Avvio -------------------------------------------------------------
 
-function chiudiMenuValutazione() {
-  if (menuValutazioneAperto) {
-    menuValutazioneAperto.remove();
-    menuValutazioneAperto = null;
-    document.removeEventListener('click', gestisciClicFuoriMenu, true);
-    document.removeEventListener('keydown', gestisciEscMenu, true);
-  }
-}
-function gestisciClicFuoriMenu(evento) {
-  if (menuValutazioneAperto && !menuValutazioneAperto.contains(evento.target)) chiudiMenuValutazione();
-}
-function gestisciEscMenu(evento) {
-  if (evento.key === 'Escape') chiudiMenuValutazione();
-}
-
-/**
- * Al clic su una cella, apre un piccolo menu con le 4 opzioni scritte per
- * esteso (non un ciclo di valori): ogni opzione ha un'etichetta di testo e
- * un colore distinto (grigio/rosso/giallo/verde), coerenti con la cella.
- */
-function apriMenuValutazione(attivitaRif, riga, cella, bottone) {
-  chiudiMenuValutazione();
-  const menu = el('div', { className: 'menu-valutazione', role: 'menu' });
-  OPZIONI_VALUTAZIONE.forEach((opzione) => {
-    const voce = el('button', {
-      type: 'button',
-      onclick: () => { chiudiMenuValutazione(); impostaValutazione(attivitaRif, riga, cella, bottone, opzione.punteggio); },
-    }, [
-      el('span', { className: 'pallino-opzione' }),
-      document.createTextNode(opzione.etichetta),
-    ]);
-    voce.dataset.p = opzione.punteggio === null ? '' : opzione.punteggio;
-    if (opzione.punteggio === cella.punteggio) voce.classList.add('selezionata');
-    menu.append(voce);
-  });
-
-  document.body.append(menu);
-  const rettangolo = bottone.getBoundingClientRect();
-  const larghezzaMenu = menu.offsetWidth;
-  const spazioSotto = window.innerHeight - rettangolo.bottom;
-  menu.style.left = Math.min(rettangolo.left, window.innerWidth - larghezzaMenu - 8) + 'px';
-  if (spazioSotto < menu.offsetHeight + 8) {
-    menu.style.top = (rettangolo.top - menu.offsetHeight - 4) + 'px';
-  } else {
-    menu.style.top = (rettangolo.bottom + 4) + 'px';
-  }
-  menuValutazioneAperto = menu;
-  // setTimeout: evita che il click che ha aperto il menu lo richiuda subito.
-  setTimeout(() => {
-    document.addEventListener('click', gestisciClicFuoriMenu, true);
-    document.addEventListener('keydown', gestisciEscMenu, true);
-  }, 0);
-}
-
-async function impostaValutazione(attivitaRif, riga, cella, bottone, nuovo) {
-  bottone.disabled = true;
+(async () => {
   try {
-    await api(`/attivita/${attivitaRif.attivita_id}/iscrizioni/${riga.iscrizioneId}/criteri/${cella.criterioId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ punteggio: nuovo }),
-    });
-    // Ricarica la griglia: aggiorna sia la cella sia l'esito della riga.
-    await mostraGriglia(attivitaRif);
+    stato.me = await api('/auth/me');
+    avviaApp();
   } catch (errore) {
-    alert('Impossibile salvare: ' + errore.message);
-    bottone.disabled = false;
+    mostraLogin();
   }
-}
-
-async function apriScheda(attivitaRif, riga) {
-  const dialogo = document.getElementById('dialogoScheda');
-  const corpo = document.getElementById('corpoScheda');
-  corpo.textContent = 'Caricamento…';
-  dialogo.showModal();
-  try {
-    const scheda = await api(`/attivita/${attivitaRif.attivita_id}/iscrizioni/${riga.iscrizioneId}/scheda`);
-    corpo.innerHTML = '';
-    corpo.append(el('h2', { textContent: `${scheda.alunno.cognome} ${scheda.alunno.nome}` }));
-    corpo.append(el('div', {
-      className: 'meta',
-      textContent: `${scheda.classe} · ${scheda.annoScolastico} · ${scheda.attivita.nome} · `
-        + `${new Date(scheda.attivita.dataAttivita).toLocaleDateString('it-IT')} · Nucleo: ${scheda.nucleo}`,
-    }));
-
-    const tabella = el('table');
-    scheda.criteri.forEach((c) => {
-      tabella.append(el('tr', {}, [
-        el('td', { textContent: c.nome }),
-        el('td', { textContent: c.punteggio === null ? 'Non valutato' : `${c.punteggio} · ${ETICHETTA_PUNTEGGIO[c.punteggio]}` }),
-      ]));
-    });
-    corpo.append(tabella);
-
-    const esito = scheda.esito;
-    corpo.append(el('p', {
-      textContent: esito.percentuale === null
-        ? 'Nessuna valutazione presente in questa attività.'
-        : `Esito dell'attività: ${esito.punteggioOttenuto}/${esito.punteggioMassimo} · ${esito.percentuale}% · ${esito.giudizio}`,
-    }));
-
-    const nota = el('textarea', { placeholder: 'Nota facoltativa…', value: scheda.nota || '' });
-    corpo.append(el('div', {}, [el('div', { textContent: 'Nota', style: 'font-size:.8rem;color:var(--inchiostro-tenue);margin-bottom:.25rem' }), nota]));
-
-    const areaStorico = el('div', { style: 'margin-top:1rem' });
-    corpo.append(areaStorico);
-    caricaStorico(attivitaRif, riga, scheda, areaStorico);
-
-    const barraAzioni = el('div', { className: 'chiudi' });
-    const salva = el('button', { className: 'azione', textContent: 'Salva nota', onclick: async () => {
-      try {
-        await api(`/attivita/${attivitaRif.attivita_id}/iscrizioni/${riga.iscrizioneId}/nota`, {
-          method: 'PUT', body: JSON.stringify({ nota: nota.value || null }),
-        });
-        salva.textContent = 'Nota salvata ✓';
-        setTimeout(() => { salva.textContent = 'Salva nota'; }, 1500);
-      } catch (errore) { alert('Impossibile salvare la nota: ' + errore.message); }
-    } });
-    const chiudi = el('button', { textContent: 'Chiudi', style: 'margin-left:.5rem', onclick: () => dialogo.close() });
-    barraAzioni.append(salva, chiudi);
-    corpo.append(barraAzioni);
-  } catch (errore) {
-    corpo.textContent = 'Errore: ' + errore.message;
-  }
-}
-
-async function caricaStorico(attivitaRif, riga, scheda, contenitore) {
-  contenitore.append(el('div', { textContent: 'Risultato corrente dei criteri (media delle ultime 3 osservazioni, su tutte le attività di questo nucleo)', style: 'font-size:.85rem;font-weight:600;margin-bottom:.4rem' }));
-  const righeBarra = new Map();
-  scheda.criteri.forEach((c) => {
-    const barra = el('i', { style: 'width:0%' });
-    const valore = el('span', { className: 'val', textContent: '…' });
-    contenitore.append(el('div', { className: 'storico-riga' }, [
-      el('span', { className: 'nome', textContent: c.nome }),
-      el('div', { className: 'barra' }, [barra]),
-      valore,
-    ]));
-    righeBarra.set(c.criterioId, { barra, valore });
-  });
-
-  await Promise.all(scheda.criteri.map(async (c) => {
-    try {
-      const esito = await api(
-        `/alunni/${scheda.personaId}/anni/${scheda.annoScolasticoId}/nuclei/${scheda.nucleoTematicoId}/criteri/${c.criterioId}/storico`
-      );
-      const { barra, valore } = righeBarra.get(c.criterioId);
-      if (esito.percentuale === null) {
-        valore.textContent = '—';
-      } else {
-        barra.style.width = esito.percentuale + '%';
-        valore.textContent = esito.percentuale + '%';
-      }
-    } catch (errore) {
-      righeBarra.get(c.criterioId).valore.textContent = 'errore';
-    }
-  }));
-
-  // Riepilogo dell'intero nucleo (cumulativo su tutte le attività, non solo quella corrente).
-  contenitore.append(el('div', { textContent: 'Risultato corrente del nucleo (media dei criteri valutati)', style: 'font-size:.85rem;font-weight:600;margin:.9rem 0 .4rem' }));
-  const barraNucleo = el('i', { style: 'width:0%' });
-  const valoreNucleo = el('span', { className: 'val', textContent: '…' });
-  contenitore.append(el('div', { className: 'storico-riga' }, [
-    el('span', { className: 'nome', textContent: scheda.nucleo }),
-    el('div', { className: 'barra' }, [barraNucleo]),
-    valoreNucleo,
-  ]));
-  try {
-    const riepilogo = await api(`/alunni/${scheda.personaId}/anni/${scheda.annoScolasticoId}/nuclei/${scheda.nucleoTematicoId}/riepilogo`);
-    if (riepilogo.percentuale === null) {
-      valoreNucleo.textContent = '—';
-    } else {
-      barraNucleo.style.width = riepilogo.percentuale + '%';
-      valoreNucleo.textContent = `${riepilogo.percentuale}% · ${riepilogo.giudizio}`;
-    }
-  } catch (errore) {
-    valoreNucleo.textContent = 'errore';
-  }
-}
-
-document.getElementById('docenteId').addEventListener('change', mostraInsegnamenti);
-document.getElementById('dialogoScheda').addEventListener('click', (evento) => {
-  if (evento.target === evento.currentTarget) evento.currentTarget.close();
-});
-mostraInsegnamenti();
+})();
 </script>
 </body>
 </html>

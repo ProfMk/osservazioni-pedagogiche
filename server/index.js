@@ -2,22 +2,20 @@
 
 const path = require('path');
 const express = require('express');
-const { identificaDocente } = require('./auth');
-const routeAttivita = require('./routes/attivita');
+const routeApi = require('./routes/index');
 const { pool, verificaVincoliRichiesti } = require('./db');
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Tutte le API richiedono un docente identificato (vedi server/auth.js: NON un login reale).
-app.use('/api', identificaDocente, routeAttivita);
+app.use('/api', routeApi);
 
 const porta = process.env.PORT || 3000;
 
-// Verifica i vincoli richiesti PRIMA di accettare richieste: se la
-// migration 001 non è stata applicata, il server si ferma con un
-// messaggio chiaro invece di fallire in modo confuso a ogni salvataggio.
+// Verifica lo schema V1 PRIMA di accettare richieste: se le migration non
+// sono state applicate, il server si ferma con un messaggio chiaro invece
+// di fallire in modo confuso a ogni richiesta.
 verificaVincoliRichiesti(pool)
   .then(() => {
     app.listen(porta, () => {

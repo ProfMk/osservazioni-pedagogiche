@@ -1,7 +1,7 @@
 {
   "name": "osservazioni-pedagogiche",
-  "version": "0.1.0",
-  "description": "Prototipo: osservazioni pedagogiche strutturate (Matematica) su PostgreSQL/Neon.",
+  "version": "1.0.0",
+  "description": "Sistema di osservazioni pedagogiche multi-tenant e multiutente (V1) su PostgreSQL.",
   "main": "server/index.js",
   "directories": {
     "test": "tests"
@@ -17,6 +17,8 @@
   "author": "",
   "license": "UNLICENSED",
   "dependencies": {
+    "@node-rs/argon2": "^2.2.1",
+    "cookie": "^1.1.1",
     "express": "^5.2.1",
     "pg": "^8.23.0"
   },
