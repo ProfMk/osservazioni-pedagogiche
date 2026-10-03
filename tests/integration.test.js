@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
 
 require('./support/pglite').installa();
 const express = require('express');
-const { pool } = require('../server/db');
+const { pool, transazione } = require('../server/db');
 const routeApi = require('../server/routes/index');
 const dominio = require('../server/queries/dominio');
 const { creaRoleAssignment } = require('../server/queries/rbac');
@@ -259,6 +259,36 @@ test('Isolamento tenant: una risorsa di Alfa non è raggiungibile con il tenant 
   assert.equal(rGrigliaAltroTenant.status, 404, "un'Activity di Alfa non deve esistere nel contesto Beta");
 });
 
+test('Isolamento tenant (scrittura): una Observation di Alfa non può essere modificata dal contesto Beta, nemmeno passando enrollmentId/criterionId reali di Alfa', async () => {
+  const sessioneA = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessioneA.get('/teachings');
+  const teachingAlfa = teachings.corpo[0].teaching_id;
+  const activities = await sessioneA.get(`/teachings/${teachingAlfa}/activities`);
+  const activityAlfa = activities.corpo[0].activity_id;
+  const grigliaAlfa = await sessioneA.get(`/activities/${activityAlfa}/griglia`);
+  const enrollmentAlfa = grigliaAlfa.corpo.righe[0].enrollmentId;
+  const criterionAlfa = grigliaAlfa.corpo.criteri[0].id;
+
+  const { rows: primaRows } = await pool.query(
+    'SELECT valore FROM observations WHERE activity_id = $1 AND enrollment_id = $2 AND criterion_id = $3',
+    [activityAlfa, enrollmentAlfa, criterionAlfa]
+  );
+
+  // Stesso account con Membership in entrambi i tenant, ma tenant attivo = Beta: il PUT
+  // deve fallire con 404 (attività non trovata nel tenant attivo), non con una scrittura silenziosa.
+  const sessioneMulti = await loginESwitch('multitenant.user@example.test', 'beta');
+  const rScritturaNegata = await sessioneMulti.put(
+    `/activities/${activityAlfa}/enrollments/${enrollmentAlfa}/criteria/${criterionAlfa}`, { valore: 0 }
+  );
+  assert.equal(rScritturaNegata.status, 404, "un'osservazione di Alfa non deve essere scrivibile dal contesto Beta");
+
+  const { rows: dopoRows } = await pool.query(
+    'SELECT valore FROM observations WHERE activity_id = $1 AND enrollment_id = $2 AND criterion_id = $3',
+    [activityAlfa, enrollmentAlfa, criterionAlfa]
+  );
+  assert.deepEqual(dopoRows, primaRows, 'il tentativo di scrittura cross-tenant non deve aver modificato la riga (nessun effetto collaterale)');
+});
+
 // ===========================================================================
 // SEZIONE D — PLATFORM ADMIN (sez. 64)
 // ===========================================================================
@@ -345,6 +375,141 @@ test('Tenant admin: può assegnare TEACHER/COORDINATOR nel proprio tenant (audit
 });
 
 // ===========================================================================
+// SEZIONE E-BIS — NAVIGAZIONE V1 UI (school-levels/classes/students/assessments)
+// ===========================================================================
+
+test('/auth/me espone i RoleAssignment dell\'account nel tenant attivo, con gli scope esatti (teaching_id/school_level_id)', async () => {
+  const { sessione, risposta } = await login('multitenant.user@example.test');
+  assert.deepEqual(risposta.corpo.ruoliNelTenantAttivo, [], 'nessun tenant attivo: nessun ruolo esposto ancora');
+
+  const alfa = risposta.corpo.memberships.find((m) => m.slug === 'alfa');
+  const rAlfa = await sessione.post('/auth/switch-tenant', { tenantId: alfa.tenant_id });
+  const ruoloAlfa = rAlfa.corpo.ruoliNelTenantAttivo.find((r) => r.ruolo === 'TEACHER');
+  assert.ok(ruoloAlfa, 'deve comparire il RoleAssignment TEACHER in Alfa');
+  assert.equal(ruoloAlfa.scope_type, 'TEACHING');
+  const teachingIdAtteso = (await pool.query(
+    `SELECT t.id FROM teachings t JOIN accounts a ON a.id=t.account_id
+     WHERE a.email='multitenant.user@example.test' AND t.tenant_id=$1`, [alfa.tenant_id]
+  )).rows[0].id;
+  assert.equal(ruoloAlfa.scope_teaching_id, teachingIdAtteso);
+
+  const beta = risposta.corpo.memberships.find((m) => m.slug === 'beta');
+  const rBeta = await sessione.post('/auth/switch-tenant', { tenantId: beta.tenant_id });
+  const ruoloBeta = rBeta.corpo.ruoliNelTenantAttivo.find((r) => r.ruolo === 'COORDINATOR');
+  assert.ok(ruoloBeta, 'deve comparire il RoleAssignment COORDINATOR in Beta');
+  assert.equal(ruoloBeta.scope_type, 'SCHOOL_LEVEL');
+  const schoolLevelIdAtteso = (await pool.query(
+    "SELECT id FROM school_levels WHERE tenant_id=$1 AND nome='Primary'", [beta.tenant_id]
+  )).rows[0].id;
+  assert.equal(ruoloBeta.scope_school_level_id, schoolLevelIdAtteso);
+  // Nessun ruolo di Alfa deve "trapelare" nella vista di Beta.
+  assert.ok(!rBeta.corpo.ruoliNelTenantAttivo.some((r) => r.scope_teaching_id === teachingIdAtteso));
+});
+
+test('Docente: GET /teachings/:id/students mostra il roster del proprio Teaching; fuori scope -> 403', async () => {
+  const sessioneMath = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessioneMath.get('/teachings');
+  const teaching2A = teachings.corpo.find((t) => t.classe === '2A').teaching_id;
+  const rOk = await sessioneMath.get(`/teachings/${teaching2A}/students`);
+  assert.equal(rOk.status, 200);
+  assert.ok(rOk.corpo.length >= 2, 'la 2A di Alfa ha almeno 2 studenti nel seed');
+  assert.ok(rOk.corpo[0].nome && rOk.corpo[0].cognome);
+
+  const teachingItaliano = (await pool.query(
+    "SELECT t.id FROM teachings t JOIN accounts a ON a.id=t.account_id WHERE a.email='teacher.italian.a@alfa.test'"
+  )).rows[0].id;
+  const rNegato = await sessioneMath.get(`/teachings/${teachingItaliano}/students`);
+  assert.equal(rNegato.status, 403);
+});
+
+test('Docente: GET /teachings/:id/assessments mostra gli Assessment del proprio Teaching; fuori scope -> 403', async () => {
+  const sessioneMath = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessioneMath.get('/teachings');
+  const teaching2A = teachings.corpo.find((t) => t.classe === '2A').teaching_id;
+  const r = await sessioneMath.get(`/teachings/${teaching2A}/assessments`);
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.corpo));
+  assert.ok(r.corpo.some((a) => a.giudizio === 'DISTINTO'), 'l\'Assessment seminato per Matematica 2A deve comparire');
+
+  const teachingItaliano = (await pool.query(
+    "SELECT t.id FROM teachings t JOIN accounts a ON a.id=t.account_id WHERE a.email='teacher.italian.a@alfa.test'"
+  )).rows[0].id;
+  const rNegato = await sessioneMath.get(`/teachings/${teachingItaliano}/assessments`);
+  assert.equal(rNegato.status, 403);
+});
+
+test('Docente: NON ha il permesso class.read, quindi /classes/:id/students e /classes/:id/teachings restano riservati a Coordinatore/Tenant Admin', async () => {
+  const sessioneMath = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  // /school-levels è solo un elenco di nomi/id (nessun dato protetto): resta leggibile da chiunque
+  // sia autenticato nel tenant, anche senza class.read — la vera protezione è al passo successivo.
+  const rLivelli = await sessioneMath.get('/school-levels');
+  assert.equal(rLivelli.status, 200);
+
+  const classe2A = (await pool.query(
+    "SELECT id FROM classes WHERE nome='2A' AND tenant_id=(SELECT id FROM tenants WHERE slug='alfa')"
+  )).rows[0].id;
+  const rClasse = await sessioneMath.get(`/classes/${classe2A}/students`);
+  assert.equal(rClasse.status, 403);
+  const rTeachingsClasse = await sessioneMath.get(`/classes/${classe2A}/teachings`);
+  assert.equal(rTeachingsClasse.status, 403);
+});
+
+test('Coordinatore (Beta, scope SCHOOL_LEVEL=Primary): naviga school-level -> classi -> studenti/teachings del proprio livello', async () => {
+  const sessioneCoord = await loginESwitch('multitenant.user@example.test', 'beta');
+
+  const rLivelli = await sessioneCoord.get('/school-levels');
+  assert.equal(rLivelli.status, 200);
+  const primary = rLivelli.corpo.find((l) => l.nome === 'Primary');
+  const middleSchool = rLivelli.corpo.find((l) => l.nome === 'Middle School');
+  assert.ok(primary && middleSchool, 'Beta ha entrambi i livelli nel seed');
+
+  const rClassiOk = await sessioneCoord.get(`/school-levels/${primary.id}/classes`);
+  assert.equal(rClassiOk.status, 200);
+  const classe2A = rClassiOk.corpo.find((c) => c.nome === '2A');
+  assert.ok(classe2A, 'la 2A di Beta appartiene al livello Primary');
+
+  const rStudenti = await sessioneCoord.get(`/classes/${classe2A.id}/students`);
+  assert.equal(rStudenti.status, 200);
+  assert.equal(rStudenti.corpo.classe.nome, '2A');
+  assert.ok(rStudenti.corpo.studenti.length >= 2, 'la 2A di Beta ha almeno 2 studenti nel seed');
+
+  const rTeachings = await sessioneCoord.get(`/classes/${classe2A.id}/teachings`);
+  assert.equal(rTeachings.status, 200);
+  assert.ok(rTeachings.corpo.some((t) => t.materia === 'Matematica e Logica'));
+
+  // Confine di scope: Middle School esiste DAVVERO nello stesso tenant, ma il
+  // Coordinatore è scope_school_level_id=Primary, non Middle School -> 403.
+  const rNegato = await sessioneCoord.get(`/school-levels/${middleSchool.id}/classes`);
+  assert.equal(rNegato.status, 403, 'un livello scolastico diverso, anche nello stesso tenant, deve restare fuori scope');
+});
+
+test('Coordinatore: non può leggere classi/studenti di un ALTRO tenant passando classId/schoolLevelId di Alfa mentre il tenant attivo è Beta', async () => {
+  const classeAlfa = (await pool.query(
+    "SELECT id FROM classes WHERE nome='2A' AND tenant_id=(SELECT id FROM tenants WHERE slug='alfa')"
+  )).rows[0].id;
+  const livelloAlfa = (await pool.query(
+    "SELECT id FROM school_levels WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Primaria'"
+  )).rows[0].id;
+
+  const sessioneCoord = await loginESwitch('multitenant.user@example.test', 'beta');
+  const rClasse = await sessioneCoord.get(`/classes/${classeAlfa}/students`);
+  assert.equal(rClasse.status, 404, 'la classe di Alfa non esiste nel contesto Beta');
+  const rLivello = await sessioneCoord.get(`/school-levels/${livelloAlfa}/classes`);
+  assert.equal(rLivello.status, 404, 'il livello scolastico di Alfa non esiste nel contesto Beta');
+});
+
+test('Cambio tenant: i dati (classId/teachingId) del tenant precedente restano inaccessibili dopo lo switch, anche per lo stesso account', async () => {
+  const sessione = await loginESwitch('multitenant.user@example.test', 'alfa');
+  const teachingAlfa = (await sessione.get('/teachings')).corpo[0].teaching_id;
+  const rPrimaOk = await sessione.get(`/teachings/${teachingAlfa}/students`);
+  assert.equal(rPrimaOk.status, 200, 'nel tenant corretto, il proprio Teaching è leggibile');
+
+  await sessione.post('/auth/switch-tenant', { tenantId: (await pool.query("SELECT id FROM tenants WHERE slug='beta'")).rows[0].id });
+  const rDopoSwitch = await sessione.get(`/teachings/${teachingAlfa}/students`);
+  assert.equal(rDopoSwitch.status, 404, 'lo stesso teachingId, dopo lo switch a Beta, non deve più essere raggiungibile');
+});
+
+// ===========================================================================
 // SEZIONE F — REPORT CLASSE (fotografia di una singola attività)
 // ===========================================================================
 
@@ -409,6 +574,39 @@ test('Report classe: i dati di un\'altra attività sono completamente esclusi (n
   const num1 = reportOriginale.corpo.unitaPedagogiche[0].criteri.find((c) => c.codice === 'NUM-1');
   assert.equal(num1.valutati, 2, 'il nuovo punteggio inserito in un\'altra attività non deve comparire qui');
   assert.deepEqual(num1.distribuzione, { 0: 1, 1: 0, 2: 1 });
+});
+
+// ===========================================================================
+// SEZIONE F-BIS — INIZIALIZZAZIONE DELLA CONNESSIONE (server/db.js)
+//
+// SET ROLE app_role deve essere completato PRIMA che una connessione sia
+// utilizzabile dall'applicazione (sez. 41): usa onConnect (opzione del
+// costruttore di pg.Pool, attesa da pg-pool prima di consegnare la
+// connessione), non l'evento 'connect' (fire-and-forget, non atteso).
+// ===========================================================================
+
+test('server/db.js: una query diretta su pool ha sempre current_role = app_role, mai il ruolo di connessione', async () => {
+  const { rows } = await pool.query('SELECT current_role AS ruolo, session_user AS utente_di_connessione');
+  assert.equal(rows[0].ruolo, 'app_role');
+  assert.notEqual(rows[0].ruolo, rows[0].utente_di_connessione, 'session_user resta il ruolo con cui ci si è connessi: SET ROLE cambia solo current_role');
+});
+
+test('server/db.js: una connessione ottenuta con pool.connect() (usata da transazione()) ha già current_role = app_role, senza bisogno di attendere altro', async () => {
+  await transazione(async (client) => {
+    const { rows } = await client.query('SELECT current_role AS ruolo');
+    assert.equal(rows[0].ruolo, 'app_role');
+  });
+});
+
+test('server/db.js: transazione() con ROLLBACK resta comunque sotto app_role (il comportamento delle transazioni non è cambiato dalla correzione)', async () => {
+  await assert.rejects(
+    () => transazione(async (client) => {
+      const { rows } = await client.query('SELECT current_role AS ruolo');
+      assert.equal(rows[0].ruolo, 'app_role');
+      throw new Error('rollback intenzionale');
+    }),
+    /rollback intenzionale/
+  );
 });
 
 // ===========================================================================

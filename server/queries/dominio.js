@@ -109,6 +109,88 @@ async function creaActivity(client, { teachingId, tenantId, nome, dataAttivita, 
   return rows[0];
 }
 
+/** Studenti iscritti a un Teaching (classe/anno del Teaching), per la pagina "Studenti" del docente. */
+async function getStudentiDiTeaching(client, teachingId, tenantId) {
+  const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
+  return getEnrollmentsDellaClasse(client, { classId: teaching.class_id, tenantId, schoolYearId: teaching.school_year_id });
+}
+
+/**
+ * Assessment registrati su un Teaching (sez. 33/34): distinti dalle
+ * Observation, elenco di sola lettura in questa V1 (nessuna scrittura
+ * esposta: manca ancora una gestione degli AssessmentPeriod lato UI/API,
+ * vedi nota nella risposta finale).
+ */
+async function getAssessmentsDiTeaching(client, teachingId, tenantId) {
+  await verificaTeachingNelTenant(client, teachingId, tenantId);
+  const { rows } = await client.query(
+    `SELECT ass.id, p.nome, p.cognome, ap.nome AS periodo, c.descrizione AS criterio, ass.giudizio, ass.updated_at
+     FROM assessments ass
+     JOIN enrollments e ON e.id = ass.enrollment_id
+     JOIN people p ON p.id = e.student_person_id
+     JOIN assessment_periods ap ON ap.id = ass.assessment_period_id
+     LEFT JOIN criteria c ON c.id = ass.criterion_id
+     WHERE ass.teaching_id = $1
+     ORDER BY p.cognome, p.nome, ap.data_inizio`,
+    [teachingId]
+  );
+  return rows;
+}
+
+/** Verifica che il livello scolastico appartenga al tenant indicato. */
+async function verificaSchoolLevelNelTenant(client, schoolLevelId, tenantId) {
+  const { rows } = await client.query(
+    'SELECT id, nome FROM school_levels WHERE id = $1 AND tenant_id = $2',
+    [schoolLevelId, tenantId]
+  );
+  if (rows.length === 0) throw nonTrovato('Livello scolastico non trovato o non accessibile in questo tenant.');
+  return rows[0];
+}
+
+/** Classi di un livello scolastico (per Coordinatore/Tenant Admin: sez. "Classi"). */
+async function getClassiDelloSchoolLevel(client, schoolLevelId, tenantId) {
+  await verificaSchoolLevelNelTenant(client, schoolLevelId, tenantId);
+  const { rows } = await client.query(
+    "SELECT id, nome FROM classes WHERE school_level_id = $1 AND tenant_id = $2 AND stato = 'attiva' ORDER BY nome",
+    [schoolLevelId, tenantId]
+  );
+  return rows;
+}
+
+/** Verifica che la classe appartenga al tenant indicato; restituisce anche il suo school_level_id (per lo scope). */
+async function verificaClasseNelTenant(client, classId, tenantId) {
+  const { rows } = await client.query(
+    'SELECT id, nome, school_level_id FROM classes WHERE id = $1 AND tenant_id = $2',
+    [classId, tenantId]
+  );
+  if (rows.length === 0) throw nonTrovato('Classe non trovata o non accessibile in questo tenant.');
+  return rows[0];
+}
+
+/** Studenti iscritti (attivi, anno corrente) di una classe: per Coordinatore/Tenant Admin. */
+async function getStudentiDellaClasse(client, classId, tenantId) {
+  const classe = await verificaClasseNelTenant(client, classId, tenantId);
+  const schoolYearId = await getAnnoScolasticoCorrente(client, tenantId);
+  return { classe, studenti: await getEnrollmentsDellaClasse(client, { classId, tenantId, schoolYearId }) };
+}
+
+/** Teaching attivi su una classe (qualunque docente): per Coordinatore/Tenant Admin. */
+async function getTeachingsDellaClasse(client, classId, tenantId) {
+  await verificaClasseNelTenant(client, classId, tenantId);
+  const { rows } = await client.query(
+    `SELECT t.id AS teaching_id, s.nome AS materia, sy.nome AS anno_scolastico, p.nome AS docente_nome, p.cognome AS docente_cognome
+     FROM teachings t
+     JOIN subjects s ON s.id = t.subject_id
+     JOIN school_years sy ON sy.id = t.school_year_id
+     JOIN accounts a ON a.id = t.account_id
+     JOIN people p ON p.id = a.person_id
+     WHERE t.class_id = $1 AND t.tenant_id = $2 AND t.stato = 'attivo'
+     ORDER BY sy.nome DESC, s.nome`,
+    [classId, tenantId]
+  );
+  return rows;
+}
+
 /** Activity con l'ambito completo (tenant/anno/classe/materia/unità), verificata nel tenant richiesto. */
 async function verificaActivityNelTenant(client, activityId, tenantId) {
   const { rows } = await client.query(
@@ -143,23 +225,35 @@ async function verificaCriterionDiActivity(client, activityInfo, criterionId) {
   return rows[0];
 }
 
-/** Iscrizioni attive della classe/anno di un'attività, con i dati della persona. */
-async function getEnrollmentsDellaClasse(client, activityInfo) {
+/** Iscrizioni attive di una classe/anno, con i dati della persona. Punto unico riusato da griglia/roster. */
+async function getEnrollmentsDellaClasse(client, { classId, tenantId, schoolYearId }) {
   const { rows } = await client.query(
     `SELECT e.id AS enrollment_id, e.student_person_id, p.nome, p.cognome
      FROM enrollments e JOIN people p ON p.id = e.student_person_id
      WHERE e.class_id = $1 AND e.tenant_id = $2 AND e.school_year_id = $3 AND e.attiva
      ORDER BY p.cognome, p.nome, e.id`,
-    [activityInfo.class_id, activityInfo.tenant_id, activityInfo.school_year_id]
+    [classId, tenantId, schoolYearId]
   );
   return rows;
+}
+
+/** Anno scolastico corrente di un tenant (usato quando non si parte già da un'Activity/Teaching con anno noto). */
+async function getAnnoScolasticoCorrente(client, tenantId) {
+  const { rows } = await client.query(
+    "SELECT id FROM school_years WHERE tenant_id = $1 AND stato = 'attivo' ORDER BY data_inizio DESC LIMIT 1",
+    [tenantId]
+  );
+  if (rows.length === 0) throw nonTrovato('Nessun anno scolastico attivo configurato per questo tenant.');
+  return rows[0].id;
 }
 
 /** Griglia di classe per un'attività: una riga per alunno iscritto, una colonna per criterio. */
 async function getGrigliaActivity(client, { activityId, tenantId }) {
   const activityInfo = await verificaActivityNelTenant(client, activityId, tenantId);
   const criteri = await getCriteria(client, activityInfo.pedagogical_unit_id);
-  const alunni = await getEnrollmentsDellaClasse(client, activityInfo);
+  const alunni = await getEnrollmentsDellaClasse(client, {
+    classId: activityInfo.class_id, tenantId: activityInfo.tenant_id, schoolYearId: activityInfo.school_year_id,
+  });
   const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: activityInfo.school_level_id });
   const bande = await getBandeGiudizio(client, { tenantId, schoolLevelId: activityInfo.school_level_id });
 
@@ -300,5 +394,7 @@ async function getReportClasseActivity(client, { activityId, tenantId }) {
 module.exports = {
   getTeachingsPropri, getTeachingsDelTenant, verificaTeachingNelTenant, getPedagogicalUnitsDiTeaching,
   getActivitiesDiTeaching, creaActivity, verificaActivityNelTenant, getGrigliaActivity, salvaObservation,
-  getReportClasseActivity,
+  getReportClasseActivity, getStudentiDiTeaching, getAssessmentsDiTeaching,
+  verificaSchoolLevelNelTenant, getClassiDelloSchoolLevel, verificaClasseNelTenant,
+  getStudentiDellaClasse, getTeachingsDellaClasse,
 };

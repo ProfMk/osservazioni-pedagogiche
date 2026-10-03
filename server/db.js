@@ -23,18 +23,70 @@ const pool = new Pool({
     : { rejectUnauthorized: true },
 });
 
-// Isolamento dei privilegi (sez. 41): l'applicazione non opera MAI con
-// l'identità piena del ruolo di connessione (quello di DATABASE_URL), ma
-// sempre come app_role, a cui 002_audit_append_only.sql concede INSERT e
-// SELECT su audit_log ma non UPDATE/DELETE. SET ROLE è applicato a OGNI
-// nuova connessione fisica del pool (evento 'connect'), quindi copre anche
-// le connessioni aperte più tardi sotto carico.
-pool.on('connect', (client) => {
-  client.query('SET ROLE app_role').catch((errore) => {
-    // eslint-disable-next-line no-console
-    console.error('Impossibile impostare app_role sulla connessione:', errore.message);
+/**
+ * Isolamento dei privilegi (sez. 41): l'applicazione non opera MAI con
+ * l'identità piena del ruolo di connessione (quello di DATABASE_URL), ma
+ * sempre come app_role, a cui 002_audit_append_only.sql concede INSERT e
+ * SELECT su audit_log ma non UPDATE/DELETE.
+ *
+ * L'evento 'connect' di pg.Pool è fire-and-forget (pg-pool non attende i
+ * listener prima di consegnare la connessione: verificato leggendo
+ * node_modules/pg-pool/index.js). Un'opzione onConnect del costruttore
+ * esiste nel sorgente installato di pg-pool e VIENE attesa, ma non è
+ * documentata né in pg né in pg-pool né nei tipi pubblici: è un dettaglio
+ * implementativo, non un'API stabile su cui affidarsi.
+ *
+ * L'unica via che usa esclusivamente API pubbliche e documentate di pg 8.x
+ * (pool.connect([callback]), client.query(), client.release([err]) — tutte
+ * su https://node-postgres.com/apis/pool) è avvolgere pool.connect(): è
+ * anche il metodo da cui pool.query() dipende internamente per ogni singola
+ * query (verificato nello stesso sorgente: Pool.prototype.query chiama
+ * this.connect(cb) prima di eseguire la query), quindi avvolgerlo copre
+ * automaticamente ANCHE pool.query() senza dover toccare i molti file che
+ * lo chiamano altrove nel progetto. Supporta sia lo stile a promise
+ * (usato da transazione(), sotto) sia quello a callback (usato
+ * internamente da pool.query()).
+ *
+ * Eseguito a ogni checkout (non solo sulle connessioni fisiche nuove): un
+ * SET ROLE app_role su una connessione già app_role è un no-op innocuo, ed
+ * evitare di distinguere i due casi elimina qualunque stato da tenere
+ * traccia. Se SET ROLE fallisce, il client viene distrutto (client.release
+ * con un errore: la documentazione ufficiale garantisce che pg-pool lo
+ * rimuove dal pool invece di restituirlo) e l'errore propaga al chiamante:
+ * nessun codice applicativo riceve mai una connessione non passata da
+ * app_role.
+ */
+const connectOriginale = pool.connect.bind(pool);
+
+pool.connect = (callback) => {
+  if (typeof callback === 'function') {
+    connectOriginale((erroreConnessione, client, release) => {
+      if (erroreConnessione) return callback(erroreConnessione, client, release);
+      client.query('SET ROLE app_role', (erroreRuolo) => {
+        if (erroreRuolo) {
+          // eslint-disable-next-line no-console
+          console.error('Impossibile impostare app_role sulla connessione:', erroreRuolo.message);
+          release(erroreRuolo);
+          return callback(erroreRuolo, undefined, () => {});
+        }
+        callback(undefined, client, release);
+      });
+    });
+    return undefined;
+  }
+
+  return connectOriginale().then(async (client) => {
+    try {
+      await client.query('SET ROLE app_role');
+      return client;
+    } catch (erroreRuolo) {
+      // eslint-disable-next-line no-console
+      console.error('Impossibile impostare app_role sulla connessione:', erroreRuolo.message);
+      client.release(erroreRuolo);
+      throw erroreRuolo;
+    }
   });
-});
+};
 
 /** Esegue una query con parametri (mai concatenazione di stringhe: previene SQL injection). */
 function query(testo, parametri) {

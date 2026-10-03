@@ -16,6 +16,7 @@ const { generaTokenCsrf } = require('../lib/csrf');
 const { trovaAccountPerEmail, getAccountById, getMembershipsDiAccount, haMembershipAttiva } = require('../queries/account');
 const { isPlatformAdmin, permessiNelTenant } = require('../lib/autorizzazione');
 const { getTutteITenant } = require('../queries/tenant');
+const { getRoleAssignmentsDiAccount } = require('../queries/rbac');
 const { nonAutenticato, vietato, datiNonValidi } = require('../lib/erroreApplicativo');
 const { asincrono } = require('../lib/asincrono');
 
@@ -47,6 +48,13 @@ async function costruisciVistaMe(client, { account, sessione }) {
   const permessi = sessione.active_tenant_id
     ? await permessiNelTenant(client, account.id, sessione.active_tenant_id)
     : [];
+  // Scope esatti dei RoleAssignment dell'account nel tenant attivo (sez. 17/18):
+  // il frontend ne ha bisogno per sapere, es., "sono Coordinatore con
+  // scope_school_level_id=X" senza dover indovinare o elencare tutto il tenant.
+  const ruoliAssegnati = await getRoleAssignmentsDiAccount(client, account.id);
+  const ruoliNelTenantAttivo = sessione.active_tenant_id
+    ? ruoliAssegnati.filter((r) => r.scope_type === 'PLATFORM' || r.tenant_id === sessione.active_tenant_id)
+    : [];
   return {
     account: { id: account.id, email: account.email, nome: account.nome, cognome: account.cognome },
     isPlatformAdmin: admin,
@@ -54,6 +62,7 @@ async function costruisciVistaMe(client, { account, sessione }) {
     tenantsDisponibiliPerSwitch: admin ? tenants : memberships,
     activeTenantId: sessione.active_tenant_id,
     permessiNelTenantAttivo: permessi,
+    ruoliNelTenantAttivo,
     csrfToken: generaTokenCsrf(sessione.id),
     sessione: {
       idleTimeoutMinuti: MINUTI_IDLE_TIMEOUT,

@@ -17,7 +17,11 @@
   header.app .filo { flex: 1; opacity: .9; font-size: .85rem; }
   header.app select, header.app button { font: inherit; padding: .3rem .5rem; border-radius: 5px; border: 1px solid transparent; }
   header.app button.link { background: none; border: none; color: #f3f1e8; text-decoration: underline; cursor: pointer; }
-  main { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
+  nav.principale { display: flex; gap: .3rem; flex-wrap: wrap; padding: .5rem 1.25rem; background: var(--carta-scura); position: sticky; top: 52px; z-index: 19; border-bottom: 1px solid var(--riga); }
+  nav.principale button { font: inherit; font-size: .85rem; padding: .4rem .8rem; border-radius: 6px; border: 1px solid transparent; background: none; color: var(--inchiostro); cursor: pointer; }
+  nav.principale button:hover { background: #fff; }
+  nav.principale button.attiva { background: var(--accento); color: #fff; }
+  main { max-width: 1040px; margin: 0 auto; padding: 1.25rem; }
   .avviso { background: #fbf0d9; border: 1px solid #e3c583; color: #6b4d16; padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem; }
   .errore-box { background: #fbe2e0; border: 1px solid #d98b84; color: #7a241d; padding: .6rem .9rem; border-radius: 6px; font-size: .85rem; margin-bottom: 1rem; }
   nav.percorso { font-size: .85rem; color: var(--inchiostro-tenue); margin-bottom: 1rem; }
@@ -53,6 +57,15 @@
   .form-attivita label { display: block; font-size: .78rem; color: var(--inchiostro-tenue); margin-bottom: .2rem; }
   .form-attivita input, .form-attivita select { width: 100%; padding: .4rem .5rem; border: 1px solid var(--riga); border-radius: 5px; font: inherit; }
   @media (max-width: 720px) { .form-attivita .campi { grid-template-columns: 1fr; } }
+  .griglia-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .8rem; margin-top: 1rem; }
+  .card { background: #fff; border: 1px solid var(--riga); border-radius: 8px; padding: 1rem; box-shadow: var(--ombra); }
+  .card h3 { margin: 0 0 .4rem; font-size: .95rem; }
+  .card p { margin: 0 0 .6rem; color: var(--inchiostro-tenue); font-size: .85rem; }
+  .sezione-titolo { font-size: 1.05rem; font-weight: 600; margin: 1.4rem 0 .6rem; }
+  .sezione-titolo:first-child { margin-top: 0; }
+  table.semplice { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; box-shadow: var(--ombra); }
+  table.semplice th, table.semplice td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--riga); font-size: .88rem; }
+  table.semplice th { background: var(--carta-scura); font-size: .78rem; }
 </style>
 </head>
 <body>
@@ -62,6 +75,7 @@
   <select id="selectTenant"></select>
   <button class="link" id="bottoneLogout">Esci</button>
 </header>
+<nav class="principale" id="navPrincipale" style="display:none"></nav>
 <main>
   <div id="erroreGlobale"></div>
   <nav class="percorso" id="percorso"></nav>
@@ -71,7 +85,7 @@
 <script>
 'use strict';
 
-const stato = { me: null, teachingCorrente: null, activityCorrente: null };
+const stato = { me: null, sezioneAttiva: null };
 
 function el(tag, props, figli) {
   const nodo = document.createElement(tag);
@@ -106,10 +120,17 @@ function mostraErrore(messaggio) {
 function numeroIt(v) { return v === null || v === undefined ? '—' : Number(v).toLocaleString('it-IT', { maximumFractionDigits: 2 }); }
 function testoEsito(esito) { return esito.percentuale === null ? 'Non valutato' : `${numeroIt(esito.percentuale)}% · ${esito.giudizio || ''}`; }
 
+/** true se l'account ha `codice` tra i permessi effettivi nel tenant attivo (sez. RBAC: mai un controllo "a occhio" lato UI sui dati, solo sulla VISIBILITÀ di scorciatoie — il backend rivaluta sempre). */
+function haPermesso(codice) { return !!(stato.me && stato.me.permessiNelTenantAttivo && stato.me.permessiNelTenantAttivo.includes(codice)); }
+
+/** I RoleAssignment con scope_type=SCHOOL_LEVEL dell'utente nel tenant attivo (un Coordinatore ne ha uno). */
+function ruoliSchoolLevel() { return (stato.me.ruoliNelTenantAttivo || []).filter((r) => r.scope_type === 'SCHOOL_LEVEL'); }
+
 // --- Schermata di login ------------------------------------------------
 
 function mostraLogin() {
   document.getElementById('intestazione').style.display = 'none';
+  document.getElementById('navPrincipale').style.display = 'none';
   document.getElementById('percorso').innerHTML = '';
   const email = el('input', { type: 'email', placeholder: 'nome@istituto.test', required: true });
   const password = el('input', { type: 'password', required: true });
@@ -141,7 +162,7 @@ function mostraLogin() {
   document.getElementById('contenuto').append(form);
 }
 
-// --- Intestazione con tenant attivo/switch ------------------------------
+// --- Intestazione con tenant attivo/switch, navigazione principale ---------
 
 function aggiornaIntestazione() {
   const header = document.getElementById('intestazione');
@@ -158,10 +179,43 @@ function aggiornaIntestazione() {
   select.onchange = async () => {
     if (!select.value) return;
     try {
+      // Il cambio tenant ricarica sempre /auth/me (nuovi permessi/ruoli) e riparte dalla Dashboard:
+      // nessuno stato del tenant precedente (teaching/classe/attività aperti) sopravvive allo switch.
       stato.me = await api('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenantId: Number(select.value) }) });
-      mostraTeachings();
+      avviaApp();
     } catch (errore) { mostraErrore(errore.message); }
   };
+}
+
+const VOCI_NAV = [
+  { id: 'dashboard', etichetta: 'Dashboard', azione: () => mostraDashboard() },
+  { id: 'teachings', etichetta: 'I miei Teaching', azione: () => mostraTeachings() },
+  { id: 'classi', etichetta: 'Classi', azione: () => avviaClassi() },
+  { id: 'studenti', etichetta: 'Studenti', azione: () => avviaStudenti() },
+  { id: 'osservazioni', etichetta: 'Osservazioni', azione: () => avviaOsservazioni() },
+  { id: 'valutazioni', etichetta: 'Valutazioni', azione: () => avviaValutazioni() },
+];
+
+function aggiornaNavPrincipale() {
+  const nav = document.getElementById('navPrincipale');
+  if (!stato.me.activeTenantId) { nav.style.display = 'none'; return; }
+  nav.style.display = 'flex';
+  nav.innerHTML = '';
+  VOCI_NAV.forEach((voce) => {
+    nav.append(el('button', {
+      textContent: voce.etichetta,
+      className: stato.sezioneAttiva === voce.id ? 'attiva' : '',
+      onclick: () => { stato.sezioneAttiva = voce.id; aggiornaNavPrincipale(); voce.azione(); },
+    }));
+  });
+  // Amministrazione: SOLO se il ruolo lo consente (PLATFORM_ADMIN in questa V1).
+  if (stato.me.isPlatformAdmin) {
+    nav.append(el('button', {
+      textContent: 'Amministrazione',
+      className: stato.sezioneAttiva === 'admin' ? 'attiva' : '',
+      onclick: () => { stato.sezioneAttiva = 'admin'; aggiornaNavPrincipale(); mostraPannelloPlatform(); },
+    }));
+  }
 }
 
 document.getElementById('bottoneLogout').addEventListener('click', async () => {
@@ -172,11 +226,13 @@ document.getElementById('bottoneLogout').addEventListener('click', async () => {
 
 async function avviaApp() {
   aggiornaIntestazione();
-  if (stato.me.activeTenantId) mostraTeachings();
+  aggiornaNavPrincipale();
+  if (stato.me.activeTenantId) { stato.sezioneAttiva = 'dashboard'; aggiornaNavPrincipale(); mostraDashboard(); }
   else mostraSceltaTenant();
 }
 
 function mostraSceltaTenant() {
+  impostaPercorso([{ testo: 'Osservazioni pedagogiche' }]);
   document.getElementById('contenuto').innerHTML = '';
   document.getElementById('contenuto').append(
     el('p', { textContent: 'Seleziona un tenant attivo dal menu in alto per iniziare.' })
@@ -185,40 +241,87 @@ function mostraSceltaTenant() {
 }
 
 async function mostraPannelloPlatform() {
-  const tenants = await api('/platform/tenants');
-  const box = el('div', { className: 'form-attivita' }, [el('h2', { textContent: 'Tenant della piattaforma' })]);
-  const lista = el('div', { className: 'elenco' });
-  tenants.forEach((t) => lista.append(el('div', { className: 'scelta' }, [
-    el('div', { className: 'tit', textContent: t.nome }), el('div', { className: 'sub', textContent: `${t.slug} · ${t.stato}` }),
-  ])));
-  box.append(lista);
-  document.getElementById('contenuto').append(box);
+  impostaPercorso([{ testo: 'Amministrazione' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const tenants = await api('/platform/tenants');
+    contenuto.innerHTML = '';
+    const box = el('div', { className: 'form-attivita' }, [el('h2', { textContent: 'Tenant della piattaforma' })]);
+    const lista = el('div', { className: 'elenco' });
+    tenants.forEach((t) => lista.append(el('div', { className: 'scelta' }, [
+      el('div', { className: 'tit', textContent: t.nome }), el('div', { className: 'sub', textContent: `${t.slug} · ${t.stato}` }),
+    ])));
+    box.append(lista);
+    contenuto.append(box);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- Percorso di navigazione ---------------------------------------------
+// --- Percorso di navigazione (breadcrumb generico) --------------------------
 
-function aggiornaPercorso() {
+function impostaPercorso(voci) {
   const box = document.getElementById('percorso');
   box.innerHTML = '';
-  box.append(el('button', { textContent: 'I miei Teaching', onclick: mostraTeachings }));
-  if (stato.teachingCorrente) {
-    box.append(document.createTextNode(' › '));
-    box.append(el('button', {
-      textContent: `${stato.teachingCorrente.materia} — ${stato.teachingCorrente.classe}`,
-      onclick: () => mostraActivities(stato.teachingCorrente),
+  voci.forEach((voce, i) => {
+    if (i > 0) box.append(document.createTextNode(' › '));
+    box.append(voce.onclick ? el('button', { textContent: voce.testo, onclick: voce.onclick }) : el('span', { textContent: voce.testo }));
+  });
+}
+const CROCE_DASHBOARD = { testo: 'Dashboard', onclick: () => mostraDashboard() };
+
+// --- Dashboard (coerente col ruolo) -----------------------------------------
+
+async function mostraDashboard() {
+  mostraErrore(null);
+  impostaPercorso([{ testo: 'Dashboard' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const teachings = await api('/teachings');
+    contenuto.innerHTML = '';
+    const ruoli = stato.me.ruoliNelTenantAttivo || [];
+    const nomiRuoli = [...new Set(ruoli.map((r) => r.ruolo))];
+    contenuto.append(el('h2', { textContent: `Benvenuto/a, ${stato.me.account.nome}` }));
+    contenuto.append(el('p', {
+      className: 'sub',
+      style: 'color:var(--inchiostro-tenue);margin-top:-.5rem',
+      textContent: nomiRuoli.length ? `Ruolo/i in questo tenant: ${nomiRuoli.join(', ')}` : 'Nessun ruolo assegnato in questo tenant.',
     }));
-  }
-  if (stato.activityCorrente) {
-    box.append(document.createTextNode(' › '));
-    box.append(el('span', { textContent: stato.activityCorrente.nome }));
-  }
+
+    const cards = el('div', { className: 'griglia-cards' });
+    cards.append(el('div', { className: 'card' }, [
+      el('h3', { textContent: 'I miei Teaching' }),
+      el('p', { textContent: teachings.length ? `${teachings.length} Teaching assegnati.` : 'Nessun Teaching assegnato in questo tenant.' }),
+      el('button', { className: 'azione', textContent: 'Apri', onclick: () => { stato.sezioneAttiva = 'teachings'; aggiornaNavPrincipale(); mostraTeachings(); } }),
+    ]));
+
+    const scopeLivello = ruoliSchoolLevel()[0];
+    if (scopeLivello || haPermesso('class.read')) {
+      cards.append(el('div', { className: 'card' }, [
+        el('h3', { textContent: 'Classi' }),
+        el('p', { textContent: scopeLivello ? 'Le classi del tuo livello scolastico.' : 'Sfoglia le classi del tenant.' }),
+        el('button', { className: 'azione', textContent: 'Apri', onclick: () => { stato.sezioneAttiva = 'classi'; aggiornaNavPrincipale(); avviaClassi(); } }),
+      ]));
+    }
+    cards.append(el('div', { className: 'card' }, [
+      el('h3', { textContent: 'Osservazioni' }),
+      el('p', { textContent: 'Griglia e report delle attività.' }),
+      el('button', { className: 'azione', textContent: 'Apri', onclick: () => { stato.sezioneAttiva = 'osservazioni'; aggiornaNavPrincipale(); avviaOsservazioni(); } }),
+    ]));
+    cards.append(el('div', { className: 'card' }, [
+      el('h3', { textContent: 'Valutazioni' }),
+      el('p', { textContent: 'Assessment registrati sui tuoi Teaching.' }),
+      el('button', { className: 'azione', textContent: 'Apri', onclick: () => { stato.sezioneAttiva = 'valutazioni'; aggiornaNavPrincipale(); avviaValutazioni(); } }),
+    ]));
+    contenuto.append(cards);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- I miei Teaching -------------------------------------------------------
+// --- I miei Teaching (esistente) --------------------------------------------
 
 async function mostraTeachings() {
-  stato.teachingCorrente = null; stato.activityCorrente = null;
-  aggiornaPercorso();
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'I miei Teaching' }]);
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
@@ -240,7 +343,240 @@ async function mostraTeachings() {
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- Attività di un Teaching -----------------------------------------------
+// --- Risoluzione dell'ingresso in base al ruolo (Classi/Studenti/Osservazioni/Valutazioni) --
+
+/**
+ * Decide da dove far partire la navigazione di Classi/Studenti/Osservazioni/Valutazioni:
+ * - un Coordinatore (scope SCHOOL_LEVEL) parte direttamente dal proprio livello;
+ * - chi ha class.read più ampio (Tenant Admin/Platform Admin) sceglie prima il livello;
+ * - un Docente (nessun class.read) parte dai propri Teaching.
+ * Questa è SOLO una scorciatoia di navigazione: l'autorizzazione reale è sempre
+ * rivalutata dal backend a ogni chiamata (sez. 7 del task).
+ */
+function risolviIngresso() {
+  const livello = ruoliSchoolLevel()[0];
+  if (livello) return { tipo: 'LIVELLO', schoolLevelId: livello.scope_school_level_id };
+  if (haPermesso('class.read')) return { tipo: 'SCEGLI_LIVELLO' };
+  return { tipo: 'DOCENTE' };
+}
+
+async function avviaClassi() {
+  const ingresso = risolviIngresso();
+  if (ingresso.tipo === 'LIVELLO') return mostraClassiDelLivello(ingresso.schoolLevelId);
+  if (ingresso.tipo === 'SCEGLI_LIVELLO') return mostraSceltaLivello((liv) => mostraClassiDelLivello(liv.id));
+  return mostraClassiDaTeaching();
+}
+
+async function avviaStudenti() {
+  const ingresso = risolviIngresso();
+  if (ingresso.tipo === 'LIVELLO') return mostraClassiDelLivello(ingresso.schoolLevelId, 'studenti');
+  if (ingresso.tipo === 'SCEGLI_LIVELLO') return mostraSceltaLivello((liv) => mostraClassiDelLivello(liv.id, 'studenti'));
+  return mostraSceltaTeachingPer('Studenti', (t) => mostraStudentiDiTeaching(t));
+}
+
+async function avviaOsservazioni() {
+  const ingresso = risolviIngresso();
+  if (ingresso.tipo === 'LIVELLO') return mostraClassiDelLivello(ingresso.schoolLevelId, 'osservazioni');
+  if (ingresso.tipo === 'SCEGLI_LIVELLO') return mostraSceltaLivello((liv) => mostraClassiDelLivello(liv.id, 'osservazioni'));
+  return mostraSceltaTeachingPer('Osservazioni', (t) => mostraActivities(t));
+}
+
+async function avviaValutazioni() {
+  const ingresso = risolviIngresso();
+  if (ingresso.tipo === 'LIVELLO') return mostraClassiDelLivello(ingresso.schoolLevelId, 'valutazioni');
+  if (ingresso.tipo === 'SCEGLI_LIVELLO') return mostraSceltaLivello((liv) => mostraClassiDelLivello(liv.id, 'valutazioni'));
+  return mostraSceltaTeachingPer('Valutazioni', (t) => mostraValutazioniDiTeaching(t));
+}
+
+/** Sceglie tra i propri Teaching (Docente) quando ce n'è più di uno; se uno solo, prosegue direttamente. */
+async function mostraSceltaTeachingPer(etichetta, prosegui) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: etichetta }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const teachings = await api('/teachings');
+    if (teachings.length === 0) {
+      contenuto.innerHTML = '';
+      contenuto.append(el('p', { textContent: 'Nessun Teaching assegnato: nessun dato da mostrare qui.' }));
+      return;
+    }
+    if (teachings.length === 1) return prosegui(teachings[0]);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `${etichetta} — scegli un Teaching` }));
+    const lista = el('div', { className: 'elenco' });
+    teachings.forEach((t) => lista.append(el('button', {
+      className: 'scelta', onclick: () => prosegui(t),
+    }, [el('div', { className: 'tit', textContent: `${t.materia} — ${t.classe}` })])));
+    contenuto.append(lista);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+async function mostraSceltaLivello(prosegui) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Classi' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const livelli = await api('/school-levels');
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: 'Scegli un livello scolastico' }));
+    const lista = el('div', { className: 'elenco' });
+    livelli.forEach((l) => lista.append(el('button', { className: 'scelta', onclick: () => prosegui(l) }, [
+      el('div', { className: 'tit', textContent: l.nome }),
+    ])));
+    contenuto.append(lista);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+/** Classi derivate dai propri Teaching (Docente): niente class.read necessario, i dati vengono da "i miei Teaching". */
+async function mostraClassiDaTeaching() {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Classi' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const teachings = await api('/teachings');
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: 'Classi' }));
+    if (teachings.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessun Teaching assegnato: nessuna classe da mostrare.' }));
+      return;
+    }
+    const classi = new Map();
+    teachings.forEach((t) => { if (!classi.has(t.class_id)) classi.set(t.class_id, { nome: t.classe, teachings: [] }); classi.get(t.class_id).teachings.push(t); });
+    const lista = el('div', { className: 'elenco' });
+    [...classi.values()].forEach((c) => lista.append(el('button', {
+      className: 'scelta', onclick: () => mostraDettaglioClasseDaTeaching(c),
+    }, [
+      el('div', { className: 'tit', textContent: c.nome }),
+      el('div', { className: 'sub', textContent: c.teachings.map((t) => t.materia).join(', ') }),
+    ])));
+    contenuto.append(lista);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+async function mostraDettaglioClasseDaTeaching(classe) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Classi', onclick: mostraClassiDaTeaching }, { testo: classe.nome }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.innerHTML = '';
+  contenuto.append(el('h2', { textContent: classe.nome }));
+  contenuto.append(el('div', { className: 'sezione-titolo', textContent: 'I tuoi Teaching su questa classe' }));
+  const lista = el('div', { className: 'elenco' });
+  classe.teachings.forEach((t) => lista.append(el('button', { className: 'scelta', onclick: () => mostraActivities(t) }, [
+    el('div', { className: 'tit', textContent: t.materia }),
+  ])));
+  contenuto.append(lista);
+}
+
+// --- Classi/Studenti/Teachings per livello scolastico (Coordinatore/Tenant Admin) -----------
+
+async function mostraClassiDelLivello(schoolLevelId, focus) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Classi' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const classi = await api(`/school-levels/${schoolLevelId}/classes`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: 'Classi' }));
+    if (classi.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuna classe configurata per questo livello scolastico.' }));
+      return;
+    }
+    const lista = el('div', { className: 'elenco' });
+    classi.forEach((c) => lista.append(el('button', {
+      className: 'scelta', onclick: () => mostraDettaglioClasse(c, schoolLevelId, focus),
+    }, [el('div', { className: 'tit', textContent: c.nome })])));
+    contenuto.append(lista);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+async function mostraDettaglioClasse(classe, schoolLevelId, focus) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Classi', onclick: () => mostraClassiDelLivello(schoolLevelId) }, { testo: classe.nome }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const [studenti, teachings] = await Promise.all([
+      api(`/classes/${classe.id}/students`),
+      api(`/classes/${classe.id}/teachings`),
+    ]);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: classe.nome }));
+
+    contenuto.append(el('div', { className: 'sezione-titolo', textContent: 'Studenti' }));
+    if (studenti.studenti.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuno studente iscritto.' }));
+    } else {
+      const tabella = el('table', { className: 'semplice' }, [el('tr', {}, ['Cognome', 'Nome'].map((t) => el('th', { textContent: t })))]);
+      studenti.studenti.forEach((s) => tabella.append(el('tr', {}, [el('td', { textContent: s.cognome }), el('td', { textContent: s.nome })])));
+      contenuto.append(tabella);
+    }
+
+    contenuto.append(el('div', { className: 'sezione-titolo', textContent: 'Teaching su questa classe' }));
+    if (teachings.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessun Teaching attivo su questa classe.' }));
+    } else {
+      const lista = el('div', { className: 'elenco' });
+      teachings.forEach((t) => lista.append(el('button', {
+        className: 'scelta',
+        onclick: () => mostraActivities({ teaching_id: t.teaching_id, materia: t.materia, classe: classe.nome }),
+      }, [
+        el('div', { className: 'tit', textContent: t.materia }),
+        el('div', { className: 'sub', textContent: `${t.docente_nome} ${t.docente_cognome} · ${t.anno_scolastico}` }),
+      ])));
+      contenuto.append(lista);
+    }
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+// --- Studenti (roster) di un singolo Teaching (Docente) ---------------------
+
+async function mostraStudentiDiTeaching(teaching) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Studenti' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const studenti = await api(`/teachings/${teaching.teaching_id}/students`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `Studenti — ${teaching.materia} (${teaching.classe})` }));
+    if (studenti.length === 0) { contenuto.append(el('p', { textContent: 'Nessuno studente iscritto.' })); return; }
+    const tabella = el('table', { className: 'semplice' }, [el('tr', {}, ['Cognome', 'Nome'].map((t) => el('th', { textContent: t })))]);
+    studenti.forEach((s) => tabella.append(el('tr', {}, [el('td', { textContent: s.cognome }), el('td', { textContent: s.nome })])));
+    contenuto.append(tabella);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+// --- Valutazioni (Assessment, sola lettura in questa V1) --------------------
+
+async function mostraValutazioniDiTeaching(teaching) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Valutazioni' }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const valutazioni = await api(`/teachings/${teaching.teaching_id}/assessments`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: `Valutazioni — ${teaching.materia} (${teaching.classe})` }));
+    contenuto.append(el('p', { className: 'avviso', textContent: 'Sola lettura in questa versione: la creazione di nuove Valutazioni non è ancora disponibile da qui.' }));
+    if (valutazioni.length === 0) { contenuto.append(el('p', { textContent: 'Nessuna valutazione registrata.' })); return; }
+    const tabella = el('table', { className: 'semplice' }, [
+      el('tr', {}, ['Alunno', 'Periodo', 'Criterio', 'Giudizio'].map((t) => el('th', { textContent: t }))),
+    ]);
+    valutazioni.forEach((v) => tabella.append(el('tr', {}, [
+      el('td', { textContent: `${v.cognome} ${v.nome}` }),
+      el('td', { textContent: v.periodo }),
+      el('td', { textContent: v.criterio || 'Materia (complessivo)' }),
+      el('td', { textContent: v.giudizio }),
+    ])));
+    contenuto.append(tabella);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+// --- Attività di un Teaching (esistente) ------------------------------------
 
 function costruisciFormNuovaActivity(teaching, unita) {
   const inputNome = el('input', { type: 'text', placeholder: 'Es. Numeri entro il cento', required: true });
@@ -279,25 +615,25 @@ function costruisciFormNuovaActivity(teaching, unita) {
 }
 
 async function mostraActivities(teaching) {
-  stato.teachingCorrente = teaching; stato.activityCorrente = null;
-  aggiornaPercorso();
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Osservazioni' }, { testo: `${teaching.materia} — ${teaching.classe}` }]);
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
     const [attivita, unita] = await Promise.all([
       api(`/teachings/${teaching.teaching_id}/activities`),
-      api(`/teachings/${teaching.teaching_id}/pedagogical-units`),
+      api(`/teachings/${teaching.teaching_id}/pedagogical-units`).catch(() => []),
     ]);
     contenuto.innerHTML = '';
     contenuto.append(el('h2', { textContent: `${teaching.materia} — ${teaching.classe}` }));
-    contenuto.append(costruisciFormNuovaActivity(teaching, unita));
+    if (haPermesso('activity.create')) contenuto.append(costruisciFormNuovaActivity(teaching, unita));
     if (attivita.length === 0) {
-      contenuto.append(el('p', { textContent: 'Nessuna attività: creane una qui sopra.' }));
+      contenuto.append(el('p', { textContent: haPermesso('activity.create') ? 'Nessuna attività: creane una qui sopra.' : 'Nessuna attività per questo Teaching.' }));
       return;
     }
     const lista = el('div', { className: 'elenco' });
     attivita.forEach((a) => lista.append(el('button', {
-      className: 'scelta', onclick: () => mostraGriglia(a),
+      className: 'scelta', onclick: () => mostraGriglia(a, teaching),
     }, [
       el('div', { className: 'tit', textContent: a.nome }),
       el('div', { className: 'sub', textContent: `${a.unita_pedagogica} · ${new Date(a.data_attivita).toLocaleDateString('it-IT')}` }),
@@ -306,11 +642,11 @@ async function mostraActivities(teaching) {
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- Griglia di un'attività --------------------------------------------------
+// --- Griglia di un'attività (esistente) --------------------------------------
 
-async function mostraGriglia(attivitaRif) {
-  stato.activityCorrente = attivitaRif;
-  aggiornaPercorso();
+async function mostraGriglia(attivitaRif, teaching) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Osservazioni' }, { testo: `${teaching.materia} — ${teaching.classe}`, onclick: () => mostraActivities(teaching) }, { testo: attivitaRif.nome }]);
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
@@ -321,7 +657,7 @@ async function mostraGriglia(attivitaRif) {
       return;
     }
     contenuto.append(el('div', { className: 'barra-sezioni' }, [
-      el('button', { className: 'azione', textContent: 'Report classe', onclick: () => mostraReportClasse(attivitaRif) }),
+      el('button', { className: 'azione', textContent: 'Report classe', onclick: () => mostraReportClasse(attivitaRif, teaching) }),
     ]));
     const tabella = el('table', { className: 'griglia' });
     tabella.append(el('thead', {}, [el('tr', {}, [
@@ -330,9 +666,15 @@ async function mostraGriglia(attivitaRif) {
       el('th', { textContent: 'Esito' }),
     ])]));
     const corpo = el('tbody');
+    const puoScrivere = haPermesso('observation.create');
     griglia.righe.forEach((riga) => {
       const tr = el('tr', {}, [el('td', { className: 'alunno', textContent: `${riga.cognome} ${riga.nome}` })]);
       riga.celle.forEach((cella) => {
+        if (!puoScrivere) {
+          const valoreTesto = cella.valore === null ? '—' : String(cella.valore);
+          tr.append(el('td', { textContent: valoreTesto }));
+          return;
+        }
         const select = el('select', { className: 'cella' }, [
           el('option', { value: '', textContent: '—' }),
           ...griglia.scala.valori.map((v) => el('option', {
@@ -346,7 +688,7 @@ async function mostraGriglia(attivitaRif) {
             await api(`/activities/${attivitaRif.activity_id}/enrollments/${riga.enrollmentId}/criteria/${cella.criterionId}`, {
               method: 'PUT', body: JSON.stringify({ valore }),
             });
-            mostraGriglia(attivitaRif);
+            mostraGriglia(attivitaRif, teaching);
           } catch (errore) { mostraErrore(errore.message); select.disabled = false; }
         };
         tr.append(el('td', {}, [select]));
@@ -359,16 +701,17 @@ async function mostraGriglia(attivitaRif) {
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- Report classe (fotografia della singola attività) ----------------------
+// --- Report classe (esistente) ----------------------------------------------
 
-async function mostraReportClasse(attivitaRif) {
+async function mostraReportClasse(attivitaRif, teaching) {
+  mostraErrore(null);
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
     const report = await api(`/activities/${attivitaRif.activity_id}/report-classe`);
     contenuto.innerHTML = '';
     contenuto.append(el('div', { className: 'barra-sezioni' }, [
-      el('button', { className: 'azione', textContent: '← Torna alla griglia', onclick: () => mostraGriglia(attivitaRif) }),
+      el('button', { className: 'azione', textContent: '← Torna alla griglia', onclick: () => mostraGriglia(attivitaRif, teaching) }),
     ]));
     contenuto.append(el('h2', { textContent: `Report classe — ${attivitaRif.nome}` }));
     if (report.grigliaNonConfigurata) { contenuto.append(el('p', { textContent: 'Griglia non configurata.' })); return; }

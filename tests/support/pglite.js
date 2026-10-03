@@ -57,38 +57,40 @@ function apriDatabase(url) {
   return istanze.get(url);
 }
 
-/** Sottoinsieme dell'interfaccia di pg.Pool usato dal progetto: query, connect/release, end, on('connect'). */
+/**
+ * Sottoinsieme dell'interfaccia di pg.Pool usato dal progetto: query,
+ * connect/release, end. query() dipende da connect() esattamente come nel
+ * vero pg-pool (Pool.prototype.query chiama internamente this.connect(cb)
+ * prima di eseguire la query, verificato in node_modules/pg-pool/index.js):
+ * questo è ciò che permette a server/db.js di avvolgere pool.connect() e
+ * ottenere automaticamente la stessa garanzia anche su pool.query(), sia in
+ * produzione sia qui nei test.
+ */
 class Pool {
   constructor({ connectionString } = {}) {
     this.url = connectionString;
-    this._onConnect = null;
-    this._connectEseguito = false;
   }
 
-  async query(testo, parametri) {
+  /** Restituisce un client "grezzo": nessuna inizializzazione qui, esattamente come pg-pool. */
+  async connect() {
+    // Assicura che schema/migration/seed siano già applicati.
+    await apriDatabase(this.url);
+    return { query: (testo, parametri) => this._queryDiretta(testo, parametri), release() {} };
+  }
+
+  async _queryDiretta(testo, parametri) {
     const risultato = await (await apriDatabase(this.url)).query(testo, parametri || []);
     return { rows: risultato.rows, rowCount: risultato.affectedRows ?? risultato.rows.length, fields: risultato.fields };
   }
 
-  async connect() {
-    // Assicura che schema/migration/seed siano già applicati (servono privilegi pieni,
-    // prima di eseguire SET ROLE app_role qui sotto).
-    await apriDatabase(this.url);
-    const client = { query: (testo, parametri) => this.query(testo, parametri), release() {} };
-    // PGlite è una sessione unica e condivisa: SET ROLE eseguito una sola volta la prima
-    // volta che un client viene "aperto" resta valido per tutta la vita di quella sessione,
-    // esattamente come una connessione fisica reale con pg.Pool in produzione.
-    if (this._onConnect && !this._connectEseguito) {
-      this._connectEseguito = true;
-      await this._onConnect(client);
+  /** Come nel vero pg-pool: ottiene un client via this.connect() (sovrascrivibile da server/db.js) e lo rilascia dopo l'uso. */
+  async query(testo, parametri) {
+    const client = await this.connect();
+    try {
+      return await client.query(testo, parametri);
+    } finally {
+      client.release();
     }
-    return client;
-  }
-
-  /** Sottoinsieme di EventEmitter usato da server/db.js: solo l'evento 'connect'. */
-  on(evento, listener) {
-    if (evento === 'connect') this._onConnect = listener;
-    return this;
   }
 
   async end() {
