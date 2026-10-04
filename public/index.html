@@ -189,7 +189,7 @@ function aggiornaIntestazione() {
 
 const VOCI_NAV = [
   { id: 'dashboard', etichetta: 'Dashboard', azione: () => mostraDashboard() },
-  { id: 'teachings', etichetta: 'I miei Teaching', azione: () => mostraTeachings() },
+  { id: 'teachings', etichetta: 'Insegnamenti', azione: () => mostraTeachings() },
   { id: 'classi', etichetta: 'Classi', azione: () => avviaClassi() },
   { id: 'studenti', etichetta: 'Studenti', azione: () => avviaStudenti() },
   { id: 'osservazioni', etichetta: 'Osservazioni', azione: () => avviaOsservazioni() },
@@ -290,7 +290,7 @@ async function mostraDashboard() {
 
     const cards = el('div', { className: 'griglia-cards' });
     cards.append(el('div', { className: 'card' }, [
-      el('h3', { textContent: 'I miei Teaching' }),
+      el('h3', { textContent: 'Insegnamenti' }),
       el('p', { textContent: teachings.length ? `${teachings.length} Teaching assegnati.` : 'Nessun Teaching assegnato in questo tenant.' }),
       el('button', { className: 'azione', textContent: 'Apri', onclick: () => { stato.sezioneAttiva = 'teachings'; aggiornaNavPrincipale(); mostraTeachings(); } }),
     ]));
@@ -317,26 +317,68 @@ async function mostraDashboard() {
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- I miei Teaching (esistente) --------------------------------------------
+// --- Insegnamenti per materia -> Classi -> Attività --------------------------
+
+/**
+ * Percorso di un Teaching raggiunto dalla navigazione per materia (teaching.viaMateria):
+ * Dashboard › Insegnamenti › materia › classe › ... Per gli altri ingressi (Osservazioni, ecc.)
+ * resta il percorso "Osservazioni › materia — classe".
+ */
+function percorsoTeaching(teaching, coda) {
+  const base = teaching.viaMateria
+    ? [CROCE_DASHBOARD, { testo: 'Insegnamenti', onclick: () => mostraTeachings() }, { testo: teaching.materia, onclick: () => mostraClassiDiMateria(teaching.materia) }]
+    : [CROCE_DASHBOARD, { testo: 'Osservazioni' }];
+  const etichetta = teaching.viaMateria ? teaching.classe : `${teaching.materia} — ${teaching.classe}`;
+  if (!coda || coda.length === 0) return [...base, { testo: etichetta }];
+  return [...base, { testo: etichetta, onclick: () => mostraActivities(teaching) }, ...coda];
+}
 
 async function mostraTeachings() {
   mostraErrore(null);
-  impostaPercorso([CROCE_DASHBOARD, { testo: 'I miei Teaching' }]);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Insegnamenti' }]);
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
     const teachings = await api('/teachings');
     contenuto.innerHTML = '';
-    contenuto.append(el('h2', { textContent: 'I miei Teaching' }));
+    contenuto.append(el('h2', { textContent: 'Insegnamenti' }));
     if (teachings.length === 0) {
       contenuto.append(el('p', { textContent: 'Nessun Teaching assegnato in questo tenant.' }));
       return;
     }
+    const materie = [...new Set(teachings.map((t) => t.materia))].sort((a, b) => a.localeCompare(b, 'it'));
+    const lista = el('div', { className: 'elenco' });
+    materie.forEach((materia) => {
+      const numeroClassi = teachings.filter((t) => t.materia === materia).length;
+      lista.append(el('button', { className: 'scelta', onclick: () => mostraClassiDiMateria(materia) }, [
+        el('div', { className: 'tit', textContent: materia }),
+        el('div', { className: 'sub', textContent: numeroClassi === 1 ? '1 classe' : `${numeroClassi} classi` }),
+      ]));
+    });
+    contenuto.append(lista);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+async function mostraClassiDiMateria(materia) {
+  mostraErrore(null);
+  impostaPercorso([CROCE_DASHBOARD, { testo: 'Insegnamenti', onclick: () => mostraTeachings() }, { testo: materia }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const teachings = (await api('/teachings'))
+      .filter((t) => t.materia === materia)
+      .sort((a, b) => a.classe.localeCompare(b.classe, 'it', { numeric: true }) || b.anno_scolastico.localeCompare(a.anno_scolastico));
+    contenuto.innerHTML = '';
+    contenuto.append(el('h2', { textContent: materia }));
+    if (teachings.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuna classe per questa materia.' }));
+      return;
+    }
     const lista = el('div', { className: 'elenco' });
     teachings.forEach((t) => lista.append(el('button', {
-      className: 'scelta', onclick: () => mostraActivities(t),
+      className: 'scelta', onclick: () => mostraActivities({ ...t, viaMateria: true }),
     }, [
-      el('div', { className: 'tit', textContent: `${t.materia} — ${t.classe}` }),
+      el('div', { className: 'tit', textContent: t.classe }),
       el('div', { className: 'sub', textContent: `Anno scolastico ${t.anno_scolastico}` }),
     ])));
     contenuto.append(lista);
@@ -536,7 +578,7 @@ async function mostraDettaglioClasse(classe, schoolLevelId, focus) {
 
 async function mostraStudentiDiTeaching(teaching) {
   mostraErrore(null);
-  impostaPercorso([CROCE_DASHBOARD, { testo: 'Studenti' }]);
+  impostaPercorso(teaching.viaMateria ? percorsoTeaching(teaching, [{ testo: 'Studenti' }]) : [CROCE_DASHBOARD, { testo: 'Studenti' }]);
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
@@ -616,7 +658,7 @@ function costruisciFormNuovaActivity(teaching, unita) {
 
 async function mostraActivities(teaching) {
   mostraErrore(null);
-  impostaPercorso([CROCE_DASHBOARD, { testo: 'Osservazioni' }, { testo: `${teaching.materia} — ${teaching.classe}` }]);
+  impostaPercorso(percorsoTeaching(teaching));
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
@@ -626,17 +668,21 @@ async function mostraActivities(teaching) {
     ]);
     contenuto.innerHTML = '';
     contenuto.append(el('h2', { textContent: `${teaching.materia} — ${teaching.classe}` }));
+    contenuto.append(el('div', { className: 'barra-sezioni' }, [
+      el('button', { className: 'azione', textContent: 'Studenti della classe', onclick: () => mostraStudentiDiTeaching(teaching) }),
+    ]));
     if (haPermesso('activity.create')) contenuto.append(costruisciFormNuovaActivity(teaching, unita));
     if (attivita.length === 0) {
       contenuto.append(el('p', { textContent: haPermesso('activity.create') ? 'Nessuna attività: creane una qui sopra.' : 'Nessuna attività per questo Teaching.' }));
       return;
     }
     const lista = el('div', { className: 'elenco' });
-    attivita.forEach((a) => lista.append(el('button', {
-      className: 'scelta', onclick: () => mostraGriglia(a, teaching),
-    }, [
-      el('div', { className: 'tit', textContent: a.nome }),
-      el('div', { className: 'sub', textContent: `${a.unita_pedagogica} · ${new Date(a.data_attivita).toLocaleDateString('it-IT')}` }),
+    attivita.forEach((a) => lista.append(el('div', { style: 'display:flex;gap:.5rem;align-items:center;flex-wrap:wrap' }, [
+      el('button', { className: 'scelta', style: 'flex:1 1 14rem', onclick: () => mostraGriglia(a, teaching) }, [
+        el('div', { className: 'tit', textContent: a.nome }),
+        el('div', { className: 'sub', textContent: `${a.unita_pedagogica} · ${new Date(a.data_attivita).toLocaleDateString('it-IT')}` }),
+      ]),
+      el('button', { className: 'azione', textContent: 'Report classe', onclick: () => mostraReportClasse(a, teaching) }),
     ])));
     contenuto.append(lista);
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
@@ -646,7 +692,7 @@ async function mostraActivities(teaching) {
 
 async function mostraGriglia(attivitaRif, teaching) {
   mostraErrore(null);
-  impostaPercorso([CROCE_DASHBOARD, { testo: 'Osservazioni' }, { testo: `${teaching.materia} — ${teaching.classe}`, onclick: () => mostraActivities(teaching) }, { testo: attivitaRif.nome }]);
+  impostaPercorso(percorsoTeaching(teaching, [{ testo: attivitaRif.nome }]));
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
@@ -705,6 +751,7 @@ async function mostraGriglia(attivitaRif, teaching) {
 
 async function mostraReportClasse(attivitaRif, teaching) {
   mostraErrore(null);
+  impostaPercorso(percorsoTeaching(teaching, [{ testo: attivitaRif.nome, onclick: () => mostraGriglia(attivitaRif, teaching) }, { testo: 'Report classe' }]));
   const contenuto = document.getElementById('contenuto');
   contenuto.textContent = 'Caricamento…';
   try {
