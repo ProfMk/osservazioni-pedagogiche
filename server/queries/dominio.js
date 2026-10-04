@@ -1,38 +1,32 @@
 'use strict';
 
 /**
- * Dominio operativo (sez. 28-34): Teaching, Activity, Observation, e il
- * Report classe (fotografia di una singola attività, senza media mobile —
- * stessa scelta già validata nel prototipo, qui riportata sul nuovo schema
- * multi-tenant). L'avanzamento pedagogico del singolo studente nel tempo
- * (media mobile delle ultime osservazioni per criterio) è separato e vive in
- * server/queries/progresso.js.
+ * Dominio operativo (sez. 28-34): Teaching, Activity, Observation, griglia di
+ * inserimento ed esito della singola attività (VIEW_ACTIVITY_OUTCOME: fotografia di
+ * una attività, senza media mobile, senza storico ◇, senza finestra temporale).
+ * I report pedagogici nel tempo vivono in server/queries/progresso.js.
+ *
+ * Contenuti dell'istituto come { testo, lingua } (B-2/B-3); contenuti d'autore nella
+ * lingua registrata; date di calendario come dati 'YYYY-MM-DD' (V2 §17).
  */
 
 const { nonTrovato, datiNonValidi } = require('../lib/erroreApplicativo');
 const { getCriteria, getScalaApplicabile, getBandeGiudizio } = require('./configurazione');
 const { calcolaEsito, mediaSemplicePercentuali } = require('../lib/calcoloEsiti');
-const { preparaBande, giudizioDi } = require('../lib/calcoloProgresso');
+const motore = require('../lib/calcoloProgresso');
+const { pubblico, bandePubbliche, scalaPubblica, traduttoreDi } = require('../lib/pubblicazione');
 
-/** I Teaching di cui l'account è titolare (account_id sul Teaching stesso), in un tenant. */
-async function getTeachingsPropri(client, { accountId, tenantId }) {
+/**
+ * Teaching raggiungibili dall'account nel percorso unico (P15): i propri (titolare) e
+ * quelli che l'account può leggere per scope di classe, livello, tenant o piattaforma
+ * (stessa regola di RBAC delle rotte: permesso teaching.read). Ordine: materia nell'ordine
+ * configurato, poi classe. Nessun ordinamento sul testo tradotto (B-4).
+ */
+async function getTeachingsPropri(client, { accountId, tenantId, lingua }) {
+  const tr = await traduttoreDi(client, lingua);
   const { rows } = await client.query(
-    `SELECT t.id AS teaching_id, cl.nome AS classe, s.nome AS materia, sy.nome AS anno_scolastico, cl.id AS class_id, s.id AS subject_id
-     FROM teachings t
-     JOIN classes cl ON cl.id = t.class_id
-     JOIN subjects s ON s.id = t.subject_id
-     JOIN school_years sy ON sy.id = t.school_year_id
-     WHERE t.account_id = $1 AND t.tenant_id = $2 AND t.stato = 'attivo'
-     ORDER BY sy.nome DESC, s.nome, cl.nome`,
-    [accountId, tenantId]
-  );
-  return rows;
-}
-
-/** Tutti i Teaching di un tenant (per COORDINATOR/TENANT_ADMIN, dopo aver verificato il permesso 'teaching.read'). */
-async function getTeachingsDelTenant(client, tenantId) {
-  const { rows } = await client.query(
-    `SELECT t.id AS teaching_id, cl.nome AS classe, s.nome AS materia, sy.nome AS anno_scolastico,
+    `SELECT t.id AS teaching_id, t.account_id, cl.nome AS classe, cl.id AS class_id,
+            s.id AS subject_id, s.nome AS materia, s.ordine AS materia_ordine, sy.nome AS anno_scolastico,
             p.nome AS docente_nome, p.cognome AS docente_cognome
      FROM teachings t
      JOIN classes cl ON cl.id = t.class_id
@@ -40,11 +34,33 @@ async function getTeachingsDelTenant(client, tenantId) {
      JOIN school_years sy ON sy.id = t.school_year_id
      JOIN accounts a ON a.id = t.account_id
      JOIN people p ON p.id = a.person_id
-     WHERE t.tenant_id = $1 AND t.stato = 'attivo'
-     ORDER BY sy.nome DESC, s.nome, cl.nome`,
-    [tenantId]
+     WHERE t.tenant_id = $2 AND t.stato = 'attivo' AND (
+       t.account_id = $1
+       OR EXISTS (
+         SELECT 1 FROM role_assignments r
+         JOIN role_permissions rp ON rp.role_id = r.role_id
+         JOIN permissions pe ON pe.id = rp.permission_id
+         WHERE r.account_id = $1 AND r.revoked_at IS NULL AND pe.codice = 'teaching.read' AND (
+           r.scope_type = 'PLATFORM'
+           OR (r.scope_type = 'TENANT' AND r.tenant_id = t.tenant_id)
+           OR (r.scope_type = 'SCHOOL_LEVEL' AND r.scope_school_level_id = cl.school_level_id)
+           OR (r.scope_type = 'CLASS' AND r.scope_class_id = t.class_id)
+         )
+       )
+     )
+     ORDER BY sy.nome DESC, s.ordine, s.id, cl.nome, t.id`,
+    [accountId, tenantId]
   );
-  return rows;
+  return rows.map((r) => ({
+    teaching_id: r.teaching_id,
+    proprio: r.account_id === accountId,
+    classe: r.classe,
+    class_id: r.class_id,
+    subject_id: r.subject_id,
+    materia: tr.testo('subjects.nome', r.subject_id, r.materia),
+    anno_scolastico: r.anno_scolastico,
+    docente: { nome: r.docente_nome, cognome: r.docente_cognome },
+  }));
 }
 
 /** Verifica che il Teaching appartenga al tenant indicato (mai fidarsi solo dell'id ricevuto dal client). */
@@ -60,33 +76,40 @@ async function verificaTeachingNelTenant(client, teachingId, tenantId) {
   return rows[0];
 }
 
-/** Unità pedagogiche disponibili per la materia di un Teaching (uniche opzioni per creare un'Activity, sez. 29). */
-async function getPedagogicalUnitsDiTeaching(client, teachingId, tenantId) {
+/** Nuclei (unità pedagogiche) della materia di un Teaching: uniche opzioni per creare un'Activity. */
+async function getPedagogicalUnitsDiTeaching(client, teachingId, tenantId, lingua) {
   const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
+  const tr = await traduttoreDi(client, lingua);
   const { rows } = await client.query(
     "SELECT id, nome, ordine FROM pedagogical_units WHERE subject_id = $1 AND stato = 'attiva' ORDER BY ordine, nome",
     [teaching.subject_id]
   );
-  return rows;
+  return rows.map((r) => ({ id: r.id, ordine: r.ordine, nome: tr.testo('pedagogical_units.nome', r.id, r.nome) }));
 }
 
-async function getActivitiesDiTeaching(client, teachingId, tenantId) {
+async function getActivitiesDiTeaching(client, teachingId, tenantId, lingua) {
   await verificaTeachingNelTenant(client, teachingId, tenantId);
+  const tr = await traduttoreDi(client, lingua);
   const { rows } = await client.query(
-    `SELECT a.id AS activity_id, a.nome, a.data_attivita, pu.nome AS unita_pedagogica
+    `SELECT a.id AS activity_id, a.nome, a.lingua_contenuto, to_char(a.data_attivita, 'YYYY-MM-DD') AS data_attivita,
+            pu.id AS unit_id, pu.nome AS unita_pedagogica
      FROM activities a JOIN pedagogical_units pu ON pu.id = a.pedagogical_unit_id
      WHERE a.teaching_id = $1
      ORDER BY a.data_attivita DESC, a.id DESC`,
     [teachingId]
   );
-  return rows;
+  return rows.map((r) => ({
+    activity_id: r.activity_id,
+    nome: tr.autore(r.nome, r.lingua_contenuto),
+    data_attivita: r.data_attivita,
+    unita_pedagogica: tr.testo('pedagogical_units.nome', r.unit_id, r.unita_pedagogica),
+  }));
 }
 
 /**
- * Crea un'Activity su un Teaching. pedagogicalUnitId deve appartenere alla
- * materia del Teaching: il database lo garantisce comunque (FK composta,
- * sez. 29/34), qui si dà solo un messaggio applicativo più chiaro di una
- * violazione di vincolo generica.
+ * Crea un'Activity su un Teaching. pedagogicalUnitId deve appartenere alla materia del
+ * Teaching (il database lo garantisce comunque con FK composte). Il nome è contenuto
+ * d'autore registrato nella lingua della sessione (B).
  */
 async function creaActivity(client, { teachingId, tenantId, nome, dataAttivita, pedagogicalUnitId, linguaContenuto }) {
   const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
@@ -97,58 +120,32 @@ async function creaActivity(client, { teachingId, tenantId, nome, dataAttivita, 
     'SELECT id FROM pedagogical_units WHERE id = $1 AND subject_id = $2',
     [pedagogicalUnitId, teaching.subject_id]
   );
-  if (unita.length === 0) {
-    throw datiNonValidi('ERR_UNIT_NOT_IN_SUBJECT');
-  }
+  if (unita.length === 0) throw datiNonValidi('ERR_UNIT_NOT_IN_SUBJECT');
 
   const { rows } = await client.query(
     `INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita, lingua_contenuto)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id AS activity_id, nome, data_attivita`,
+     RETURNING id AS activity_id, nome, to_char(data_attivita, 'YYYY-MM-DD') AS data_attivita, lingua_contenuto`,
     [tenantId, teaching.school_year_id, teachingId, teaching.class_id, teaching.subject_id, pedagogicalUnitId, nome.trim(), dataAttivita, linguaContenuto]
   );
-  return rows[0];
+  const r = rows[0];
+  return { activity_id: r.activity_id, nome: { testo: r.nome, lingua: r.lingua_contenuto }, data_attivita: r.data_attivita };
 }
 
-/** Studenti iscritti a un Teaching (classe/anno del Teaching), per la pagina "Studenti" del docente. */
+/** Studenti iscritti a un Teaching (classe/anno del Teaching), nell'ordine del registro. */
 async function getStudentiDiTeaching(client, teachingId, tenantId) {
   const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
   return getEnrollmentsDellaClasse(client, { classId: teaching.class_id, tenantId, schoolYearId: teaching.school_year_id });
 }
 
-/**
- * Assessment registrati su un Teaching (sez. 33/34): distinti dalle
- * Observation, elenco di sola lettura in questa V1 (nessuna scrittura
- * esposta: manca ancora una gestione degli AssessmentPeriod lato UI/API,
- * vedi nota nella risposta finale).
- */
-async function getAssessmentsDiTeaching(client, teachingId, tenantId) {
-  await verificaTeachingNelTenant(client, teachingId, tenantId);
-  const { rows } = await client.query(
-    `SELECT ass.id, p.nome, p.cognome, ap.nome AS periodo, c.descrizione AS criterio, ass.giudizio, ass.updated_at
-     FROM assessments ass
-     JOIN enrollments e ON e.id = ass.enrollment_id
-     JOIN people p ON p.id = e.student_person_id
-     JOIN assessment_periods ap ON ap.id = ass.assessment_period_id
-     LEFT JOIN criteria c ON c.id = ass.criterion_id
-     WHERE ass.teaching_id = $1
-     ORDER BY p.cognome, p.nome, ap.data_inizio`,
-    [teachingId]
-  );
-  return rows;
-}
-
 /** Verifica che il livello scolastico appartenga al tenant indicato. */
 async function verificaSchoolLevelNelTenant(client, schoolLevelId, tenantId) {
-  const { rows } = await client.query(
-    'SELECT id, nome FROM school_levels WHERE id = $1 AND tenant_id = $2',
-    [schoolLevelId, tenantId]
-  );
+  const { rows } = await client.query('SELECT id, nome FROM school_levels WHERE id = $1 AND tenant_id = $2', [schoolLevelId, tenantId]);
   if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_SCHOOL_LEVEL' });
   return rows[0];
 }
 
-/** Classi di un livello scolastico (per Coordinatore/Tenant Admin: sez. "Classi"). */
+/** Classi di un livello scolastico (classes.nome è un'identità: non si traduce). */
 async function getClassiDelloSchoolLevel(client, schoolLevelId, tenantId) {
   await verificaSchoolLevelNelTenant(client, schoolLevelId, tenantId);
   const { rows } = await client.query(
@@ -160,42 +157,47 @@ async function getClassiDelloSchoolLevel(client, schoolLevelId, tenantId) {
 
 /** Verifica che la classe appartenga al tenant indicato; restituisce anche il suo school_level_id (per lo scope). */
 async function verificaClasseNelTenant(client, classId, tenantId) {
-  const { rows } = await client.query(
-    'SELECT id, nome, school_level_id FROM classes WHERE id = $1 AND tenant_id = $2',
-    [classId, tenantId]
-  );
+  const { rows } = await client.query('SELECT id, nome, school_level_id FROM classes WHERE id = $1 AND tenant_id = $2', [classId, tenantId]);
   if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_CLASS' });
   return rows[0];
 }
 
-/** Studenti iscritti (attivi, anno corrente) di una classe: per Coordinatore/Tenant Admin. */
+/** Studenti iscritti (attivi, anno corrente) di una classe. */
 async function getStudentiDellaClasse(client, classId, tenantId) {
   const classe = await verificaClasseNelTenant(client, classId, tenantId);
   const schoolYearId = await getAnnoScolasticoCorrente(client, tenantId);
   return { classe, studenti: await getEnrollmentsDellaClasse(client, { classId, tenantId, schoolYearId }) };
 }
 
-/** Teaching attivi su una classe (qualunque docente): per Coordinatore/Tenant Admin. */
-async function getTeachingsDellaClasse(client, classId, tenantId) {
+/** Teaching attivi su una classe (qualunque docente). */
+async function getTeachingsDellaClasse(client, classId, tenantId, lingua) {
   await verificaClasseNelTenant(client, classId, tenantId);
+  const tr = await traduttoreDi(client, lingua);
   const { rows } = await client.query(
-    `SELECT t.id AS teaching_id, s.nome AS materia, sy.nome AS anno_scolastico, p.nome AS docente_nome, p.cognome AS docente_cognome
+    `SELECT t.id AS teaching_id, s.id AS subject_id, s.nome AS materia, sy.nome AS anno_scolastico, p.nome AS docente_nome, p.cognome AS docente_cognome
      FROM teachings t
      JOIN subjects s ON s.id = t.subject_id
      JOIN school_years sy ON sy.id = t.school_year_id
      JOIN accounts a ON a.id = t.account_id
      JOIN people p ON p.id = a.person_id
      WHERE t.class_id = $1 AND t.tenant_id = $2 AND t.stato = 'attivo'
-     ORDER BY sy.nome DESC, s.nome`,
+     ORDER BY sy.nome DESC, s.ordine, s.id`,
     [classId, tenantId]
   );
-  return rows;
+  return rows.map((r) => ({
+    teaching_id: r.teaching_id,
+    materia: tr.testo('subjects.nome', r.subject_id, r.materia),
+    anno_scolastico: r.anno_scolastico,
+    docente_nome: r.docente_nome,
+    docente_cognome: r.docente_cognome,
+  }));
 }
 
 /** Activity con l'ambito completo (tenant/anno/classe/materia/unità), verificata nel tenant richiesto. */
 async function verificaActivityNelTenant(client, activityId, tenantId) {
   const { rows } = await client.query(
-    `SELECT a.id, a.nome, a.data_attivita, a.teaching_id, a.class_id, a.subject_id, a.pedagogical_unit_id,
+    `SELECT a.id, a.nome, a.lingua_contenuto, to_char(a.data_attivita, 'YYYY-MM-DD') AS data_attivita,
+            a.teaching_id, a.class_id, a.subject_id, a.pedagogical_unit_id,
             a.tenant_id, a.school_year_id, cl.school_level_id, cl.nome AS classe, pu.nome AS unita_pedagogica
      FROM activities a
      JOIN classes cl ON cl.id = a.class_id
@@ -226,7 +228,7 @@ async function verificaCriterionDiActivity(client, activityInfo, criterionId) {
   return rows[0];
 }
 
-/** Iscrizioni attive di una classe/anno, con i dati della persona. Punto unico riusato da griglia/roster. */
+/** Iscrizioni attive di una classe/anno, con i dati della persona, nell'ordine del registro. */
 async function getEnrollmentsDellaClasse(client, { classId, tenantId, schoolYearId }) {
   const { rows } = await client.query(
     `SELECT e.id AS enrollment_id, e.student_person_id, p.nome, p.cognome
@@ -238,7 +240,7 @@ async function getEnrollmentsDellaClasse(client, { classId, tenantId, schoolYear
   return rows;
 }
 
-/** Anno scolastico corrente di un tenant (usato quando non si parte già da un'Activity/Teaching con anno noto). */
+/** Anno scolastico corrente di un tenant. */
 async function getAnnoScolasticoCorrente(client, tenantId) {
   const { rows } = await client.query(
     "SELECT id FROM school_years WHERE tenant_id = $1 AND stato = 'attivo' ORDER BY data_inizio DESC LIMIT 1",
@@ -248,29 +250,58 @@ async function getAnnoScolasticoCorrente(client, tenantId) {
   return rows[0].id;
 }
 
-/** Griglia di classe per un'attività: una riga per alunno iscritto, una colonna per criterio. */
-async function getGrigliaActivity(client, { activityId, tenantId }) {
-  const activityInfo = await verificaActivityNelTenant(client, activityId, tenantId);
-  const criteri = await getCriteria(client, activityInfo.pedagogical_unit_id);
-  const alunni = await getEnrollmentsDellaClasse(client, {
-    classId: activityInfo.class_id, tenantId: activityInfo.tenant_id, schoolYearId: activityInfo.school_year_id,
-  });
-  const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: activityInfo.school_level_id });
-  const bande = preparaBande(await getBandeGiudizio(client, { tenantId, schoolLevelId: activityInfo.school_level_id }));
-
+/** Contesto comune di griglia ed esito: attività, criteri, iscritti, scala, bande, osservazioni. */
+async function caricaAttivita(client, { activityId, tenantId, lingua }) {
+  const info = await verificaActivityNelTenant(client, activityId, tenantId);
+  const tr = await traduttoreDi(client, lingua);
+  const criteri = (await getCriteria(client, info.pedagogical_unit_id)).map((c) => ({
+    id: c.id, codice: c.codice, ordine: c.ordine, descrizione: tr.testo('criteria.descrizione', c.id, c.descrizione),
+  }));
+  const alunni = await getEnrollmentsDellaClasse(client, { classId: info.class_id, tenantId: info.tenant_id, schoolYearId: info.school_year_id });
+  const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: info.school_level_id });
+  const bandeDb = await getBandeGiudizio(client, { tenantId, schoolLevelId: info.school_level_id });
+  const bande = motore.preparaBande(bandeDb.map((b) => ({ ...b, etichetta: tr.testo('judgment_bands.etichetta', b.id, b.etichetta) })));
   const { rows: osservazioni } = await client.query(
-    'SELECT id AS observation_id, enrollment_id, criterion_id, valore, note FROM observations WHERE activity_id = $1',
+    `SELECT o.id AS observation_id, o.enrollment_id, o.criterion_id, o.valore, o.note, o.lingua_nota, e.attiva AS iscrizione_attiva
+     FROM observations o JOIN enrollments e ON e.id = o.enrollment_id
+     WHERE o.activity_id = $1`,
     [activityId]
   );
-  const perCella = new Map(osservazioni.map((o) => [`${o.enrollment_id}:${o.criterion_id}`, o]));
+  return {
+    info,
+    tr,
+    criteri,
+    alunni,
+    scala,
+    scalaPub: scalaPubblica(scala, tr),
+    bande,
+    osservazioni,
+    attivita: {
+      id: info.id,
+      nome: tr.autore(info.nome, info.lingua_contenuto),
+      dataAttivita: info.data_attivita,
+      unitaPedagogica: { id: info.pedagogical_unit_id, nome: tr.testo('pedagogical_units.nome', info.pedagogical_unit_id, info.unita_pedagogica) },
+    },
+  };
+}
 
-  const righe = alunni.map((alunno) => {
-    const celle = criteri.map((c) => {
+/**
+ * Griglia di inserimento di un'attività: una riga per alunno iscritto, una colonna per
+ * criterio. Conserva la propria semantica (P14): esito per alunno = n/N, percentuale e banda
+ * dei punteggi di QUESTA attività, con la Regola B.
+ */
+async function getGrigliaActivity(client, { activityId, tenantId, lingua }) {
+  const d = await caricaAttivita(client, { activityId, tenantId, lingua });
+  const perCella = new Map(d.osservazioni.map((o) => [`${o.enrollment_id}:${o.criterion_id}`, o]));
+
+  const righe = d.alunni.map((alunno) => {
+    const celle = d.criteri.map((c) => {
       const oss = perCella.get(`${alunno.enrollment_id}:${c.id}`);
-      return { criterionId: c.id, valore: oss ? oss.valore : null, note: oss ? oss.note : null };
+      return { criterionId: c.id, valore: oss ? oss.valore : null, nota: oss ? d.tr.autore(oss.note || null, oss.lingua_nota) : null };
     });
     const presenti = celle.filter((c) => c.valore !== null).map((c) => c.valore);
-    const esito = calcolaEsito(presenti, scala.valoreMassimo);
+    const esito = calcolaEsito(presenti, d.scala.valoreMassimo);
+    const valore = motore.valoreDi(esito.percentualeEsatta, d.bande);
     return {
       enrollmentId: alunno.enrollment_id,
       studentPersonId: alunno.student_person_id,
@@ -278,28 +309,28 @@ async function getGrigliaActivity(client, { activityId, tenantId }) {
       nome: alunno.nome,
       celle,
       valutazionePresenti: presenti.length,
-      valutazioniTotali: criteri.length,
-      esito: { ...esito, giudizio: giudizioDi(esito.percentualeEsatta, bande).giudizio },
+      valutazioniTotali: d.criteri.length,
+      esito: { ...pubblico(valore), base: { n: presenti.length, N: d.criteri.length } },
     };
   });
 
   return {
-    activity: { id: activityInfo.id, nome: activityInfo.nome, dataAttivita: activityInfo.data_attivita },
-    pedagogicalUnitId: activityInfo.pedagogical_unit_id,
-    unitaPedagogica: activityInfo.unita_pedagogica,
-    scala: { id: scala.id, nome: scala.nome, valori: scala.valori, valoreMassimo: scala.valoreMassimo },
-    criteri: criteri.map((c) => ({ id: c.id, codice: c.codice, descrizione: c.descrizione, ordine: c.ordine })),
-    grigliaNonConfigurata: criteri.length === 0,
+    activity: d.attivita,
+    pedagogicalUnitId: d.info.pedagogical_unit_id,
+    unitaPedagogica: d.attivita.unitaPedagogica.nome,
+    precisione: motore.precisione(d.bande),
+    bande: bandePubbliche(d.bande),
+    scala: d.scalaPub,
+    criteri: d.criteri,
+    grigliaNonConfigurata: d.criteri.length === 0,
     righe,
   };
 }
 
 /**
- * Salva (o elimina) l'osservazione di un criterio per un alunno in
- * un'attività. valore === null -> elimina la riga se esiste. Altrimenti fa
- * un upsert; il valore deve esistere nella scala applicabile: lo garantisce
- * la FK (scale_id, valore) -> observation_scale_values (sez. 27), qui si dà
- * solo un errore applicativo più chiaro se il valore non è nemmeno un intero.
+ * Salva (o elimina) l'osservazione di un criterio per un alunno in un'attività.
+ * valore === null -> elimina la riga se esiste. Il valore deve esistere nella scala
+ * applicabile: lo garantisce la FK (scale_id, valore) -> observation_scale_values.
  */
 async function salvaObservation(client, { activityId, enrollmentId, criterionId, valore, tenantId, accountId, dataOsservazione }) {
   const activityInfo = await verificaActivityNelTenant(client, activityId, tenantId);
@@ -333,69 +364,91 @@ async function salvaObservation(client, { activityId, enrollmentId, criterionId,
 }
 
 /**
- * Report classe (fotografia di UNA attività, sez. "Report classe" del
- * prototipo, riportata sul nuovo dominio): organizzato per unità
- * pedagogica (oggi sempre una sola, perché un'Activity appartiene a una
- * sola PedagogicalUnit). Risultato del criterio: calcolaEsito sui soli
- * punteggi presenti in questa attività. Risultato di unità/attività: media
- * aritmetica semplice dei risultati percentuali dei criteri valutati, MAI
- * media mobile, MAI dati di altre attività.
+ * ESITO DELL'ATTIVITÀ (VIEW_ACTIVITY_OUTCOME, P14): per criterio, distribuzione dei valori
+ * della scala (barre, conteggi), base n/N e aggregato (n/N, percentuale, banda); per l'unità,
+ * media semplice dei criteri valutati. Solo i punteggi di QUESTA attività: mai media mobile,
+ * mai altre attività, nessuno storico ◇, nessuna finestra. Certezza dei valori di classe:
+ * più della metà degli iscritti valutati (§7). Le osservazioni di iscrizioni non attive
+ * sono escluse con il loro motivo.
  */
-async function getReportClasseActivity(client, { activityId, tenantId }) {
-  const griglia = await getGrigliaActivity(client, { activityId, tenantId });
-  const bande = preparaBande(await getBandeGiudizio(client, {
-    tenantId,
-    schoolLevelId: (await client.query('SELECT school_level_id FROM classes WHERE id = (SELECT class_id FROM activities WHERE id = $1)', [activityId])).rows[0].school_level_id,
-  }));
-
-  if (griglia.grigliaNonConfigurata) {
-    return {
-      activity: griglia.activity,
-      grigliaNonConfigurata: true,
-      totaleAlunni: griglia.righe.length,
-      complessivo: { percentuale: null, giudizio: '', criteriConsiderati: 0 },
-      unitaPedagogiche: [],
-    };
+async function getReportClasseActivity(client, { activityId, tenantId, lingua }) {
+  const d = await caricaAttivita(client, { activityId, tenantId, lingua });
+  const testata = {
+    activity: d.attivita,
+    precisione: motore.precisione(d.bande),
+    bande: bandePubbliche(d.bande),
+    scala: d.scalaPub,
+    totaleAlunni: d.alunni.length,
+  };
+  if (d.criteri.length === 0) {
+    return { ...testata, grigliaNonConfigurata: true, complessivo: null, unitaPedagogiche: [], esclusioni: [] };
   }
 
-  const valoreMassimo = griglia.scala.valoreMassimo;
-  const criteriConDettaglio = griglia.criteri.map((c) => {
-    const punteggi = griglia.righe
-      .map((r) => r.celle.find((cella) => cella.criterionId === c.id))
-      .filter((cella) => cella && cella.valore !== null)
-      .map((cella) => cella.valore);
-    const distribuzione = {};
-    griglia.scala.valori.forEach((v) => { distribuzione[v.valore] = 0; });
-    punteggi.forEach((p) => { distribuzione[p] += 1; });
-    const esito = calcolaEsito(punteggi, valoreMassimo);
+  const attivi = new Set(d.alunni.map((a) => a.enrollment_id));
+  const criteri = d.criteri.map((c) => {
+    const punteggi = d.osservazioni.filter((o) => o.criterion_id === c.id && attivi.has(o.enrollment_id)).map((o) => o.valore);
+    const esito = calcolaEsito(punteggi, d.scala.valoreMassimo);
+    const { certezza, stato } = motore.coperturaDiClasse(punteggi.length, d.alunni.length);
+    const valore = motore.valoreDi(esito.percentualeEsatta, d.bande);
     return {
-      id: c.id, codice: c.codice, descrizione: c.descrizione, ordine: c.ordine,
+      id: c.id,
+      codice: c.codice,
+      descrizione: c.descrizione,
+      ordine: c.ordine,
       valutati: punteggi.length,
-      nonValutati: griglia.righe.length - punteggi.length,
-      distribuzione,
-      esito: { ...esito, giudizio: giudizioDi(esito.percentualeEsatta, bande).giudizio },
+      nonValutati: d.alunni.length - punteggi.length,
+      base: { n: punteggi.length, N: d.alunni.length },
+      // Distribuzione dei valori REALI della scala (conteggi + quota in centesimi per la geometria).
+      distribuzione: d.scalaPub.valori.map((v) => {
+        const studenti = punteggi.filter((p) => p === v.valore).length;
+        return { valore: v.valore, etichetta: v.etichetta, studenti, larghezza: motore.quota(studenti, punteggi.length) };
+      }),
+      percentualeEsatta: esito.percentualeEsatta,
+      esito: {
+        ...pubblico(valore),
+        punteggioOttenuto: esito.punteggioOttenuto,
+        punteggioMassimo: esito.punteggioMassimo,
+        certezza,
+        criticita: motore.criticitaDi(valore, certezza),
+        // Esito attività: la regola del dominio aggrega tutti i criteri valutati (nessuna esclusione per copertura).
+        stato: stato === motore.DATI.NON_OSSERVATO ? stato : null,
+        base: { n: punteggi.length, N: d.alunni.length },
+      },
     };
   });
 
-  const esitiValutati = criteriConDettaglio.filter((c) => c.valutati > 0).map((c) => c.esito);
-  const media = mediaSemplicePercentuali(esitiValutati);
-  const risultato = { percentuale: media.percentuale, giudizio: giudizioDi(media.percentualeEsatta, bande).giudizio, criteriConsiderati: media.criteriConsiderati };
+  const valutati = criteri.filter((c) => c.valutati > 0);
+  const media = mediaSemplicePercentuali(valutati.map((c) => ({ punteggioOttenuto: c.esito.punteggioOttenuto, punteggioMassimo: c.esito.punteggioMassimo })));
+  const certezzaUnita = motore.certezzaMinima(valutati.map((c) => c.esito.certezza));
+  const valoreUnita = motore.valoreDi(media.percentualeEsatta, d.bande);
+  const risultato = {
+    ...pubblico(valoreUnita),
+    certezza: certezzaUnita,
+    criticita: motore.criticitaDi(valoreUnita, certezzaUnita),
+    stato: valutati.length === 0 ? motore.DATI.NON_OSSERVATO : null,
+    criteriConsiderati: valutati.length,
+    base: { n: valutati.length, N: criteri.length },
+  };
+  const esclusi = d.osservazioni.filter((o) => !o.iscrizione_attiva).length;
 
   return {
-    activity: griglia.activity,
+    ...testata,
     grigliaNonConfigurata: false,
-    totaleAlunni: griglia.righe.length,
     complessivo: risultato,
-    unitaPedagogiche: [
-      { id: griglia.pedagogicalUnitId, nome: griglia.unitaPedagogica, risultato, criteri: criteriConDettaglio },
-    ],
+    unitaPedagogiche: [{
+      id: d.attivita.unitaPedagogica.id,
+      nome: d.attivita.unitaPedagogica.nome,
+      risultato,
+      criteri: criteri.map(({ percentualeEsatta, ...resto }) => resto),
+    }],
+    esclusioni: esclusi === 0 ? [] : [{ motivo: 'EXCLUSION_ENROLLMENT_INACTIVE', osservazioni: esclusi }],
   };
 }
 
 module.exports = {
-  getTeachingsPropri, getTeachingsDelTenant, verificaTeachingNelTenant, getPedagogicalUnitsDiTeaching,
+  getTeachingsPropri, verificaTeachingNelTenant, getPedagogicalUnitsDiTeaching,
   getActivitiesDiTeaching, creaActivity, verificaActivityNelTenant, getGrigliaActivity, salvaObservation,
-  getReportClasseActivity, getStudentiDiTeaching, getAssessmentsDiTeaching,
+  getReportClasseActivity, getStudentiDiTeaching,
   verificaSchoolLevelNelTenant, getClassiDelloSchoolLevel, verificaClasseNelTenant,
   getStudentiDellaClasse, getTeachingsDellaClasse,
 };

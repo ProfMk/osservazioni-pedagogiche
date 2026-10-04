@@ -22,13 +22,14 @@ const { creaRoleAssignment } = require('../queries/rbac');
 const { datiNonValidi } = require('../lib/erroreApplicativo');
 const { lingueAbilitate, risolviLinguaTenant, aggiornaLinguaSessione } = require('../lib/lingua');
 const { CAMPI, salvaTraduzione, completezzaTraduzioni } = require('../lib/contenuti');
+const { traduttoreDi } = require('../lib/pubblicazione');
 const { asincrono } = require('../lib/asincrono');
 
 const router = express.Router();
 
-// GET /api/teachings — i Teaching di cui l'account è titolare in questo tenant ("My Teaching").
+// GET /api/teachings — Teaching del percorso unico (P15): propri e leggibili per scope (classe/livello/tenant/piattaforma).
 router.get('/teachings', asincrono(async (req, res) => {
-  res.json(await dominio.getTeachingsPropri(pool, { accountId: req.accountId, tenantId: req.tenantId }));
+  res.json(await dominio.getTeachingsPropri(pool, { accountId: req.accountId, tenantId: req.tenantId, lingua: req.lingua }));
 }));
 
 // GET /api/teachings/:teachingId/pedagogical-units — unità pedagogiche della materia del Teaching.
@@ -38,7 +39,7 @@ router.get('/teachings/:teachingId/pedagogical-units', asincrono(async (req, res
     accountId: req.accountId, permesso: 'teaching.read', tenantId: req.tenantId,
     ...(await scopeDiTeaching(teachingId, req.tenantId)),
   });
-  res.json(await dominio.getPedagogicalUnitsDiTeaching(pool, teachingId, req.tenantId));
+  res.json(await dominio.getPedagogicalUnitsDiTeaching(pool, teachingId, req.tenantId, req.lingua));
 }));
 
 async function scopeDiTeaching(teachingId, tenantId) {
@@ -53,7 +54,7 @@ router.get('/teachings/:teachingId/activities', asincrono(async (req, res) => {
     accountId: req.accountId, permesso: 'activity.read', tenantId: req.tenantId,
     ...(await scopeDiTeaching(teachingId, req.tenantId)),
   });
-  res.json(await dominio.getActivitiesDiTeaching(pool, teachingId, req.tenantId));
+  res.json(await dominio.getActivitiesDiTeaching(pool, teachingId, req.tenantId, req.lingua));
 }));
 
 // POST /api/teachings/:teachingId/activities  body: { nome, dataAttivita: 'YYYY-MM-DD', pedagogicalUnitId }
@@ -97,17 +98,39 @@ router.get('/teachings/:teachingId/students/:enrollmentId/progress', asincrono(a
     accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
     ...(await scopeDiTeaching(teachingId, req.tenantId)),
   });
-  res.json(await progresso.getProgressoStudenteDiTeaching(pool, { teachingId, enrollmentId, tenantId: req.tenantId }));
+  res.json(await progresso.getProgressoStudenteDiTeaching(pool, { teachingId, enrollmentId, tenantId: req.tenantId, lingua: req.lingua }));
 }));
 
-// GET /api/teachings/:teachingId/assessments — Assessment del Teaching (pagina "Valutazioni", sola lettura in V1).
+// GET /api/teachings/:teachingId/class-overview — quadro classe (VIEW_CLASS_OVERVIEW, P11).
+router.get('/teachings/:teachingId/class-overview', asincrono(async (req, res) => {
+  const teachingId = Number(req.params.teachingId);
+  if (!Number.isInteger(teachingId)) throw datiNonValidi('ERR_INVALID_IDENTIFIER', { campo: 'UI_FIELD_TEACHING_ID' });
+  await richiedePermesso(pool, {
+    accountId: req.accountId, permesso: 'report.read', tenantId: req.tenantId,
+    ...(await scopeDiTeaching(teachingId, req.tenantId)),
+  });
+  res.json(await progresso.getQuadroClasse(pool, { teachingId, tenantId: req.tenantId, lingua: req.lingua }));
+}));
+
+// GET /api/teachings/:teachingId/students-matrix — matrice alunni × nuclei (VIEW_STUDENTS, P12).
+router.get('/teachings/:teachingId/students-matrix', asincrono(async (req, res) => {
+  const teachingId = Number(req.params.teachingId);
+  if (!Number.isInteger(teachingId)) throw datiNonValidi('ERR_INVALID_IDENTIFIER', { campo: 'UI_FIELD_TEACHING_ID' });
+  await richiedePermesso(pool, {
+    accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
+    ...(await scopeDiTeaching(teachingId, req.tenantId)),
+  });
+  res.json(await progresso.getMatriceStudenti(pool, { teachingId, tenantId: req.tenantId, lingua: req.lingua }));
+}));
+
+// GET /api/teachings/:teachingId/assessments — VIEW_ASSESSMENT: timbro, periodo, autore, evidenza del periodo (P13).
 router.get('/teachings/:teachingId/assessments', asincrono(async (req, res) => {
   const teachingId = Number(req.params.teachingId);
   await richiedePermesso(pool, {
     accountId: req.accountId, permesso: 'assessment.read', tenantId: req.tenantId,
     ...(await scopeDiTeaching(teachingId, req.tenantId)),
   });
-  res.json(await dominio.getAssessmentsDiTeaching(pool, teachingId, req.tenantId));
+  res.json(await progresso.getValutazioniDiTeaching(pool, { teachingId, tenantId: req.tenantId, lingua: req.lingua }));
 }));
 
 // GET /api/school-levels — livelli scolastici del tenant attivo (ingresso "Classi" per Coordinatore/Tenant Admin).
@@ -117,7 +140,8 @@ router.get('/teachings/:teachingId/assessments', asincrono(async (req, res) => {
 // dato che il permesso class.read è concesso solo con lo scope di quello specifico livello. L'accesso alle
 // risorse vere (classi/studenti di un livello) resta interamente gated al passo successivo.
 router.get('/school-levels', asincrono(async (req, res) => {
-  res.json(await getSchoolLevels(pool, req.tenantId));
+  const tr = await traduttoreDi(pool, req.lingua);
+  res.json((await getSchoolLevels(pool, req.tenantId)).map((l) => ({ ...l, nome: tr.testo('school_levels.nome', l.id, l.nome) })));
 }));
 
 // GET /api/school-levels/:schoolLevelId/classes — classi di un livello scolastico.
@@ -147,7 +171,7 @@ router.get('/classes/:classId/teachings', asincrono(async (req, res) => {
   await richiedePermesso(pool, {
     accountId: req.accountId, permesso: 'class.read', tenantId: req.tenantId, schoolLevelId: classe.school_level_id, classId,
   });
-  res.json(await dominio.getTeachingsDellaClasse(pool, classId, req.tenantId));
+  res.json(await dominio.getTeachingsDellaClasse(pool, classId, req.tenantId, req.lingua));
 }));
 
 // GET /api/activities/:activityId/griglia — tabella di classe della singola attività.
@@ -158,10 +182,10 @@ router.get('/activities/:activityId/griglia', asincrono(async (req, res) => {
     accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
     schoolLevelId: activityInfo.school_level_id, classId: activityInfo.class_id, teachingId: activityInfo.teaching_id,
   });
-  res.json(await dominio.getGrigliaActivity(pool, { activityId, tenantId: req.tenantId }));
+  res.json(await dominio.getGrigliaActivity(pool, { activityId, tenantId: req.tenantId, lingua: req.lingua }));
 }));
 
-// GET /api/activities/:activityId/report-classe — fotografia della singola attività (niente media mobile).
+// GET /api/activities/:activityId/report-classe — esito dell'attività (VIEW_ACTIVITY_OUTCOME): niente media mobile.
 router.get('/activities/:activityId/report-classe', asincrono(async (req, res) => {
   const activityId = Number(req.params.activityId);
   const activityInfo = await dominio.verificaActivityNelTenant(pool, activityId, req.tenantId);
@@ -169,7 +193,7 @@ router.get('/activities/:activityId/report-classe', asincrono(async (req, res) =
     accountId: req.accountId, permesso: 'report.read', tenantId: req.tenantId,
     schoolLevelId: activityInfo.school_level_id, classId: activityInfo.class_id, teachingId: activityInfo.teaching_id,
   });
-  res.json(await dominio.getReportClasseActivity(pool, { activityId, tenantId: req.tenantId }));
+  res.json(await dominio.getReportClasseActivity(pool, { activityId, tenantId: req.tenantId, lingua: req.lingua }));
 }));
 
 // PUT /api/activities/:activityId/enrollments/:enrollmentId/criteria/:criterionId  body: { valore: number|null }

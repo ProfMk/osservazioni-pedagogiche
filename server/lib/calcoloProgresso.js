@@ -1,27 +1,31 @@
 'use strict';
 
 /**
- * Calcolo dei report pedagogici (specifica v2.7): avanzamento dello studente
- * e avanzamento della classe. Solo funzioni PURE: nessun accesso al database.
- * Scala e bande di giudizio arrivano sempre da chi chiama (configurazione del
- * tenant/livello): qui non compare alcun valore di scala, soglia o etichetta.
+ * Motore dei report pedagogici — Visual Grammar V2. Solo funzioni PURE: nessun
+ * accesso al database, nessun valore di scala, soglia o etichetta nel codice.
  *
- * Due grandezze distinte, da non confondere mai:
- * - `percentuale` (percentuale PEDAGOGICA) = media / massimo della scala × 100:
- *   è l'unica usata per giudizi, medie, confronti e report;
- * - `posizioneRadar` = (media − minimo) / (massimo − minimo) × 100: serve SOLO
- *   alla geometria del radar, non entra in alcun giudizio o aggregazione.
+ * Regole di calcolo (approvate, invariate rispetto alla baseline):
+ * - corrente di un criterio = media mobile delle ultime 3 osservazioni valide;
+ *   cumulativo = tutte le osservazioni valide;
+ * - nucleo e complessivo dello studente = media semplice dei criteri valutati;
+ * - classe: K(c) = media dei risultati correnti degli studenti valutati; criterio
+ *   rappresentativo se valutato da più di metà degli iscritti; nucleo/complessivo
+ *   di classe = media dei soli K(c) rappresentativi; conferma del confronto con
+ *   almeno 6 confrontabili e almeno 2/3 concordi (pari nel denominatore).
  *
- * Tutte le aggregazioni lavorano sui valori esatti (`percentualeEsatta`); ogni valore
- * pubblico e ogni banda derivano dall'intero in centesimi kc (Regola B, calcoloEsiti.js).
+ * Rappresentazione (V2): ogni valore pubblico deriva dall'intero kc (Regola B) ed è
+ * accompagnato da certezza (§7), criticità (§8), base n/N (P7) e stato dei dati
+ * mancanti (§11). Gli identificatori sono quelli del vocabolario chiuso V2 (§6).
+ * Le etichette delle bande sono contenuto dell'istituto: il motore le trasporta
+ * senza mai usarle come chiave (B-4).
  */
 
 const {
-  calcolaEsito, risultatoCorrenteMediaMobile, FINESTRA_MEDIA_MOBILE,
-  centesimi, daCentesimi, centesimiDaDecimale, raggiungeSoglia,
+  calcolaEsito, risultatoCorrenteMediaMobile, FINESTRA_MEDIA_MOBILE, DECIMALI_DETTAGLIO,
+  centesimi, daCentesimi, centesimiDaDecimale, decimaliSintesi, raggiungeSoglia,
 } = require('./calcoloEsiti');
 
-// Parametri della regola di classe (specifica v2.7, approvati): restituiti anche dall'API.
+// Parametri della regola di classe (approvati): restituiti anche dall'API.
 const REGOLA_CLASSE = Object.freeze({
   finestra: FINESTRA_MEDIA_MOBILE,
   rappresentativitaOltre: 0.5,
@@ -29,26 +33,44 @@ const REGOLA_CLASSE = Object.freeze({
   minimoConfrontabili: 6,
 });
 
-const LIVELLO_COPERTURA_CONSOLIDATO = FINESTRA_MEDIA_MOBILE;
+const OSSERVAZIONI_CONSOLIDATE = FINESTRA_MEDIA_MOBILE;
+
+// --- Vocabolario V2 (identificatori, mai testi) ---------------------------------
+const CERTEZZA = Object.freeze({ SUFFICIENTE: 'CERTAINTY_SUFFICIENT', PARZIALE: 'CERTAINTY_PARTIAL', ASSENTE: 'CERTAINTY_ABSENT' });
+const GRADO_CERTEZZA = { CERTAINTY_ABSENT: 0, CERTAINTY_PARTIAL: 1, CERTAINTY_SUFFICIENT: 2 };
+const CRITICITA = Object.freeze({ BANDA: 'CRITICAL_BAND', DA_VERIFICARE: 'CRITICAL_TO_VERIFY' });
+const CONFRONTO = Object.freeze({
+  SOPRA: 'COMPARISON_ABOVE', SOTTO: 'COMPARISON_BELOW', ALLINEATO: 'COMPARISON_ALIGNED', NON_CONFERMATO: 'COMPARISON_UNCONFIRMED',
+  POCHI_CONFRONTABILI: 'UNCONFIRMED_TOO_FEW_COMPARABLE', QUORUM_NON_RAGGIUNTO: 'UNCONFIRMED_QUORUM_NOT_REACHED',
+});
+const DATI = Object.freeze({ NON_CONFIGURATO: 'NOT_CONFIGURED', NON_OSSERVATO: 'NOT_OBSERVED', INSUFFICIENTI: 'INSUFFICIENT_DATA' });
+const COPERTURA_STUDENTE = ['STUDENT_COVERAGE_INDICATIVE', 'STUDENT_COVERAGE_PROVISIONAL', 'STUDENT_COVERAGE_CONSOLIDATED'];
+const COPERTURA_CLASSE = Object.freeze({
+  RAPPRESENTATIVA: 'CLASS_COVERAGE_REPRESENTATIVE', POCO_OSSERVATA: 'CLASS_COVERAGE_UNDER_OBSERVED', NON_OSSERVATA: 'CLASS_COVERAGE_NOT_OBSERVED',
+});
+const DATI_NUCLEO = Object.freeze({ COMPLETI: 'NUCLEUS_DATA_COMPLETE', INCOMPLETI: 'NUCLEUS_DATA_INCOMPLETE' });
 
 function mediaSemplice(valori) {
   return valori.reduce((totale, v) => totale + v, 0) / valori.length;
 }
 
-/** Valore pubblico (dettaglio, 2 decimali) di una percentuale esatta: sempre via kc (Regola B). */
-function pubblica(percentualeEsatta) {
-  return daCentesimi(centesimi(percentualeEsatta));
+/** P6: la certezza di un valore derivato è il minimo dei termini che lo producono. */
+function certezzaMinima(certezze) {
+  if (certezze.length === 0) return CERTEZZA.ASSENTE;
+  return certezze.reduce((min, c) => (GRADO_CERTEZZA[c] < GRADO_CERTEZZA[min] ? c : min));
+}
+
+/** Certezza di un criterio dello studente dal numero di osservazioni valide (§7). */
+function certezzaStudente(osservazioniValide) {
+  if (osservazioniValide === 0) return CERTEZZA.ASSENTE;
+  return osservazioniValide >= OSSERVAZIONI_CONSOLIDATE ? CERTEZZA.SUFFICIENTE : CERTEZZA.PARZIALE;
 }
 
 /**
- * Bande di giudizio pronte per il calcolo: soglie numeriche, ordinate dalla più alta,
- * ciascuna con il proprio `livello` (0 = banda più bassa). L'ordine è quello delle soglie:
- * lo schema non ha una colonna d'ordine.
- *
- * CRITICITÀ: è critica la banda con la posizione più bassa tra quelle configurate dall'istituto
- * (`critica: true`). Deriva solo dalla struttura delle bande: nessuna soglia numerica e nessuna
- * etichetta sono scritte nel codice.
- * @param {{soglia_minima: number|string, etichetta: string}[]} bandeDb
+ * Bande di giudizio pronte per il calcolo, ordinate dalla più alta, ciascuna con la
+ * propria posizione (livello 0 = la più bassa), la zona che occupa sull'asse e la soglia
+ * in centesimi. CRITICITÀ (P4): è critica la banda più bassa tra quelle configurate,
+ * ma con una sola banda configurata non esiste banda critica.
  */
 function preparaBande(bandeDb) {
   const crescenti = bandeDb
@@ -56,128 +78,137 @@ function preparaBande(bandeDb) {
       const sogliaCentesimi = b.soglia_centesimi !== undefined && b.soglia_centesimi !== null
         ? Number(b.soglia_centesimi)
         : centesimiDaDecimale(b.soglia_minima);
-      return { id: b.id === undefined ? null : b.id, sogliaCentesimi, sogliaMinima: sogliaCentesimi / 100, etichetta: b.etichetta };
+      return { id: b.id === undefined ? null : b.id, sogliaCentesimi, etichetta: b.etichetta };
     })
     .sort((a, b) => a.sogliaCentesimi - b.sogliaCentesimi);
-  // V2: con una sola banda configurata non esiste banda critica.
   const esisteCritica = crescenti.length >= 2;
   return crescenti
-    .map((b, livello) => ({ ...b, livello, critica: esisteCritica && livello === LIVELLO_BANDA_CRITICA }))
+    .map((b, livello) => ({
+      ...b,
+      sogliaMinima: b.sogliaCentesimi / 100,
+      livello,
+      critica: esisteCritica && livello === 0,
+      // Zona sull'asse (0-100), dalle soglie in centesimi: geometria derivata dagli interi.
+      posizioneInizio: daCentesimi(b.sogliaCentesimi),
+      posizioneFine: livello + 1 < crescenti.length ? daCentesimi(crescenti[livello + 1].sogliaCentesimi) : 100,
+      // Ampiezza della zona, in interi di centesimi: il client non calcola nemmeno la geometria.
+      ampiezza: daCentesimi((livello + 1 < crescenti.length ? crescenti[livello + 1].sogliaCentesimi : 10000) - b.sogliaCentesimi),
+    }))
     .reverse();
 }
 
-// Posizione della banda critica nell'ordine crescente delle soglie: la più bassa (se le bande sono almeno due).
-const LIVELLO_BANDA_CRITICA = 0;
+/** p_sintesi delle bande applicabili (V2 §2.1, P16). */
+function decimaliSintesiBande(bande) {
+  return decimaliSintesi(bande.map((b) => b.sogliaCentesimi));
+}
 
-const NON_VALUTATO = Object.freeze({ giudizio: '', livelloGiudizio: null, critico: null });
+/** Precisioni semantiche dei valori numerici (P16): dettaglio = 2, sintesi dalle soglie. */
+function precisione(bande) {
+  return { dettaglio: DECIMALI_DETTAGLIO, sintesi: decimaliSintesiBande(bande) };
+}
+
+const NON_VALUTATO = Object.freeze({
+  centesimi: null, percentuale: null, sintesi: null, posizioneAsse: null,
+  giudizio: null, livelloGiudizio: null, bandaId: null, critico: null,
+});
 
 /**
- * LIVELLO ASSOLUTO di una percentuale pedagogica ESATTA: giudizio (etichetta della banda), posizione
- * della banda e criticità. Dipende solo dal valore e dalle bande dell'istituto: nessun confronto con
- * altri risultati può modificarlo. Null -> non valutato (critico: null, non false).
+ * Rappresentazione pubblica di una percentuale ESATTA (Regola B): banda, valore del
+ * dettaglio, valore della sintesi e posizione sull'asse derivano tutti da kc.
  */
-function giudizioDi(percentualeEsatta, bande) {
+function valoreDi(percentualeEsatta, bande) {
   if (percentualeEsatta === null || percentualeEsatta === undefined) return { ...NON_VALUTATO };
   const kc = centesimi(percentualeEsatta);
-  for (const banda of bande) {
-    if (raggiungeSoglia(kc, banda.sogliaCentesimi)) {
-      return { giudizio: banda.etichetta, livelloGiudizio: banda.livello, critico: banda.critica };
-    }
-  }
-  return { ...NON_VALUTATO };
+  const pSintesi = decimaliSintesiBande(bande);
+  const banda = bande.find((b) => raggiungeSoglia(kc, b.sogliaCentesimi)) || null;
+  return {
+    centesimi: kc,
+    percentuale: daCentesimi(kc),
+    sintesi: { valore: daCentesimi(kc, pSintesi), decimali: pSintesi },
+    posizioneAsse: daCentesimi(kc),
+    giudizio: banda ? banda.etichetta : null,
+    livelloGiudizio: banda ? banda.livello : null,
+    bandaId: banda ? banda.id : null,
+    critico: banda ? banda.critica : null,
+  };
+}
+
+/** Livello assoluto (banda) di una percentuale esatta. */
+function giudizioDi(percentualeEsatta, bande) {
+  const v = valoreDi(percentualeEsatta, bande);
+  return { giudizio: v.giudizio, livelloGiudizio: v.livelloGiudizio, critico: v.critico };
 }
 
 /**
- * CONFRONTO RELATIVO tra un risultato e il suo riferimento (nucleo vs complessivo, criterio vs nucleo):
- * solo la posizione reciproca delle due bande, più la differenza in punti percentuali come dato
- * descrittivo. NON dice nulla sull'adeguatezza del risultato: "allineato" significa "stessa banda del
- * riferimento", non "va bene". Il livello assoluto e la criticità restano quelli di giudizioDi.
- * @returns {{esito: 'superiore'|'inferiore'|'allineato', differenzaPunti: number}|null} null se uno dei due non è valutato.
+ * Criticità (§8): una ZONA dell'asse. Banda critica con certezza sufficiente ->
+ * CRITICAL_BAND (entra nel blocco di attenzione); con certezza parziale ->
+ * CRITICAL_TO_VERIFY (⚠ a contorno, fuori dal blocco); senza dati -> nessuna.
+ */
+function criticitaDi(valore, certezza) {
+  if (valore.critico !== true) return null;
+  if (certezza === CERTEZZA.SUFFICIENTE) return CRITICITA.BANDA;
+  if (certezza === CERTEZZA.PARZIALE) return CRITICITA.DA_VERIFICARE;
+  return null;
+}
+
+/**
+ * CONFRONTO RELATIVO tra un risultato e il suo riferimento (nucleo↔complessivo,
+ * criterio di classe↔nucleo): posizione reciproca delle bande; la differenza è tra i
+ * valori già mostrati alla stessa precisione (differenza di centesimi). Nessun
+ * confronto se uno dei due manca, è insufficiente o non configurato (§11).
  */
 function confrontoRelativo(risultato, riferimento) {
-  if (!risultato || !riferimento || risultato.livelloGiudizio === null || riferimento.livelloGiudizio === null) return null;
-  let esito = 'allineato';
-  if (risultato.livelloGiudizio > riferimento.livelloGiudizio) esito = 'superiore';
-  else if (risultato.livelloGiudizio < riferimento.livelloGiudizio) esito = 'inferiore';
-  // Differenza tra i valori GIÀ mostrati alla stessa precisione (V2 §9): differenza di centesimi.
-  return { esito, differenzaPunti: (centesimi(risultato.percentualeEsatta) - centesimi(riferimento.percentualeEsatta)) / 100 };
+  const confrontabile = (r) => r && r.livelloGiudizio !== null && r.livelloGiudizio !== undefined
+    && r.stato !== DATI.INSUFFICIENTI && r.stato !== DATI.NON_CONFIGURATO;
+  if (!confrontabile(risultato) || !confrontabile(riferimento)) return null;
+  let esito = CONFRONTO.ALLINEATO;
+  if (risultato.livelloGiudizio > riferimento.livelloGiudizio) esito = CONFRONTO.SOPRA;
+  else if (risultato.livelloGiudizio < riferimento.livelloGiudizio) esito = CONFRONTO.SOTTO;
+  return {
+    esito,
+    differenzaPunti: (centesimi(risultato.percentualeEsatta) - centesimi(riferimento.percentualeEsatta)) / 100,
+    riferimento: { posizioneAsse: riferimento.posizioneAsse },
+    certezza: certezzaMinima([risultato.certezza, riferimento.certezza].filter(Boolean)),
+  };
 }
 
-/**
- * Difficoltà generalizzata: il risultato complessivo (dello studente o della classe) è nella banda
- * critica. In quel caso un nucleo "allineato" non è un nucleo senza problemi: è critico come il resto.
- */
+/** GENERALIZED_DIFFICULTY (P5): solo se il complessivo è in banda critica con certezza sufficiente. */
 function difficoltaGeneralizzata(complessivo) {
-  return complessivo.critico === true;
-}
-
-/**
- * Posizione sul radar di una media espressa in unità di scala: 0 = minimo della scala,
- * 100 = massimo. Solo geometria. Null se la media è null o la scala ha un solo valore.
- */
-function posizioneRadarDaMedia(media, scala) {
-  const ampiezza = scala.valoreMassimo - scala.valoreMinimo;
-  if (media === null || media === undefined || ampiezza <= 0) return null;
-  return ((media - scala.valoreMinimo) / ampiezza) * 100;
-}
-
-/** Posizione sul radar corrispondente a una percentuale pedagogica (stessa trasformazione). */
-function posizioneRadarDaPercentuale(percentualeEsatta, scala) {
-  if (percentualeEsatta === null || percentualeEsatta === undefined) return null;
-  return posizioneRadarDaMedia((percentualeEsatta / 100) * scala.valoreMassimo, scala);
-}
-
-/**
- * Bande con la posizione dell'anello sul radar. Una soglia che cade sul minimo della
- * scala o sotto (posizione <= 0) non ha anello: `posizioneRadar` null.
- */
-function bandeConPosizioneRadar(bande, scala) {
-  return bande.map((b) => {
-    const posizione = posizioneRadarDaPercentuale(b.sogliaMinima, scala);
-    return {
-      sogliaMinima: b.sogliaMinima,
-      etichetta: b.etichetta,
-      livello: b.livello,
-      critica: b.critica,
-      posizioneRadar: posizione === null || posizione <= 0 ? null : pubblica(posizione),
-    };
-  });
+  return complessivo.criticita === CRITICITA.BANDA;
 }
 
 /** Livello di copertura di un criterio: 0 non valutato, 1 indicativo, 2 provvisorio, 3 consolidato (3 o più). */
 function livelloCopertura(numeroOsservazioni) {
-  return Math.min(numeroOsservazioni, LIVELLO_COPERTURA_CONSOLIDATO);
+  return Math.min(numeroOsservazioni, OSSERVAZIONI_CONSOLIDATE);
 }
-
-/** Percentuale pedagogica di UNA osservazione (valore / massimo della scala × 100): solo per lo storico. */
-function percentualeOsservazione(valore, scala) {
-  return calcolaEsito([valore], scala.valoreMassimo).percentuale;
-}
-
 
 /**
  * Risultato di UN criterio per UNO studente.
  * @param {number[]} valoriCronologici - valori delle sole osservazioni VALIDE, dal più vecchio.
- * @param {{valoreMassimo: number, valoreMinimo: number}} scala
- * @param {object[]} bande - da preparaBande.
- * Corrente = media mobile delle ultime 3 (o di tutte, se meno); cumulativo = tutte le osservazioni valide.
  */
 function risultatoCriterioStudente(valoriCronologici, scala, bande) {
   const corrente = risultatoCorrenteMediaMobile(valoriCronologici, scala.valoreMassimo);
   const cumulativo = calcolaEsito(valoriCronologici, scala.valoreMassimo);
+  const n = valoriCronologici.length;
+  const certezza = certezzaStudente(n);
+  const valore = valoreDi(corrente.percentualeEsatta, bande);
   return {
-    percentuale: corrente.percentuale,
+    ...valore,
     percentualeEsatta: corrente.percentualeEsatta,
-    ...giudizioDi(corrente.percentualeEsatta, bande),
+    certezza,
+    copertura: n === 0 ? null : COPERTURA_STUDENTE[livelloCopertura(n) - 1],
+    criticita: criticitaDi(valore, certezza),
+    stato: n === 0 ? DATI.NON_OSSERVATO : null,
+    // P7: osservazioni considerate dalla finestra / osservazioni valide.
+    base: { n: corrente.osservazioniConsiderate, N: n },
     punteggioOttenuto: corrente.punteggioOttenuto,
     punteggioMassimo: corrente.punteggioMassimo,
     osservazioniConsiderate: corrente.osservazioniConsiderate,
-    osservazioniTotali: corrente.osservazioniTotali,
-    livelloCopertura: livelloCopertura(valoriCronologici.length),
+    osservazioniTotali: n,
+    livelloCopertura: livelloCopertura(n),
     cumulativo: {
-      percentuale: cumulativo.percentuale,
+      ...valoreDi(cumulativo.percentualeEsatta, bande),
       percentualeEsatta: cumulativo.percentualeEsatta,
-      giudizio: giudizioDi(cumulativo.percentualeEsatta, bande).giudizio,
       punteggioOttenuto: cumulativo.punteggioOttenuto,
       punteggioMassimo: cumulativo.punteggioMassimo,
     },
@@ -185,33 +216,104 @@ function risultatoCriterioStudente(valoriCronologici, scala, bande) {
 }
 
 /**
- * Aggregazione di un insieme di criteri di UNO studente (un nucleo, o l'intera materia):
- * media semplice, a pesi uguali, dei risultati correnti dei soli criteri valutati.
- * Il cumulativo è la media semplice dei cumulativi degli stessi criteri.
- * @param {object[]} criteri - risultati di risultatoCriterioStudente (tutti i criteri dell'insieme).
+ * Aggregazione di un insieme di criteri di UNO studente: un nucleo (`nucleo: true`) o
+ * l'intera materia. Media semplice, a pesi uguali, dei soli criteri valutati.
+ * Certezza: nucleo -> H3 (tutti i criteri valutati, ciascuno con almeno 3 osservazioni
+ * valide); complessivo -> minimo dei criteri valutati che lo producono (P6).
  */
-function aggregaCriteriStudente(criteri, scala, bande) {
+function aggregaCriteriStudente(criteri, scala, bande, { nucleo = false } = {}) {
   const valutati = criteri.filter((c) => c.osservazioniTotali > 0);
   const percentualeEsatta = valutati.length === 0 ? null : mediaSemplice(valutati.map((c) => c.percentualeEsatta));
   const cumulativoEsatto = valutati.length === 0 ? null : mediaSemplice(valutati.map((c) => c.cumulativo.percentualeEsatta));
+  let certezza;
+  if (valutati.length === 0) certezza = CERTEZZA.ASSENTE;
+  else if (nucleo) certezza = criteri.every((c) => c.certezza === CERTEZZA.SUFFICIENTE) ? CERTEZZA.SUFFICIENTE : CERTEZZA.PARZIALE;
+  else certezza = certezzaMinima(valutati.map((c) => c.certezza));
+  let stato = null;
+  if (criteri.length === 0) stato = DATI.NON_CONFIGURATO;
+  else if (valutati.length === 0) stato = DATI.NON_OSSERVATO;
   const perLivello = (livello) => criteri.filter((c) => c.livelloCopertura === livello).length;
+  const valore = valoreDi(percentualeEsatta, bande);
+  let datiNucleo = null;
+  if (nucleo && criteri.length > 0) datiNucleo = valutati.length === criteri.length ? DATI_NUCLEO.COMPLETI : DATI_NUCLEO.INCOMPLETI;
   return {
-    percentuale: pubblica(percentualeEsatta),
+    ...valore,
     percentualeEsatta,
-    ...giudizioDi(percentualeEsatta, bande),
+    certezza,
+    criticita: criticitaDi(valore, certezza),
+    stato,
+    datiNucleo,
+    // P7: criteri valutati / criteri attivi.
+    base: { n: valutati.length, N: criteri.length },
     criteriValutati: valutati.length,
     criteriTotali: criteri.length,
-    cumulativo: {
-      percentuale: pubblica(cumulativoEsatto),
-      percentualeEsatta: cumulativoEsatto,
-      giudizio: giudizioDi(cumulativoEsatto, bande).giudizio,
-    },
+    cumulativo: { ...valoreDi(cumulativoEsatto, bande), percentualeEsatta: cumulativoEsatto },
     copertura: {
       consolidati: perLivello(3), provvisori: perLivello(2), indicativi: perLivello(1), nonValutati: perLivello(0),
     },
-    posizioneRadar: pubblica(posizioneRadarDaPercentuale(percentualeEsatta, scala)),
-    // Punto pieno sul radar solo se TUTTI i criteri sono valutati e ciascuno è consolidato.
-    puntoPieno: criteri.length > 0 && criteri.every((c) => c.livelloCopertura === LIVELLO_COPERTURA_CONSOLIDATO),
+  };
+}
+
+/** Certezza e stato di un valore di classe dalla copertura degli studenti (§7, §11). */
+function coperturaDiClasse(valutati, totali) {
+  if (valutati === 0) return { certezza: CERTEZZA.ASSENTE, copertura: COPERTURA_CLASSE.NON_OSSERVATA, stato: DATI.NON_OSSERVATO };
+  if (valutati > totali * REGOLA_CLASSE.rappresentativitaOltre) {
+    return { certezza: CERTEZZA.SUFFICIENTE, copertura: COPERTURA_CLASSE.RAPPRESENTATIVA, stato: null };
+  }
+  return { certezza: CERTEZZA.PARZIALE, copertura: COPERTURA_CLASSE.POCO_OSSERVATA, stato: DATI.INSUFFICIENTI };
+}
+
+/**
+ * Valore di un aggregato di classe (nucleo o complessivo) dai criteri rappresentativi.
+ * Senza criteri rappresentativi ma con dati: nessun valore (dati insufficienti).
+ */
+function aggregatoDiClasse(criteri, bande) {
+  const rappresentativi = criteri.filter((c) => c.rappresentativo);
+  const conDati = criteri.filter((c) => c.copertura.studentiValutati > 0);
+  const percentualeEsatta = rappresentativi.length === 0 ? null : mediaSemplice(rappresentativi.map((c) => c.risultato.percentualeEsatta));
+  let certezza = CERTEZZA.ASSENTE;
+  let stato = DATI.NON_OSSERVATO;
+  if (criteri.length === 0) stato = DATI.NON_CONFIGURATO;
+  else if (rappresentativi.length > 0) {
+    // P6: minimo dei termini che lo producono, tutti rappresentativi (sufficienti).
+    certezza = CERTEZZA.SUFFICIENTE;
+    stato = null;
+  } else if (conDati.length > 0) {
+    certezza = CERTEZZA.PARZIALE;
+    stato = DATI.INSUFFICIENTI;
+  }
+  const valore = valoreDi(percentualeEsatta, bande);
+  return {
+    ...valore,
+    percentualeEsatta,
+    certezza,
+    criticita: criticitaDi(valore, certezza),
+    stato,
+    // P7: criteri rappresentativi (i termini usati) / criteri attivi.
+    base: { n: rappresentativi.length, N: criteri.length },
+    criteriRappresentativi: rappresentativi.length,
+    criteriTotali: criteri.length,
+  };
+}
+
+/**
+ * CONFRONTO di un criterio di classe con il proprio nucleo (§9). Solo per criteri
+ * rappresentativi (regola di confrontabilità). Una differenza di banda è un glifo solo se
+ * confermata: almeno 6 confrontabili e almeno 2/3 nella stessa direzione; altrimenti
+ * COMPARISON_UNCONFIRMED (nessun glifo, P8) con il motivo.
+ */
+function confrontoCriterioConNucleo(criterio, risultatoNucleo) {
+  if (!criterio.rappresentativo) return null;
+  const relativo = confrontoRelativo(criterio.risultato, risultatoNucleo);
+  if (relativo === null || relativo.esito === CONFRONTO.ALLINEATO) return relativo;
+  const { confrontabili, inferiori, superiori } = criterio.confronto;
+  const concordi = relativo.esito === CONFRONTO.SOTTO ? inferiori : superiori;
+  if (confrontabili >= REGOLA_CLASSE.minimoConfrontabili && concordi * 3 >= confrontabili * 2) return relativo;
+  return {
+    ...relativo,
+    esito: CONFRONTO.NON_CONFERMATO,
+    direzione: relativo.esito,
+    motivo: confrontabili < REGOLA_CLASSE.minimoConfrontabili ? CONFRONTO.POCHI_CONFRONTABILI : CONFRONTO.QUORUM_NON_RAGGIUNTO,
   };
 }
 
@@ -220,10 +322,6 @@ function aggregaCriteriStudente(criteri, scala, bande) {
  * @param {(number|string)[]} criteriIds - criteri attivi del nucleo, nell'ordine configurato.
  * @param {Map<number|string, {percentualeEsatta: number, osservazioniTotali: number}>[]} righeStudenti -
  *   una Map per OGNI studente iscritto (anche vuota): criterio -> risultato corrente, solo se valutato.
- * @param {object[]} bande - da preparaBande.
- *
- * K(c) = media dei risultati correnti degli studenti valutati sul criterio (ogni studente conta una volta);
- * nucleo = media semplice dei K(c) dei soli criteri rappresentativi (valutati su più di metà degli iscritti).
  */
 function nucleoDiClasse(criteriIds, righeStudenti, bande) {
   const studentiTotali = righeStudenti.length;
@@ -231,37 +329,38 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
   const criteri = criteriIds.map((id) => {
     const valutati = righeStudenti.map((riga) => riga.get(id)).filter(Boolean);
     const percentualeEsatta = valutati.length === 0 ? null : mediaSemplice(valutati.map((r) => r.percentualeEsatta));
-    // B-4: la distribuzione è indicizzata dalla posizione della banda, mai dal suo testo.
+    const { certezza, copertura, stato } = coperturaDiClasse(valutati.length, studentiTotali);
+    // B-4: distribuzione indicizzata dalla posizione della banda, mai dal suo testo.
     const perLivello = new Map(bande.map((b) => [b.livello, 0]));
     valutati.forEach((r) => {
-      const { livelloGiudizio } = giudizioDi(r.percentualeEsatta, bande);
+      const { livelloGiudizio } = valoreDi(r.percentualeEsatta, bande);
       if (perLivello.has(livelloGiudizio)) perLivello.set(livelloGiudizio, perLivello.get(livelloGiudizio) + 1);
     });
+    const valore = valoreDi(percentualeEsatta, bande);
     return {
       id,
-      risultato: { percentuale: pubblica(percentualeEsatta), percentualeEsatta, ...giudizioDi(percentualeEsatta, bande) },
+      risultato: {
+        ...valore,
+        percentualeEsatta,
+        certezza,
+        criticita: criticitaDi(valore, certezza),
+        stato,
+        base: { n: valutati.length, N: studentiTotali },
+      },
       copertura: {
         studentiValutati: valutati.length,
         studentiTotali,
-        studentiConsolidati: valutati.filter((r) => r.osservazioniTotali >= LIVELLO_COPERTURA_CONSOLIDATO).length,
+        studentiConsolidati: valutati.filter((r) => r.osservazioniTotali >= OSSERVAZIONI_CONSOLIDATE).length,
       },
+      statoCopertura: copertura,
       osservazioniTotali: valutati.reduce((totale, r) => totale + r.osservazioniTotali, 0),
       rappresentativo: valutati.length > studentiTotali * REGOLA_CLASSE.rappresentativitaOltre,
-      distribuzioneGiudizi: bande.map((b) => ({ livello: b.livello, etichetta: b.etichetta, studenti: perLivello.get(b.livello) })),
+      distribuzioneGiudizi: bande.map((b) => ({ livello: b.livello, bandaId: b.id, etichetta: b.etichetta, studenti: perLivello.get(b.livello) })),
     };
   });
 
+  const risultato = aggregatoDiClasse(criteri, bande);
   const rappresentativi = criteri.filter((c) => c.rappresentativo);
-  const percentualeNucleo = rappresentativi.length === 0
-    ? null
-    : mediaSemplice(rappresentativi.map((c) => c.risultato.percentualeEsatta));
-  const risultato = {
-    percentuale: pubblica(percentualeNucleo),
-    percentualeEsatta: percentualeNucleo,
-    ...giudizioDi(percentualeNucleo, bande),
-    criteriRappresentativi: rappresentativi.length,
-    criteriTotali: criteri.length,
-  };
 
   criteri.forEach((criterio) => {
     const confronto = { confrontabili: 0, inferiori: 0, superiori: 0, pari: 0 };
@@ -280,7 +379,6 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
       });
     }
     criterio.confronto = confronto;
-    criterio.statoCopertura = statoCoperturaCriterio(criterio);
     criterio.confrontoConNucleo = confrontoCriterioConNucleo(criterio, risultato);
   });
 
@@ -295,55 +393,46 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
   };
 }
 
-/**
- * COPERTURA di un criterio nel report di classe: dice solo se i dati rappresentano la classe,
- * mai se il risultato è buono o cattivo ("pochi studenti valutati" non è "classe debole").
- */
-function statoCoperturaCriterio(criterio) {
-  if (criterio.copertura.studentiValutati === 0) return 'non_osservato';
-  return criterio.rappresentativo ? 'rappresentativo' : 'poco_osservato';
-}
-
-/**
- * CONFRONTO RELATIVO di un criterio di classe con il proprio nucleo. Solo per criteri rappresentativi
- * (altrimenti null): `esito` e `differenzaPunti` come in confrontoRelativo; `confermato` dice se la
- * differenza di banda è condivisa dalla classe, cioè se almeno 2/3 degli studenti confrontabili
- * (minimo 6, pari inclusi nel denominatore) vanno nella stessa direzione. Una differenza non
- * confermata non va segnalata; in nessun caso questo confronto sostituisce il livello assoluto.
- */
-function confrontoCriterioConNucleo(criterio, risultatoNucleo) {
-  if (!criterio.rappresentativo) return null;
-  const relativo = confrontoRelativo(criterio.risultato, risultatoNucleo);
-  if (relativo === null) return null;
-  const { confrontabili, inferiori, superiori } = criterio.confronto;
-  const concordi = relativo.esito === 'inferiore' ? inferiori : superiori;
-  const confermato = relativo.esito === 'allineato'
-    ? null
-    : confrontabili >= REGOLA_CLASSE.minimoConfrontabili && concordi * 3 >= confrontabili * 2;
-  return { ...relativo, confermato };
-}
-
 /** Complessivo di classe: media semplice dei K(c) di TUTTI i criteri rappresentativi della materia. */
 function complessivoDiClasse(nuclei, bande) {
-  const criteri = nuclei.flatMap((n) => n.criteri);
-  const rappresentativi = criteri.filter((c) => c.rappresentativo);
-  const percentualeEsatta = rappresentativi.length === 0
-    ? null
-    : mediaSemplice(rappresentativi.map((c) => c.risultato.percentualeEsatta));
+  return aggregatoDiClasse(nuclei.flatMap((n) => n.criteri), bande);
+}
+
+/** Quota in centesimi (Regola B) di una parte su un totale: geometria delle barre di distribuzione. */
+function quota(parte, totale) {
+  return totale === 0 ? 0 : daCentesimi(centesimi((parte / totale) * 100));
+}
+
+/**
+ * Distribuzione degli studenti per banda del PROPRIO complessivo (P11): solo conteggi,
+ * nessuna persona identificata. Gli studenti con certezza parziale sono contati a parte
+ * (resa più debole).
+ */
+function distribuzioneStudenti(complessivi, bande) {
+  const conValore = complessivi.filter((c) => c.livelloGiudizio !== null);
   return {
-    percentuale: pubblica(percentualeEsatta),
-    percentualeEsatta,
-    ...giudizioDi(percentualeEsatta, bande),
-    criteriRappresentativi: rappresentativi.length,
-    criteriTotali: criteri.length,
+    base: { n: conValore.length, N: complessivi.length },
+    certezza: certezzaMinima(conValore.map((c) => c.certezza)),
+    bande: bande.map((b) => {
+      const nellaBanda = conValore.filter((c) => c.livelloGiudizio === b.livello);
+      return {
+        bandaId: b.id,
+        livello: b.livello,
+        etichetta: b.etichetta,
+        critica: b.critica,
+        studenti: nellaBanda.length,
+        studentiParziali: nellaBanda.filter((c) => c.certezza !== CERTEZZA.SUFFICIENTE).length,
+        larghezza: quota(nellaBanda.length, conValore.length),
+      };
+    }),
   };
 }
 
 module.exports = {
-  REGOLA_CLASSE,
-  preparaBande, giudizioDi, bandeConPosizioneRadar,
-  posizioneRadarDaMedia, posizioneRadarDaPercentuale, livelloCopertura, percentualeOsservazione,
-  confrontoRelativo, difficoltaGeneralizzata,
+  REGOLA_CLASSE, CERTEZZA, CRITICITA, CONFRONTO, DATI, COPERTURA_CLASSE, DATI_NUCLEO,
+  preparaBande, precisione, decimaliSintesiBande, valoreDi, giudizioDi, criticitaDi, certezzaMinima, certezzaStudente,
+  confrontoRelativo, difficoltaGeneralizzata, livelloCopertura,
   risultatoCriterioStudente, aggregaCriteriStudente,
-  nucleoDiClasse, statoCoperturaCriterio, confrontoCriterioConNucleo, complessivoDiClasse,
+  nucleoDiClasse, confrontoCriterioConNucleo, complessivoDiClasse, coperturaDiClasse,
+  distribuzioneStudenti, quota,
 };
