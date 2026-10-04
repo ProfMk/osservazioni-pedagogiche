@@ -17,7 +17,7 @@
   'use strict';
 
   var MARCATORE_MANCANTE = '⟨?⟩';
-  var stato = { lingua: null, direzione: 'ltr', locale: null, testi: {} };
+  var stato = { lingua: null, direzione: null, locale: null, testi: {} };
 
   function imposta(catalogo) {
     stato.lingua = catalogo.lingua;

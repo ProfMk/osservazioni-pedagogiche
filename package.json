@@ -9,9 +9,11 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test:unit": "node --test tests/calcoli.test.js tests/regolaB.test.js",
+    "test:unit": "node --test tests/calcoli.test.js tests/regolaB.test.js tests/conformita.test.js",
     "test:integration": "node --test tests/integration.test.js tests/lingua.test.js",
-    "test": "node --test tests/calcoli.test.js tests/regolaB.test.js tests/integration.test.js tests/lingua.test.js"
+    "test": "node --test tests/calcoli.test.js tests/regolaB.test.js tests/conformita.test.js tests/integration.test.js tests/lingua.test.js",
+    "test:e2e": "node --test tests/e2e.test.js",
+    "test:all": "npm test && npm run test:e2e"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +26,8 @@
     "pg": "^8.23.0"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.8"
+    "@electric-sql/pglite": "0.5.8",
+    "axe-core": "4.13.0",
+    "playwright-core": "1.56.1"
   }
 }

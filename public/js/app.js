@@ -119,7 +119,7 @@
         }
       },
     }, [
-      t('h2', 'UI_LOGIN_TITLE'),
+      t('h1', 'UI_LOGIN_TITLE'),
       t('label', 'UI_EMAIL', null, { for: 'campo-email' }), email,
       t('label', 'UI_PASSWORD', null, { for: 'campo-password' }), password,
       invio,
@@ -365,6 +365,7 @@
       { chiave: 'VIEW_CLASS_OVERVIEW', apri: function () { apriClasse(contestoClasse.teaching, contestoClasse.materia, 'quadro'); } },
       { contenuto: n.nome },
     ], async function (corpo) {
+      corpo.append(el('h2', {}, [contenuto('span', contestoClasse.materia.materia), ' · ', contestoClasse.teaching.classe, ' · ', contenuto('span', n.nome)]));
       corpo.append(G.intestazioneColonne());
       corpo.append(G.riga({ chiave: 'nucleo-' + n.id, intestazione: true, nome: n.nome, valore: n.risultato, confronto: n.confrontoConComplessivo,
         riferimenti: [riferimento(n.confrontoConComplessivo && n.confrontoConComplessivo.riferimento, 'UI_REFERENCE_OVERALL')] }, ctx));
@@ -460,6 +461,7 @@
       { contenuto: n.nome },
     ]);
     return apriLivello(cp.contestoClasse, voci, async function (corpo) {
+      corpo.append(el('h2', {}, [nomeStudente(cp.p.alunno), ' · ', contenuto('span', n.nome)]));
       corpo.append(G.intestazioneColonne(), rigaNucleoStudente(n, cp.ctx, null, true));
       var criteri = el('section', { classe: 'livello' }, [intestazioneVista('UI_CRITERIA')]);
       n.criteri.forEach(function (c) { criteri.append(rigaCriterioStudente(c, cp.ctx, function () { apriCriterioStudente(cp, n, c); })); });
@@ -475,6 +477,7 @@
       { contenuto: c.codice },
     ]);
     return apriLivello(cp.contestoClasse, voci, async function (corpo) {
+      corpo.append(el('h2', {}, [nomeStudente(cp.p.alunno), ' · ', c.codice, ' ', contenuto('span', c.descrizione)]));
       corpo.append(G.intestazioneColonne(), rigaCriterioStudente(c, cp.ctx, null, true));
       corpo.append(sequenza(c.osservazioni, cp.p.scala));
     });
