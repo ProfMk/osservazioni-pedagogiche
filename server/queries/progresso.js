@@ -68,7 +68,7 @@ async function caricaStruttura(client, { subjectId, tenantId }) {
  */
 async function caricaOsservazioniStudente(client, { teachingId, enrollmentId, tenantId }) {
   const { rows } = await client.query(
-    `SELECT o.id AS observation_id, o.criterion_id, o.valore, o.scale_id,
+    `SELECT o.id AS observation_id, o.criterion_id, o.valore, o.scale_id, o.note,
             to_char(o.data_osservazione, 'YYYY-MM-DD') AS data_osservazione,
             a.id AS activity_id, a.nome AS attivita, a.stato AS attivita_stato,
             c.codice, c.descrizione, c.stato AS criterio_stato,
@@ -91,14 +91,21 @@ function motivoEsclusione(osservazione, scala) {
   return null;
 }
 
-function descriviOsservazione(osservazione, etichette, extra) {
+/**
+ * Una riga di storico. Etichetta e percentuale si riferiscono alla scala applicabile: per
+ * un'osservazione registrata con un'altra scala restano null (il valore non è interpretabile qui).
+ */
+function descriviOsservazione(osservazione, scala, etichette, extra) {
+  const stessaScala = String(osservazione.scale_id) === String(scala.id);
   return {
     observationId: osservazione.observation_id,
     activityId: osservazione.activity_id,
     attivita: osservazione.attivita,
     dataOsservazione: osservazione.data_osservazione,
     valore: osservazione.valore,
-    etichetta: etichette.get(osservazione.valore) || null,
+    etichetta: stessaScala ? (etichette.get(osservazione.valore) || null) : null,
+    percentuale: stessaScala ? motore.percentualeOsservazione(osservazione.valore, scala) : null,
+    nota: osservazione.note || null,
     ...extra,
   };
 }
@@ -176,7 +183,7 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
     if (!nonPiuAttivi.has(chiave)) {
       nonPiuAttivi.set(chiave, { id: o.criterion_id, codice: o.codice, descrizione: o.descrizione, nucleo: o.unit_nome, osservazioni: [] });
     }
-    nonPiuAttivi.get(chiave).osservazioni.push(descriviOsservazione(o, etichette, {
+    nonPiuAttivi.get(chiave).osservazioni.push(descriviOsservazione(o, scala, etichette, {
       inRisultatoCorrente: false, conteggiata: false, motivoEsclusione: MOTIVO_CRITERIO_NON_ATTIVO,
     }));
   });
@@ -230,7 +237,7 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
           punteggioMassimo: risultato.cumulativo.punteggioMassimo,
         },
         livelloCopertura: risultato.livelloCopertura,
-        osservazioni: storico.map((o) => descriviOsservazione(o, etichette, {
+        osservazioni: storico.map((o) => descriviOsservazione(o, scala, etichette, {
           inRisultatoCorrente: nellaFinestra.has(o.observation_id),
           conteggiata: o.motivo === null,
           motivoEsclusione: o.motivo,

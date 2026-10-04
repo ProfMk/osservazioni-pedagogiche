@@ -1288,6 +1288,33 @@ test('Report studente v2.7: Coordinatore — consentito nel proprio livello scol
     "A-Student-01 non è iscritto alla classe di quel Teaching");
 });
 
+test('Report studente v2.7: ogni osservazione dello storico porta percentuale (valore/massimo della scala) e nota', async () => {
+  const { sessione, teaching2A, studenti } = await contestoProgressoAlfa2A();
+  const s2 = studenti.find((s) => s.nome === 'A-Student-02');
+  const leggi = async () => criterioDi((await sessione.get(`/teachings/${teaching2A}/students/${s2.enrollment_id}/progress`)).corpo, 'Numeri', 'NUM-2');
+  const num2 = await leggi();
+  assert.deepEqual(num2.osservazioni.map((o) => [o.valore, o.percentuale]), [[0, 0], [1, 50], [2, 100], [2, 100]], 'scala 0-2 di Alfa');
+  assert.ok(num2.osservazioni.every((o) => o.nota === null), 'nessuna nota registrata');
+
+  const prima = num2.osservazioni[0];
+  await pool.query("UPDATE observations SET note = 'Con materiale concreto' WHERE id = $1", [prima.observationId]);
+  try {
+    assert.equal((await leggi()).osservazioni[0].nota, 'Con materiale concreto');
+  } finally {
+    await pool.query('UPDATE observations SET note = NULL WHERE id = $1', [prima.observationId]);
+  }
+
+  // Scala 1-4 di Beta: il valore 2 vale 50%, non 33,33 (quella è solo la posizione sul radar).
+  const beta = await loginESwitch('teacher.math.b@beta.test', 'beta');
+  const teachingBeta = (await beta.get('/teachings')).corpo[0].teaching_id;
+  const percentuali = [];
+  for (const s of (await beta.get(`/teachings/${teachingBeta}/students`)).corpo) {
+    const p = (await beta.get(`/teachings/${teachingBeta}/students/${s.enrollment_id}/progress`)).corpo;
+    p.nuclei.forEach((n) => n.criteri.forEach((c) => c.osservazioni.forEach((o) => percentuali.push([o.valore, o.percentuale]))));
+  }
+  assert.deepEqual(percentuali.sort((a, b) => a[0] - b[0]), [[2, 50], [4, 100]]);
+});
+
 test('Coerenza del giudizio: report attività e report studente applicano la stessa regola di soglia sul caso limite (49,99999999999999 = 50)', async () => {
   const { sessione, teaching2A, studenti } = await contestoProgressoAlfa2A();
   const [s1, s2] = ['A-Student-01', 'A-Student-02'].map((nome) => studenti.find((s) => s.nome === nome));

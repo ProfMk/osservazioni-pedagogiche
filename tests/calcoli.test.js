@@ -314,6 +314,63 @@ test('U12 classe: nessun falso allarme (meno di 6 confrontabili, stessa banda, q
 });
 
 // ===========================================================================
+// RADAR DEI NUCLEI — public/radar.js: sola geometria, i valori arrivano dal server.
+// ===========================================================================
+
+const RadarNuclei = require('../public/radar');
+const assiRadar = (posizioni, pieno = true) => posizioni.map((posizione, i) => ({ id: i + 1, posizione, pieno }));
+
+test('U13 radar: un asse per nucleo, numero variabile; raggio proporzionale alla posizione ricevuta', () => {
+  for (const numero of [3, 4, 5, 8]) {
+    const g = RadarNuclei.geometria({ assi: assiRadar(Array(numero).fill(50)), bande: [] });
+    assert.equal(g.modalita, 'radar');
+    assert.equal(g.assi.length, numero);
+    assert.equal(g.tratti.length, numero, 'poligono chiuso: un lato per asse');
+    g.assi.forEach((a) => assert.ok(Math.abs(Math.hypot(a.punto.x, a.punto.y) - 50) < 0.02));
+  }
+  const g = RadarNuclei.geometria({ assi: assiRadar([100, 0, 25]), bande: [] });
+  assert.deepEqual(g.assi[0].punto, { x: 0, y: -100 }, 'primo asse in alto');
+  assert.deepEqual(g.assi[1].punto, { x: 0, y: 0 }, 'posizione 0 = minimo della scala: è un punto reale, al centro');
+  assert.ok(Math.abs(Math.hypot(g.assi[2].punto.x, g.assi[2].punto.y) - 25) < 0.02);
+});
+
+test('U13 radar: nucleo non valutato -> asse senza punto, nessuno zero inventato, poligono interrotto', () => {
+  const g = RadarNuclei.geometria({ assi: assiRadar([80, null, 60, 40]), bande: [] });
+  assert.deepEqual(g.assi.map((a) => a.valutato), [true, false, true, true]);
+  assert.equal(g.assi[1].punto, null);
+  assert.equal(g.assi[1].posizione, null);
+  assert.ok(g.assi[1].estremo, "l'asse resta disegnato");
+  // Lati solo tra assi adiacenti entrambi valutati: 2-3 e 3-0. Nessun lato tocca l'asse 1.
+  assert.equal(g.tratti.length, 2);
+  assert.deepEqual(g.tratti.map((t) => [t.da, t.a]), [[g.assi[2].punto, g.assi[3].punto], [g.assi[3].punto, g.assi[0].punto]]);
+
+  const tuttiVuoti = RadarNuclei.geometria({ assi: assiRadar([null, null, null]), bande: [] });
+  assert.deepEqual([tuttiVuoti.tratti.length, tuttiVuoti.assi.filter((a) => a.punto).length], [0, 0]);
+});
+
+test('U13 radar: punto vuoto e lato tratteggiato per i risultati parziali; anelli dalle bande ricevute', () => {
+  const assi = [{ id: 1, posizione: 90, pieno: true }, { id: 2, posizione: 50, pieno: false }, { id: 3, posizione: 70, pieno: true }];
+  const bande = [
+    { etichetta: 'ECCELLENTE', posizione: 80 }, { etichetta: 'BUONO', posizione: 60 },
+    { etichetta: 'SUFFICIENTE', posizione: 40 }, { etichetta: 'INSUFFICIENTE', posizione: null },
+  ];
+  const g = RadarNuclei.geometria({ assi, bande });
+  assert.deepEqual(g.assi.map((a) => a.pieno), [true, false, true]);
+  assert.deepEqual(g.tratti.map((t) => t.tratteggiato), [true, true, false], 'tratteggiati i due lati che toccano il punto vuoto');
+  assert.deepEqual(g.anelli.map((a) => [a.etichetta, a.raggio]), [['ECCELLENTE', 80], ['BUONO', 60], ['SUFFICIENTE', 40]],
+    'una banda senza posizione non ha anello; nessuna soglia è scritta nel frontend');
+  assert.ok(g.anelli.every((a) => a.vertici.length === 3));
+});
+
+test('U13 radar: con meno di 3 nuclei si usano le barre, con gli stessi valori', () => {
+  const uno = RadarNuclei.geometria({ assi: assiRadar([66.67]), bande: [{ etichetta: 'B', posizione: 50 }] });
+  assert.deepEqual([uno.modalita, uno.tratti.length, uno.assi[0].posizione, uno.anelli[0].posizione], ['barre', 0, 66.67, 50]);
+  const due = RadarNuclei.geometria({ assi: assiRadar([40, null]), bande: [] });
+  assert.deepEqual([due.modalita, due.assi[1].valutato], ['barre', false]);
+  assert.equal(RadarNuclei.geometria({ assi: [], bande: [] }).modalita, 'barre');
+});
+
+// ===========================================================================
 // COERENZA DEL GIUDIZIO: una sola regola di confronto con le soglie, per tutti i report.
 // La tolleranza neutralizza solo l'errore di virgola mobile, non sposta valori realmente sotto soglia.
 // ===========================================================================

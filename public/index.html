@@ -66,6 +66,65 @@
   table.semplice { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; box-shadow: var(--ombra); }
   table.semplice th, table.semplice td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--riga); font-size: .88rem; }
   table.semplice th { background: var(--carta-scura); font-size: .78rem; }
+  /* --- Report pedagogico dello studente --- */
+  .tenue { color: var(--inchiostro-tenue); } .piccola { font-size: .78rem; }
+  .report-testa { margin-bottom: 1rem; }
+  .report-testa .sopratitolo { text-transform: uppercase; letter-spacing: .08em; font-size: .75rem; color: var(--inchiostro-tenue); font-weight: 600; }
+  .report-testa h2 { margin: .1rem 0 .3rem; font-size: 1.4rem; }
+  .report-testa .contesto { display: flex; gap: .4rem 1.2rem; flex-wrap: wrap; font-size: .9rem; }
+  .report-testa .nota-perimetro { margin-top: .3rem; font-size: .78rem; color: var(--inchiostro-tenue); }
+  .scheda { background: #fff; border: 1px solid var(--riga); border-radius: 8px; box-shadow: var(--ombra); padding: 1rem 1.1rem; margin-bottom: 1rem; }
+  .pastiglia { display: inline-block; padding: .12rem .6rem; border-radius: 999px; border: 1px solid var(--riga); font-size: .78rem; font-weight: 600; white-space: nowrap; }
+  .pastiglia.neutra { background: var(--carta-scura); color: var(--inchiostro-tenue); border-style: dashed; font-weight: 500; }
+  .complessivo { display: flex; gap: 1rem 2rem; flex-wrap: wrap; align-items: center; }
+  .complessivo .principale { display: flex; flex-direction: column; align-items: flex-start; gap: .25rem; min-width: 11rem; }
+  .complessivo .titolo, .lettura-nuclei .titolo { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--inchiostro-tenue); font-weight: 600; }
+  .complessivo .numero { font-size: 2.2rem; font-weight: 700; line-height: 1.1; }
+  .complessivo .dettagli { flex: 1 1 18rem; display: flex; flex-direction: column; gap: .25rem; font-size: .88rem; }
+  .complessivo .dettagli .tenue { font-size: .8rem; }
+  .grafico-nuclei { display: flex; gap: 1rem 1.5rem; flex-wrap: wrap; align-items: flex-start; }
+  .grafico-nuclei .grafico { flex: 1 1 22rem; min-width: 0; }
+  .lettura-nuclei { flex: 1 1 14rem; display: flex; flex-direction: column; gap: .35rem; }
+  .lettura-nuclei .voce { display: flex; gap: .5rem; align-items: baseline; font-size: .88rem; flex-wrap: wrap; }
+  .lettura-nuclei .voce .simbolo { width: 1rem; text-align: center; }
+  .lettura-nuclei .voce .nome { font-weight: 600; }
+  svg.radar { width: 100%; max-width: 32rem; height: auto; display: block; margin: 0 auto; }
+  svg.radar .bordo { fill: none; stroke: #b9b39f; stroke-width: 1; }
+  svg.radar .anello { fill: none; stroke: #d8d3c3; stroke-width: .8; stroke-dasharray: 2 3; }
+  svg.radar .asse { stroke: #b9b39f; stroke-width: .8; }
+  svg.radar .asse.non-valutato { stroke-dasharray: 4 4; stroke: #c9c4b3; }
+  svg.radar .area { fill: rgba(47, 77, 58, .12); stroke: none; }
+  svg.radar .lato { stroke: var(--accento); stroke-width: 2; }
+  svg.radar .lato.tratteggiato { stroke-dasharray: 5 4; }
+  svg.radar .punto { stroke-width: 2; }
+  svg.radar .etichetta-asse { font-size: 10.5px; fill: var(--inchiostro); }
+  svg.radar .etichetta-asse .valore { fill: var(--inchiostro-tenue); font-size: 9.5px; }
+  svg.radar .etichetta-anello { font-size: 7px; fill: #8a8c84; }
+  .legenda-radar { margin-top: .4rem; text-align: center; }
+  .barre-nuclei { display: flex; flex-direction: column; gap: .6rem; }
+  .barra-nucleo { display: grid; grid-template-columns: minmax(7rem, 1.2fr) 3fr 6.5rem; gap: .6rem; align-items: center; font-size: .88rem; }
+  .barra-nucleo .nome { font-weight: 600; }
+  .barra-nucleo .traccia { position: relative; height: .9rem; background: var(--carta-scura); border-radius: 4px; overflow: hidden; }
+  .barra-nucleo .traccia.vuota { background: none; border: 1px dashed #b9b39f; }
+  .barra-nucleo .traccia b { position: absolute; left: 0; top: 0; bottom: 0; }
+  .barra-nucleo .traccia .tacca { position: absolute; top: 0; bottom: 0; width: 1px; background: #8a8c84; z-index: 1; }
+  details.nucleo > summary { display: flex; gap: .4rem .7rem; flex-wrap: wrap; align-items: center; }
+  details.nucleo > summary .nome { flex: 1 1 12rem; }
+  details.nucleo > summary .dato { font-weight: 600; font-size: .88rem; }
+  details.nucleo > summary .dato.tenue { font-weight: 400; font-size: .8rem; }
+  .riga-dato { font-size: .86rem; margin-top: .25rem; }
+  .criterio-report { border-top: 1px solid var(--riga); padding: .7rem 0 .5rem; }
+  .criterio-report .intestazione { display: flex; gap: .3rem .6rem; flex-wrap: wrap; align-items: baseline; }
+  .criterio-report .intestazione span:nth-child(2) { flex: 1 1 12rem; }
+  .criterio-report .copertura { font-weight: 600; }
+  .finestra { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; margin-top: .4rem; font-size: .8rem; }
+  .finestra .etichetta { color: var(--inchiostro-tenue); }
+  .finestra .chip { background: #eef3ee; border: 1px solid #b9cbbd; border-radius: 6px; padding: .1rem .45rem; font-weight: 600; }
+  details.storico { margin-top: .45rem; }
+  details.storico > summary { cursor: pointer; font-size: .82rem; color: var(--accento); }
+  .corpo-nucleo tr.nella-media td { font-weight: 600; }
+  .corpo-nucleo tr.non-conteggiata td { color: #8a8c84; font-style: italic; }
+  @media (max-width: 640px) { .barra-nucleo { grid-template-columns: 1fr; gap: .2rem; } .complessivo .numero { font-size: 1.8rem; } }
 </style>
 </head>
 <body>
@@ -82,6 +141,7 @@
   <div id="contenuto">Caricamento…</div>
 </main>
 
+<script src="radar.js"></script>
 <script>
 'use strict';
 
@@ -596,7 +656,259 @@ async function mostraStudentiDiTeaching(teaching) {
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
-// --- Avanzamento pedagogico di uno studente (media mobile ultime 3 osservazioni) ----------
+// --- Report pedagogico di uno studente ------------------------------------------------------
+//
+// SOLO presentazione: percentuali, giudizi, media mobile, cumulativo, copertura, confronto tra
+// nuclei e posizioni del radar arrivano già calcolati dal server
+// (GET /teachings/:id/students/:enrollmentId/progress). Scala, etichette e bande sono quelle
+// dell'istituto: qui non compare alcun valore di scala né alcuna soglia.
+
+const LIVELLI_COPERTURA = [
+  { simbolo: '○', testo: 'Non valutato' },
+  { simbolo: '◔', testo: 'Indicativo' },
+  { simbolo: '◑', testo: 'Provvisorio' },
+  { simbolo: '●', testo: 'Consolidato' },
+];
+const CONFRONTI_NUCLEO = {
+  punto_di_forza: { simbolo: '▲', testo: 'Punto di forza' },
+  area_di_attenzione: { simbolo: '▼', testo: 'Area di attenzione' },
+  nella_norma: { simbolo: '=', testo: 'Nella norma' },
+};
+const MOTIVI_ESCLUSIONE = {
+  attivita_disattivata: 'attività disattivata',
+  scala_non_compatibile: 'scala diversa da quella in uso',
+  criterio_non_attivo: 'criterio non più attivo',
+};
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svg(tag, attributi, figli) {
+  const nodo = document.createElementNS(SVG_NS, tag);
+  Object.entries(attributi || {}).forEach(([nome, valore]) => nodo.setAttribute(nome, valore));
+  (figli || []).forEach((f) => nodo.append(f));
+  return nodo;
+}
+
+/** Tinta di una banda di giudizio dalla sua posizione tra le bande ricevute (qualunque numero ed etichetta). */
+function tintaBanda(livello, numeroBande) {
+  if (livello === null || livello === undefined) return null;
+  const quota = numeroBande > 1 ? livello / (numeroBande - 1) : 1;
+  return Math.round(8 + quota * 132);
+}
+
+/** Pastiglia del giudizio: il colore accompagna sempre l'etichetta testuale, non la sostituisce. */
+function pastigliaGiudizio(risultato, numeroBande) {
+  if (risultato.percentuale === null || risultato.percentuale === undefined) {
+    return el('span', { className: 'pastiglia neutra', textContent: 'Non valutato' });
+  }
+  const tinta = tintaBanda(risultato.livelloGiudizio, numeroBande);
+  const pastiglia = el('span', { className: 'pastiglia', textContent: risultato.giudizio || '—' });
+  if (tinta !== null) pastiglia.style.cssText = `background:hsl(${tinta} 62% 90%);color:hsl(${tinta} 70% 22%);border-color:hsl(${tinta} 45% 60%)`;
+  return pastiglia;
+}
+
+function testoPercentuale(valore) {
+  return valore === null || valore === undefined ? 'Non valutato' : `${numeroIt(valore)}%`;
+}
+
+function testoCopertura(copertura) {
+  return [
+    ['consolidati', 3, 'consolidati'], ['provvisori', 2, 'provvisori'], ['indicativi', 1, 'indicativi'], ['nonValutati', 0, 'non valutati'],
+  ].map(([chiave, livello, testo]) => `${LIVELLI_COPERTURA[livello].simbolo} ${copertura[chiave]} ${testo}`).join(' · ');
+}
+
+function dataIt(giorno) {
+  return new Date(giorno + 'T00:00:00').toLocaleDateString('it-IT');
+}
+
+function testoValore(osservazione) {
+  return osservazione.etichetta ? `${osservazione.valore} · ${osservazione.etichetta}` : String(osservazione.valore);
+}
+
+/** Nome dell'asse su al più due righe, per non uscire dal grafico. */
+function righeEtichetta(nome) {
+  const massimo = 18;
+  const righe = [''];
+  nome.split(/\s+/).forEach((parola) => {
+    const ultima = righe[righe.length - 1];
+    if (!ultima) righe[righe.length - 1] = parola;
+    else if ((ultima + ' ' + parola).length <= massimo) righe[righe.length - 1] = ultima + ' ' + parola;
+    else righe.push(parola);
+  });
+  if (righe.length <= 2) return righe;
+  return [righe[0], righe[1].slice(0, massimo - 1) + '…'];
+}
+
+/** Radar dei nuclei (3 o più) oppure barre (meno di 3): geometria da radar.js, valori dal server. */
+function costruisciGraficoNuclei(p) {
+  const numeroBande = p.bande.length;
+  const g = RadarNuclei.geometria({
+    assi: p.nuclei.map((n) => ({ id: n.id, posizione: n.radar.posizioneRadar, pieno: n.radar.puntoPieno })),
+    bande: p.bande.map((b) => ({ etichetta: b.etichetta, posizione: b.posizioneRadar })),
+  });
+  const coloreNucleo = (n) => {
+    const tinta = tintaBanda(n.risultatoCorrente.livelloGiudizio, numeroBande);
+    return tinta === null ? '#8a8c84' : `hsl(${tinta} 60% 32%)`;
+  };
+
+  if (g.modalita === 'barre') {
+    const barre = el('div', { className: 'barre-nuclei' });
+    p.nuclei.forEach((n, i) => {
+      const asse = g.assi[i];
+      const traccia = el('div', { className: 'traccia' + (asse.valutato ? '' : ' vuota') });
+      g.anelli.forEach((a) => traccia.append(el('i', { className: 'tacca', style: `left:${a.posizione}%`, title: a.etichetta })));
+      if (asse.valutato) {
+        traccia.append(el('b', { style: `width:${asse.posizione}%;background:${coloreNucleo(n)};opacity:${asse.pieno ? 1 : .55}` }));
+      }
+      barre.append(el('div', { className: 'barra-nucleo' }, [
+        el('div', { className: 'nome', textContent: n.nome }),
+        traccia,
+        el('div', { className: 'valore', textContent: testoPercentuale(n.risultatoCorrente.percentuale) }),
+      ]));
+    });
+    return barre;
+  }
+
+  // Riquadro calcolato dagli assi e dalle loro etichette (fino a 3 righe), così il grafico usa tutto lo spazio
+  // con qualunque numero di nuclei.
+  const larghezzaTesto = 118;
+  const altezzaTesto = 38;
+  const estremi = g.assi.map((a) => ({
+    sinistra: a.etichetta.ancoraggio === 'end' ? a.etichetta.x - larghezzaTesto : (a.etichetta.ancoraggio === 'middle' ? a.etichetta.x - larghezzaTesto / 2 : a.etichetta.x),
+    destra: a.etichetta.ancoraggio === 'start' ? a.etichetta.x + larghezzaTesto : (a.etichetta.ancoraggio === 'middle' ? a.etichetta.x + larghezzaTesto / 2 : a.etichetta.x),
+    alto: a.etichetta.y - altezzaTesto,
+    basso: a.etichetta.y + altezzaTesto,
+  }));
+  const sinistra = Math.min(-g.raggio, ...estremi.map((e) => e.sinistra)) - 6;
+  const destra = Math.max(g.raggio, ...estremi.map((e) => e.destra)) + 6;
+  const alto = Math.min(...estremi.map((e) => e.alto));
+  const basso = Math.max(...estremi.map((e) => e.basso));
+  const disegno = svg('svg', {
+    viewBox: `${sinistra} ${alto} ${destra - sinistra} ${basso - alto}`, role: 'img', class: 'radar', 'aria-label': 'Radar dei nuclei tematici',
+  });
+  const poligono = (vertici) => vertici.map((v) => `${v.x},${v.y}`).join(' ');
+  g.anelli.forEach((a) => {
+    const anello = svg('polygon', { points: poligono(a.vertici), class: 'anello' });
+    const titolo = svg('title');
+    titolo.textContent = a.etichetta;
+    anello.append(titolo);
+    disegno.append(anello);
+  });
+  disegno.append(svg('polygon', { points: poligono(g.assi.map((a) => a.estremo)), class: 'bordo' }));
+  g.assi.forEach((a) => disegno.append(svg('line', {
+    x1: 0, y1: 0, x2: a.estremo.x, y2: a.estremo.y, class: 'asse' + (a.valutato ? '' : ' non-valutato'),
+  })));
+  // Riempimento solo se tutti i nuclei sono valutati: altrimenti il poligono è interrotto e resta aperto.
+  if (g.assi.every((a) => a.valutato)) disegno.append(svg('polygon', { points: poligono(g.assi.map((a) => a.punto)), class: 'area' }));
+  g.tratti.forEach((t) => disegno.append(svg('line', {
+    x1: t.da.x, y1: t.da.y, x2: t.a.x, y2: t.a.y, class: 'lato' + (t.tratteggiato ? ' tratteggiato' : ''),
+  })));
+  g.assi.forEach((a, i) => {
+    const n = p.nuclei[i];
+    if (a.valutato) {
+      const cerchio = svg('circle', { cx: a.punto.x, cy: a.punto.y, r: 5, class: 'punto', stroke: coloreNucleo(n), fill: a.pieno ? coloreNucleo(n) : '#fff' });
+      const titolo = svg('title');
+      titolo.textContent = `${n.nome}: ${testoPercentuale(n.risultatoCorrente.percentuale)} · ${n.risultatoCorrente.giudizio}`;
+      cerchio.append(titolo);
+      disegno.append(cerchio);
+    }
+    const righe = righeEtichetta(n.nome);
+    righe.push(a.valutato ? `${testoPercentuale(n.risultatoCorrente.percentuale)} · ${n.risultatoCorrente.giudizio}` : 'Non valutato');
+    const testo = svg('text', { x: a.etichetta.x, y: a.etichetta.y - (a.etichetta.y < -10 ? (righe.length - 1) * 12 : 0), 'text-anchor': a.etichetta.ancoraggio, class: 'etichetta-asse' });
+    righe.forEach((riga, k) => {
+      const tspan = svg('tspan', { x: a.etichetta.x, dy: k === 0 ? 0 : 12, class: k === righe.length - 1 ? 'valore' : '' });
+      tspan.textContent = riga;
+      testo.append(tspan);
+    });
+    disegno.append(testo);
+  });
+  return disegno;
+}
+
+function rigaStorico(o) {
+  let stato;
+  if (!o.conteggiata) stato = `non conteggiata: ${MOTIVI_ESCLUSIONE[o.motivoEsclusione] || o.motivoEsclusione}`;
+  else stato = o.inRisultatoCorrente ? '✓ nella media corrente' : 'storica (fuori dalle ultime osservazioni)';
+  return el('tr', { className: o.conteggiata ? (o.inRisultatoCorrente ? 'nella-media' : '') : 'non-conteggiata' }, [
+    el('td', { textContent: dataIt(o.dataOsservazione) }),
+    el('td', { textContent: o.attivita }),
+    el('td', { textContent: testoValore(o) }),
+    el('td', { textContent: o.percentuale === null || o.percentuale === undefined ? '—' : `${numeroIt(o.percentuale)}%` }),
+    el('td', { textContent: o.nota || '—' }),
+    el('td', { textContent: stato }),
+  ]);
+}
+
+function tabellaStorico(osservazioni) {
+  const tabella = el('table', {}, [el('tr', {}, ['Data', 'Attività', 'Valore', '%', 'Nota', 'Nel risultato corrente'].map((t) => el('th', { textContent: t })))]);
+  osservazioni.forEach((o) => tabella.append(rigaStorico(o)));
+  return el('div', { className: 'griglia-scroll' }, [tabella]);
+}
+
+function bloccoCriterio(criterio, p) {
+  const r = criterio.risultatoCorrente;
+  const copertura = LIVELLI_COPERTURA[criterio.livelloCopertura];
+  const blocco = el('div', { className: 'criterio-report' }, [
+    el('div', { className: 'intestazione' }, [
+      el('strong', { textContent: criterio.codice }),
+      el('span', { textContent: criterio.descrizione }),
+      pastigliaGiudizio(r, p.bande.length),
+    ]),
+  ]);
+  if (r.percentuale === null) {
+    blocco.append(el('div', { className: 'riga-dato', textContent: `${copertura.simbolo} Non valutato: nessuna osservazione valida su questo criterio.` }));
+  } else {
+    const quante = r.osservazioniConsiderate < r.osservazioniTotali
+      ? `ultime ${r.osservazioniConsiderate} di ${r.osservazioniTotali} osservazioni`
+      : (r.osservazioniTotali === 1 ? '1 osservazione' : `tutte le ${r.osservazioniTotali} osservazioni`);
+    blocco.append(el('div', { className: 'riga-dato' }, [
+      el('strong', { textContent: `Risultato corrente: ${numeroIt(r.percentuale)}%` }),
+      document.createTextNode(` · media ${numeroIt(r.media)} (scala ${p.scala.valoreMinimo}–${p.scala.valoreMassimo}) · ${quante}`),
+    ]));
+    blocco.append(el('div', { className: 'riga-dato' }, [
+      el('span', { className: 'copertura', textContent: `${copertura.simbolo} ${copertura.testo}` }),
+      document.createTextNode(` · Cumulativo da inizio anno: ${numeroIt(criterio.cumulativo.percentuale)}% · ${criterio.cumulativo.giudizio}`),
+    ]));
+    const finestra = criterio.osservazioni.filter((o) => o.inRisultatoCorrente);
+    blocco.append(el('div', { className: 'finestra' }, [
+      el('span', { className: 'etichetta', textContent: 'Nella media corrente:' }),
+      ...finestra.map((o) => el('span', { className: 'chip', textContent: `${dataIt(o.dataOsservazione)} · ${testoValore(o)}`, title: o.attivita })),
+    ]));
+  }
+  if (criterio.osservazioni.length > 0) {
+    blocco.append(el('details', { className: 'storico' }, [
+      el('summary', { textContent: `Mostra storico (${criterio.osservazioni.length})` }),
+      tabellaStorico(criterio.osservazioni),
+    ]));
+  }
+  return blocco;
+}
+
+function bloccoNucleo(nucleo, p) {
+  const r = nucleo.risultatoCorrente;
+  const confronto = CONFRONTI_NUCLEO[nucleo.confrontoConComplessivo];
+  const sintesi = [
+    el('span', { className: 'nome', textContent: nucleo.nome }),
+    pastigliaGiudizio(r, p.bande.length),
+    el('span', { className: 'dato', textContent: r.percentuale === null ? '' : `${numeroIt(r.percentuale)}%` }),
+    el('span', { className: 'dato tenue', textContent: `${r.criteriValutati}/${r.criteriTotali} criteri valutati` }),
+  ];
+  if (confronto) sintesi.push(el('span', { className: 'dato tenue', textContent: `${confronto.simbolo} ${confronto.testo}` }));
+
+  const corpo = el('div', { className: 'corpo-nucleo' });
+  if (nucleo.grigliaNonConfigurata) {
+    corpo.append(el('p', { textContent: 'Nessun criterio configurato per questo nucleo.' }));
+  } else {
+    corpo.append(el('div', { className: 'riga-dato tenue', textContent: `Copertura: ${testoCopertura(nucleo.copertura)}` }));
+    if (r.percentuale !== null) {
+      corpo.append(el('div', {
+        className: 'riga-dato tenue',
+        textContent: `Cumulativo da inizio anno: ${numeroIt(nucleo.cumulativo.percentuale)}% · ${nucleo.cumulativo.giudizio}`,
+      }));
+    }
+    nucleo.criteri.forEach((criterio) => corpo.append(bloccoCriterio(criterio, p)));
+  }
+  return el('details', { className: 'nucleo' }, [el('summary', {}, sintesi), corpo]);
+}
 
 async function mostraProgressoStudente(teaching, studente) {
   mostraErrore(null);
@@ -609,52 +921,112 @@ async function mostraProgressoStudente(teaching, studente) {
   contenuto.textContent = 'Caricamento…';
   try {
     const p = await api(`/teachings/${teaching.teaching_id}/students/${studente.enrollment_id}/progress`);
+    const numeroBande = p.bande.length;
     contenuto.innerHTML = '';
     contenuto.append(el('div', { className: 'barra-sezioni' }, [
       el('button', { className: 'azione', textContent: '← Torna agli studenti', onclick: () => mostraStudentiDiTeaching(teaching) }),
     ]));
-    contenuto.append(el('h2', { textContent: `Avanzamento pedagogico — ${nomeStudente}` }));
-    contenuto.append(el('p', {
-      className: 'sub',
-      textContent: `${p.teaching.materia} · ${p.teaching.classe}. Risultato corrente = media delle ultime ${p.regola.finestra} osservazioni di ogni criterio `
-        + '(nucleo e materia: media dei criteri valutati, a pesi uguali). Lo storico mostra tutte le osservazioni; quelle in grassetto entrano nella media. '
-        + 'Non è il risultato di una singola attività (vedi "Report classe").',
-    }));
+
+    // 1. Intestazione
+    contenuto.append(el('div', { className: 'report-testa' }, [
+      el('div', { className: 'sopratitolo', textContent: 'Report pedagogico' }),
+      el('h2', { textContent: `${p.alunno.cognome} ${p.alunno.nome}` }),
+      el('div', { className: 'contesto' }, [
+        el('span', { textContent: `Classe: ${p.teaching.classe}` }),
+        el('span', { textContent: `Materia: ${p.teaching.materia}` }),
+        el('span', { textContent: `Anno scolastico: ${p.teaching.annoScolastico || '—'}` }),
+      ]),
+      el('div', { className: 'nota-perimetro', textContent: 'Solo le osservazioni registrate nelle attività attive di questo insegnamento.' }),
+    ]));
+
+    // 2. Risultato complessivo
     const c = p.complessivo;
-    contenuto.append(el('p', {
-      textContent: `Risultato corrente complessivo: ${testoEsito(c)} · ${c.criteriValutati}/${c.criteriTotali} criteri valutati`,
-    }));
-    if (p.nuclei.length === 0) { contenuto.append(el('p', { textContent: 'Nessun nucleo tematico configurato per questa materia.' })); return; }
+    contenuto.append(el('div', { className: 'scheda complessivo' }, [
+      el('div', { className: 'principale' }, [
+        el('div', { className: 'titolo', textContent: 'Risultato complessivo' }),
+        el('div', { className: 'numero', textContent: testoPercentuale(c.percentuale) }),
+        pastigliaGiudizio(c, numeroBande),
+      ]),
+      el('div', { className: 'dettagli' }, [
+        el('div', { textContent: `${c.criteriValutati === 1 ? '1 criterio valutato' : `${c.criteriValutati} criteri valutati`} su ${c.criteriTotali}` }),
+        el('div', { className: 'tenue', textContent: `Copertura: ${testoCopertura(c.copertura)}` }),
+        el('div', {
+          className: 'tenue',
+          textContent: c.cumulativo.percentuale === null
+            ? 'Cumulativo da inizio anno: non disponibile.'
+            : `Cumulativo da inizio anno (tutte le osservazioni valide, dato secondario): ${numeroIt(c.cumulativo.percentuale)}% · ${c.cumulativo.giudizio}`,
+        }),
+        el('div', {
+          className: 'tenue',
+          textContent: `Risultato corrente = media delle ultime ${p.regola.finestra} osservazioni di ogni criterio; nucleo e complessivo = media dei criteri valutati, a pesi uguali.`,
+        }),
+      ]),
+    ]));
+
+    if (p.nuclei.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessun nucleo tematico configurato per questa materia.' }));
+      return;
+    }
+
+    // 3. Radar dei nuclei + lettura (confronto tra i nuclei dello stesso studente)
+    const lettura = el('div', { className: 'lettura-nuclei' }, [
+      el('div', { className: 'titolo', textContent: 'Nuclei a confronto' }),
+    ]);
     p.nuclei.forEach((n) => {
-      const corpo = el('div', { className: 'corpo-nucleo' });
-      if (n.grigliaNonConfigurata) {
-        corpo.append(el('p', { textContent: 'Nessun criterio configurato per questo nucleo.' }));
-      }
-      n.criteri.forEach((cr) => {
-        const r = cr.risultatoCorrente;
-        corpo.append(el('div', { className: 'sezione-titolo', textContent: `${cr.codice} — ${cr.descrizione}` }));
-        corpo.append(el('p', {
-          textContent: r.percentuale === null
-            ? 'Risultato corrente: non valutato.'
-            : `Risultato corrente: media ${numeroIt(r.media)} (${r.osservazioniConsiderate < r.osservazioniTotali
-              ? `ultime ${r.osservazioniConsiderate} di ${r.osservazioniTotali}` : `tutte le ${r.osservazioniTotali} osservazioni`}) · ${testoEsito(r)}`,
-        }));
-        if (cr.osservazioni.length > 0) {
-          const tabella = el('table', {}, [el('tr', {}, ['Data', 'Attività', 'Valore', 'Nella media'].map((t) => el('th', { textContent: t })))]);
-          cr.osservazioni.forEach((o) => tabella.append(el('tr', { style: o.inRisultatoCorrente ? 'font-weight:600' : '' }, [
-            el('td', { textContent: new Date(o.dataOsservazione + 'T00:00:00').toLocaleDateString('it-IT') }),
-            el('td', { textContent: o.attivita }),
-            el('td', { textContent: `${o.valore}${o.etichetta ? ` · ${o.etichetta}` : ''}` }),
-            el('td', { textContent: o.inRisultatoCorrente ? 'sì' : 'no' }),
-          ])));
-          corpo.append(tabella);
-        }
-      });
-      contenuto.append(el('details', { className: 'nucleo', open: true }, [
-        el('summary', {}, [document.createTextNode(n.nome), el('span', { className: 'badge', textContent: testoEsito(n.risultatoCorrente) })]),
-        corpo,
+      const confronto = CONFRONTI_NUCLEO[n.confrontoConComplessivo];
+      lettura.append(el('div', { className: 'voce' }, [
+        el('span', { className: 'simbolo', textContent: confronto ? confronto.simbolo : '○' }),
+        el('span', { className: 'nome', textContent: n.nome }),
+        el('span', { className: 'tenue', textContent: confronto ? confronto.testo : 'Non valutato' }),
       ]));
     });
+    lettura.append(el('div', {
+      className: 'tenue piccola',
+      textContent: 'Confronto tra i nuclei dello stesso studente rispetto al suo risultato complessivo: non è un giudizio sull\'alunno.',
+    }));
+    const aBarre = p.nuclei.length < RadarNuclei.MINIMO_ASSI_RADAR;
+    contenuto.append(el('div', { className: 'scheda grafico-nuclei' }, [
+      el('div', { className: 'grafico' }, [
+        costruisciGraficoNuclei(p),
+        el('div', {
+          className: 'tenue piccola legenda-radar',
+          textContent: aBarre
+            ? 'Barra piena = tutti i criteri del nucleo valutati con almeno 3 osservazioni · barra attenuata = risultato parziale o provvisorio · '
+              + 'riquadro tratteggiato = nucleo non valutato.'
+            : '● tutti i criteri del nucleo valutati con almeno 3 osservazioni · ○ risultato parziale o provvisorio · '
+              + 'asse tratteggiato = nucleo non valutato.',
+        }),
+        el('div', {
+          className: 'tenue piccola legenda-radar',
+          textContent: (aBarre ? 'Tacche di riferimento, da destra a sinistra' : 'Linee di riferimento, dall\'esterno verso il centro')
+            + ' (soglie di giudizio dell\'istituto): '
+            + p.bande.filter((b) => b.posizioneRadar !== null).map((b) => `${b.etichetta} da ${numeroIt(b.sogliaMinima)}%`).join(' · ') + '.',
+        }),
+      ]),
+      lettura,
+    ]));
+
+    // 4. Nuclei (chiusi) -> criteri -> media mobile -> storico
+    contenuto.append(el('div', { className: 'sezione-titolo', textContent: 'Nuclei tematici' }));
+    p.nuclei.forEach((n) => contenuto.append(bloccoNucleo(n, p)));
+
+    // 5. Criteri non più attivi: solo storico, nessun risultato
+    if (p.criteriNonPiuAttivi.length > 0) {
+      const corpo = el('div', { className: 'corpo-nucleo' }, [
+        el('p', { className: 'tenue', textContent: 'Criteri disattivati dopo essere stati usati: non entrano in alcun risultato. Le osservazioni restano consultabili.' }),
+      ]);
+      p.criteriNonPiuAttivi.forEach((criterio) => corpo.append(el('div', { className: 'criterio-report' }, [
+        el('div', { className: 'intestazione' }, [
+          el('strong', { textContent: criterio.codice }),
+          el('span', { textContent: `${criterio.descrizione} (${criterio.nucleo})` }),
+        ]),
+        tabellaStorico(criterio.osservazioni),
+      ])));
+      contenuto.append(el('details', { className: 'nucleo' }, [
+        el('summary', {}, [el('span', { className: 'nome', textContent: `Criteri non più attivi (${p.criteriNonPiuAttivi.length})` })]),
+        corpo,
+      ]));
+    }
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 

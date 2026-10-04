@@ -98,6 +98,11 @@ function livelloCopertura(numeroOsservazioni) {
   return Math.min(numeroOsservazioni, LIVELLO_COPERTURA_CONSOLIDATO);
 }
 
+/** Percentuale pedagogica di UNA osservazione (valore / massimo della scala × 100): solo per lo storico. */
+function percentualeOsservazione(valore, scala) {
+  return calcolaEsito([valore], scala.valoreMassimo).percentuale;
+}
+
 /**
  * Risultato di UN criterio per UNO studente.
  * @param {number[]} valoriCronologici - valori delle sole osservazioni VALIDE, dal più vecchio.
@@ -282,7 +287,7 @@ function complessivoDiClasse(nuclei, bande) {
 module.exports = {
   REGOLA_CLASSE,
   preparaBande, giudizioDi, bandeConPosizioneRadar,
-  posizioneRadarDaMedia, posizioneRadarDaPercentuale, livelloCopertura,
+  posizioneRadarDaMedia, posizioneRadarDaPercentuale, livelloCopertura, percentualeOsservazione,
   risultatoCriterioStudente, aggregaCriteriStudente, confrontoConComplessivo,
   nucleoDiClasse, statoCriterioDiClasse, complessivoDiClasse,
 };
