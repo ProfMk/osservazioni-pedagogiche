@@ -310,6 +310,9 @@
 
   function nomeChiave(chiave) { return t('span', chiave); }
 
+  /** Data di calendario isolata dal testo circostante (bidi): in RTL non si rimescola con il resto. */
+  function giorno(valore) { return el('bdi', {}, [I18n.data(valore)]); }
+
   function riferimento(r, chiave) {
     return r ? Object.assign({}, r, { chiave: chiave }) : null;
   }
@@ -495,7 +498,7 @@
     var testata = el('tr', {}, [t('th', 'UI_SCALE_VALUE', null, { scope: 'col' })].concat(osservazioni.map(function (o, i) {
       return el('th', { scope: 'col', classe: o.inFinestra ? 'in-finestra' : '' }, [
         i === primaFinestra ? el('span', { classe: 'finestra', role: 'img', 'aria-label': I18n.testo('OBSERVATION_WINDOW') }, [G.SEGNI.WINDOW_OPEN]) : null,
-        I18n.data(o.dataOsservazione),
+        giorno(o.dataOsservazione),
         i === ultimaFinestra ? el('span', { classe: 'finestra', 'aria-hidden': 'true' }, [G.SEGNI.WINDOW_CLOSE]) : null,
       ]);
     })));
@@ -516,7 +519,7 @@
     ])]));
     sezione.append(el('ul', { classe: 'dettaglio-osservazioni' }, osservazioni.map(function (o) {
       return el('li', {}, [
-        o.conteggiata ? G.SEGNI.OBSERVATION : G.SEGNI.OBSERVATION_EXCLUDED, ' ', I18n.data(o.dataOsservazione), ' · ',
+        o.conteggiata ? G.SEGNI.OBSERVATION : G.SEGNI.OBSERVATION_EXCLUDED, ' ', giorno(o.dataOsservazione), ' · ',
         contenuto('span', o.attivita), ' · ', I18n.numero(o.valore, 0), o.etichetta ? ' ' : '', contenuto('span', o.etichetta),
         o.nota ? ' · ' : '', contenuto('span', o.nota),
         o.inFinestra ? el('span', {}, [' · ', t('span', 'OBSERVATION_WINDOW')]) : null,
@@ -538,7 +541,7 @@
       return el('div', {}, [
         el('p', {}, [c.codice, ' ', contenuto('span', c.descrizione), ' · ', contenuto('span', c.nucleo)]),
         el('ul', {}, c.osservazioni.map(function (o) {
-          return el('li', {}, [G.SEGNI.OBSERVATION_EXCLUDED, ' ', I18n.data(o.dataOsservazione), ' · ', contenuto('span', o.attivita), ' · ', t('span', o.motivoEsclusione)]);
+          return el('li', {}, [G.SEGNI.OBSERVATION_EXCLUDED, ' ', giorno(o.dataOsservazione), ' · ', contenuto('span', o.attivita), ' · ', t('span', o.motivoEsclusione)]);
         })),
       ]);
     })));
@@ -558,8 +561,8 @@
         el('p', { classe: 'nota' }, [
           conAlunno ? v.alunno.cognome + ' ' + v.alunno.nome + ' · ' : '',
           v.criterio ? el('span', {}, [v.criterio.codice, ' ', contenuto('span', v.criterio.descrizione)]) : t('span', 'UI_SUBJECT_ASSESSMENT'),
-          ' · ', contenuto('span', v.periodo.nome), ' (', I18n.data(v.periodo.dataInizio), ' – ', I18n.data(v.periodo.dataFine), ')',
-          ' · ', t('span', 'UI_AUTHOR', { autore: v.autore.nome + ' ' + v.autore.cognome }), ' · ', I18n.data(v.aggiornataIl),
+          ' · ', contenuto('span', v.periodo.nome), ' (', giorno(v.periodo.dataInizio), ' – ', giorno(v.periodo.dataFine), ')',
+          ' · ', t('span', 'UI_AUTHOR', { autore: v.autore.nome + ' ' + v.autore.cognome }), ' · ', giorno(v.aggiornataIl),
         ]),
         v.evidenza ? G.riga({ chiave: 'evidenza-' + v.id, nome: nomeChiave('UI_EVIDENCE'), valore: v.evidenza }, ctx) : null,
       ]));
@@ -584,7 +587,7 @@
     corpo.append(el('div', { classe: 'elenco' }, attivita.map(function (a) {
       return el('button', { type: 'button', classe: 'scelta', onclick: function () { apriAttivita(contestoClasse, a, 'griglia'); } }, [
         contenuto('span', a.nome, { classe: 'titolo' }),
-        el('span', { classe: 'sottotitolo' }, [contenuto('span', a.unita_pedagogica), ' · ', I18n.data(a.data_attivita)]),
+        el('span', { classe: 'sottotitolo' }, [contenuto('span', a.unita_pedagogica), ' · ', giorno(a.data_attivita)]),
       ]);
     })));
   }
@@ -630,7 +633,7 @@
           onclick: function () { apriAttivita(contestoClasse, a, s[0]); },
         });
       }));
-      corpo.append(el('h2', {}, [contenuto('span', a.nome), ' · ', I18n.data(a.data_attivita)]), schede);
+      corpo.append(el('h2', {}, [contenuto('span', a.nome), ' · ', giorno(a.data_attivita)]), schede);
       if (scheda === 'griglia') await disegnaGriglia(corpo, contestoClasse, a);
       else await disegnaEsito(corpo, a);
     });
