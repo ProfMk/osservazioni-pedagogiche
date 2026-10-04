@@ -76,6 +76,9 @@
   .scheda { background: #fff; border: 1px solid var(--riga); border-radius: 8px; box-shadow: var(--ombra); padding: 1rem 1.1rem; margin-bottom: 1rem; }
   .pastiglia { display: inline-block; padding: .12rem .6rem; border-radius: 999px; border: 1px solid var(--riga); font-size: .78rem; font-weight: 600; white-space: nowrap; }
   .pastiglia.neutra { background: var(--carta-scura); color: var(--inchiostro-tenue); border-style: dashed; font-weight: 500; }
+  .critico { color: #8a2a1c; font-weight: 700; font-size: .78rem; white-space: nowrap; }
+  .avviso-critico { border-left: 4px solid #b3402e; background: #fbeeea; color: #5c1d13; padding: .6rem .9rem; border-radius: 0 8px 8px 0; margin-bottom: 1rem; font-size: .88rem; }
+  .lettura-nuclei .voce { align-items: center; }
   .complessivo { display: flex; gap: 1rem 2rem; flex-wrap: wrap; align-items: center; }
   .complessivo .principale { display: flex; flex-direction: column; align-items: flex-start; gap: .25rem; min-width: 11rem; }
   .complessivo .titolo, .lettura-nuclei .titolo { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--inchiostro-tenue); font-weight: 600; }
@@ -669,11 +672,28 @@ const LIVELLI_COPERTURA = [
   { simbolo: '◑', testo: 'Provvisorio' },
   { simbolo: '●', testo: 'Consolidato' },
 ];
-const CONFRONTI_NUCLEO = {
-  punto_di_forza: { simbolo: '▲', testo: 'Punto di forza' },
-  area_di_attenzione: { simbolo: '▼', testo: 'Area di attenzione' },
-  nella_norma: { simbolo: '=', testo: 'Nella norma' },
+// Confronto RELATIVO di un nucleo con il complessivo dello stesso studente: dice solo dove sta rispetto
+// al riferimento, mai se il livello è adeguato. Il livello assoluto è il giudizio; la criticità è a parte.
+const CONFRONTI_RELATIVI = {
+  superiore: { simbolo: '▲', testo: 'Sopra il complessivo' },
+  inferiore: { simbolo: '▼', testo: 'Sotto il complessivo' },
+  allineato: { simbolo: '=', testo: 'Allineato al complessivo' },
 };
+
+function testoConfronto(confronto) {
+  if (!confronto) return null;
+  const voce = CONFRONTI_RELATIVI[confronto.esito];
+  const punti = confronto.differenzaPunti;
+  const differenza = punti === 0 ? '' : ` (${punti > 0 ? '+' : '−'}${numeroIt(Math.abs(punti))} punti)`;
+  return `${voce.simbolo} ${voce.testo}${differenza}`;
+}
+
+/** Segnale di CRITICITÀ: il risultato è nella banda più bassa configurata dall'istituto (lo decide il server). */
+function marcaCritico(risultato) {
+  return risultato.critico === true ? el('span', { className: 'critico', textContent: '⚠ Livello critico' }) : null;
+}
+
+function senzaVuoti(nodi) { return nodi.filter(Boolean); }
 const MOTIVI_ESCLUSIONE = {
   attivita_disattivata: 'attività disattivata',
   scala_non_compatibile: 'scala diversa da quella in uso',
@@ -848,11 +868,12 @@ function bloccoCriterio(criterio, p) {
   const r = criterio.risultatoCorrente;
   const copertura = LIVELLI_COPERTURA[criterio.livelloCopertura];
   const blocco = el('div', { className: 'criterio-report' }, [
-    el('div', { className: 'intestazione' }, [
+    el('div', { className: 'intestazione' }, senzaVuoti([
       el('strong', { textContent: criterio.codice }),
       el('span', { textContent: criterio.descrizione }),
       pastigliaGiudizio(r, p.bande.length),
-    ]),
+      marcaCritico(r),
+    ])),
   ]);
   if (r.percentuale === null) {
     blocco.append(el('div', { className: 'riga-dato', textContent: `${copertura.simbolo} Non valutato: nessuna osservazione valida su questo criterio.` }));
@@ -885,14 +906,15 @@ function bloccoCriterio(criterio, p) {
 
 function bloccoNucleo(nucleo, p) {
   const r = nucleo.risultatoCorrente;
-  const confronto = CONFRONTI_NUCLEO[nucleo.confrontoConComplessivo];
-  const sintesi = [
+  const confronto = testoConfronto(nucleo.confrontoConComplessivo);
+  const sintesi = senzaVuoti([
     el('span', { className: 'nome', textContent: nucleo.nome }),
     pastigliaGiudizio(r, p.bande.length),
+    marcaCritico(r),
     el('span', { className: 'dato', textContent: r.percentuale === null ? '' : `${numeroIt(r.percentuale)}%` }),
     el('span', { className: 'dato tenue', textContent: `${r.criteriValutati}/${r.criteriTotali} criteri valutati` }),
-  ];
-  if (confronto) sintesi.push(el('span', { className: 'dato tenue', textContent: `${confronto.simbolo} ${confronto.testo}` }));
+    confronto ? el('span', { className: 'dato tenue', textContent: confronto }) : null,
+  ]);
 
   const corpo = el('div', { className: 'corpo-nucleo' });
   if (nucleo.grigliaNonConfigurata) {
@@ -946,6 +968,7 @@ async function mostraProgressoStudente(teaching, studente) {
         el('div', { className: 'titolo', textContent: 'Risultato complessivo' }),
         el('div', { className: 'numero', textContent: testoPercentuale(c.percentuale) }),
         pastigliaGiudizio(c, numeroBande),
+        ...senzaVuoti([marcaCritico(c)]),
       ]),
       el('div', { className: 'dettagli' }, [
         el('div', { textContent: `${c.criteriValutati === 1 ? '1 criterio valutato' : `${c.criteriValutati} criteri valutati`} su ${c.criteriTotali}` }),
@@ -963,6 +986,15 @@ async function mostraProgressoStudente(teaching, studente) {
       ]),
     ]));
 
+    if (p.difficoltaGeneralizzata) {
+      const bandaCritica = p.bande.find((b) => b.critica);
+      contenuto.append(el('div', { className: 'avviso-critico' }, [
+        el('strong', { textContent: '⚠ Difficoltà generalizzata. ' }),
+        document.createTextNode(`Il risultato complessivo è nella banda più bassa configurata dall'istituto (${bandaCritica ? bandaCritica.etichetta : c.giudizio}). `
+          + 'Un nucleo «allineato al complessivo» non è quindi un nucleo senza difficoltà: è critico come il resto.'),
+      ]));
+    }
+
     if (p.nuclei.length === 0) {
       contenuto.append(el('p', { textContent: 'Nessun nucleo tematico configurato per questa materia.' }));
       return;
@@ -973,16 +1005,18 @@ async function mostraProgressoStudente(teaching, studente) {
       el('div', { className: 'titolo', textContent: 'Nuclei a confronto' }),
     ]);
     p.nuclei.forEach((n) => {
-      const confronto = CONFRONTI_NUCLEO[n.confrontoConComplessivo];
-      lettura.append(el('div', { className: 'voce' }, [
-        el('span', { className: 'simbolo', textContent: confronto ? confronto.simbolo : '○' }),
+      // Tre informazioni distinte, mai fuse: livello assoluto (giudizio), criticità, confronto relativo.
+      lettura.append(el('div', { className: 'voce' }, senzaVuoti([
         el('span', { className: 'nome', textContent: n.nome }),
-        el('span', { className: 'tenue', textContent: confronto ? confronto.testo : 'Non valutato' }),
-      ]));
+        pastigliaGiudizio(n.risultatoCorrente, numeroBande),
+        marcaCritico(n.risultatoCorrente),
+        el('span', { className: 'tenue', textContent: testoConfronto(n.confrontoConComplessivo) || '' }),
+      ])));
     });
     lettura.append(el('div', {
       className: 'tenue piccola',
-      textContent: 'Confronto tra i nuclei dello stesso studente rispetto al suo risultato complessivo: non è un giudizio sull\'alunno.',
+      textContent: 'Il giudizio indica il livello raggiunto. «Sopra / sotto / allineato» indica solo la posizione del nucleo rispetto al '
+        + 'risultato complessivo dello stesso studente: non dice se il livello è adeguato.',
     }));
     const aBarre = p.nuclei.length < RadarNuclei.MINIMO_ASSI_RADAR;
     contenuto.append(el('div', { className: 'scheda grafico-nuclei' }, [

@@ -117,6 +117,7 @@ function descriviRisultatoCriterio(r) {
     percentuale: r.percentuale,
     giudizio: r.giudizio,
     livelloGiudizio: r.livelloGiudizio,
+    critico: r.critico,
     osservazioniConsiderate: r.osservazioniConsiderate,
     osservazioniTotali: r.osservazioniTotali,
     punteggioOttenuto: r.punteggioOttenuto,
@@ -134,6 +135,7 @@ function descriviAggregato(a) {
     percentuale: a.percentuale,
     giudizio: a.giudizio,
     livelloGiudizio: a.livelloGiudizio,
+    critico: a.critico,
     criteriConsiderati: a.criteriValutati,
     criteriValutati: a.criteriValutati,
     criteriTotali: a.criteriTotali,
@@ -210,6 +212,7 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
     },
     bande: motore.bandeConPosizioneRadar(bande, scala),
     regola: { tipo: 'media_mobile', finestra: FINESTRA_MEDIA_MOBILE },
+    difficoltaGeneralizzata: motore.difficoltaGeneralizzata(complessivo),
     complessivo: {
       ...descriviAggregato(complessivo),
       cumulativo: descriviCumulativo(complessivo.cumulativo),
@@ -223,7 +226,9 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
       risultatoCorrente: descriviAggregato(aggregato),
       cumulativo: descriviCumulativo(aggregato.cumulativo),
       copertura: aggregato.copertura,
-      confrontoConComplessivo: motore.confrontoConComplessivo(aggregato.livelloGiudizio, complessivo.livelloGiudizio),
+      // Solo confronto relativo (banda del nucleo rispetto a quella del complessivo): il livello assoluto e la
+      // criticità sono in risultatoCorrente e non vengono mai sostituiti da questo campo.
+      confrontoConComplessivo: motore.confrontoRelativo(aggregato, complessivo),
       radar: { posizioneRadar: aggregato.posizioneRadar, puntoPieno: aggregato.puntoPieno },
       criteri: criteri.map(({ criterio, storico, risultato, nellaFinestra }) => ({
         id: criterio.id,

@@ -1100,7 +1100,8 @@ test('Report studente v2.7: nucleo e complessivo = media semplice dei criteri va
   assert.equal(numeri.radar.puntoPieno, false, 'due criteri su quattro non sono valutati');
   assert.deepEqual([p.complessivo.percentuale, p.complessivo.criteriValutati, p.complessivo.criteriTotali], [83.33, 2, 8],
     'i criteri non valutati non entrano nel denominatore: 2 valutati su 8 (4 + 2 + 2)');
-  assert.equal(numeri.confrontoConComplessivo, 'nella_norma');
+  assert.deepEqual(numeri.confrontoConComplessivo, { esito: 'allineato', differenzaPunti: 0 }, 'solo confronto relativo');
+  assert.deepEqual([numeri.risultatoCorrente.critico, p.complessivo.critico, p.difficoltaGeneralizzata], [false, false, false]);
 });
 
 test('Report studente v2.7: criterio disattivato fuori dal calcolo corrente, storico conservato e distinguibile', async () => {
@@ -1313,6 +1314,76 @@ test('Report studente v2.7: ogni osservazione dello storico porta percentuale (v
     p.nuclei.forEach((n) => n.criteri.forEach((c) => c.osservazioni.forEach((o) => percentuali.push([o.valore, o.percentuale]))));
   }
   assert.deepEqual(percentuali.sort((a, b) => a[0] - b[0]), [[2, 50], [4, 100]]);
+});
+
+test('Report studente: livello assoluto, criticità e confronto relativo sono separati — un nucleo critico allineato a un complessivo critico non è "nella norma"', async () => {
+  const { sessione, teaching2A } = await contestoProgressoAlfa2A();
+  // Studente nuovo, solo per questo test: tutti i risultati nella banda più bassa di Alfa.
+  const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0].id;
+  const classe = (await pool.query('SELECT class_id, school_year_id FROM teachings WHERE id = $1', [teaching2A])).rows[0];
+  const persona = (await pool.query(
+    "INSERT INTO people (tenant_id, nome, cognome) VALUES ($1, 'A-Student-Critico', 'Alfa') RETURNING id", [alfa]
+  )).rows[0].id;
+  const iscrizione = (await pool.query(
+    'INSERT INTO enrollments (tenant_id, school_year_id, class_id, student_person_id) VALUES ($1, $2, $3, $4) RETURNING id',
+    [alfa, classe.school_year_id, classe.class_id, persona]
+  )).rows[0].id;
+  try {
+    const unita = (await sessione.get(`/teachings/${teaching2A}/pedagogical-units`)).corpo;
+    const numeri = unita.find((u) => u.nome === 'Numeri');
+    const spazio = unita.find((u) => u.nome === 'Spazio e figure');
+    // Numeri NUM-1: 0, 1 -> 25%. Spazio SPA-1: 0, 1, 1 -> 33,33%. Complessivo: (25 + 33,33) / 2 = 29,17%.
+    const piano = [
+      ['Critico N1', '2026-12-02', numeri, 'NUM-1', 0], ['Critico N2', '2026-12-09', numeri, 'NUM-1', 1],
+      ['Critico S1', '2026-12-03', spazio, 'SPA-1', 0], ['Critico S2', '2026-12-10', spazio, 'SPA-1', 1], ['Critico S3', '2026-12-17', spazio, 'SPA-1', 1],
+    ];
+    for (const [nome, data, nucleo, codice, valore] of piano) {
+      await registraOsservazione(sessione, teaching2A, { nome, data, unita: nucleo, codice, enrollmentId: iscrizione, valore });
+    }
+    const r = await sessione.get(`/teachings/${teaching2A}/students/${iscrizione}/progress`);
+    assert.equal(r.status, 200);
+    const p = r.corpo;
+
+    // Criticità: deriva dalla banda più bassa configurata dal tenant, esposta insieme alle bande.
+    assert.deepEqual(p.bande.filter((b) => b.critica).map((b) => b.etichetta), ['NON SUFFICIENTE']);
+    assert.deepEqual([p.complessivo.percentuale, p.complessivo.giudizio, p.complessivo.critico], [29.17, 'NON SUFFICIENTE', true]);
+    assert.equal(p.difficoltaGeneralizzata, true);
+
+    const nNumeri = p.nuclei.find((n) => n.nome === 'Numeri');
+    const nSpazio = p.nuclei.find((n) => n.nome === 'Spazio e figure');
+    // Livello assoluto: NON SUFFICIENTE e critico. Confronto relativo: allineato. Nessuno dei due cancella l'altro.
+    assert.deepEqual([nNumeri.risultatoCorrente.percentuale, nNumeri.risultatoCorrente.giudizio, nNumeri.risultatoCorrente.critico], [25, 'NON SUFFICIENTE', true]);
+    assert.deepEqual(nNumeri.confrontoConComplessivo, { esito: 'allineato', differenzaPunti: -4.17 });
+    assert.deepEqual([nSpazio.risultatoCorrente.percentuale, nSpazio.risultatoCorrente.critico], [33.33, true]);
+    assert.deepEqual(nSpazio.confrontoConComplessivo, { esito: 'allineato', differenzaPunti: 4.17 });
+    assert.equal(criterioDi(p, 'Numeri', 'NUM-1').risultatoCorrente.critico, true);
+    // Nucleo non valutato: nessun livello, nessuna criticità, nessun confronto.
+    const relazioni = p.nuclei.find((n) => n.nome === 'Relazioni, dati e previsioni');
+    assert.deepEqual([relazioni.risultatoCorrente.critico, relazioni.confrontoConComplessivo], [null, null]);
+    // "Nella norma" non esiste più come valore, in nessuna forma.
+    const testo = JSON.stringify(p);
+    for (const vietato of ['nella_norma', 'Nella norma', 'punto_di_forza', 'area_di_attenzione']) {
+      assert.ok(!testo.includes(vietato), `la risposta non deve contenere "${vietato}"`);
+    }
+  } finally {
+    await pool.query('UPDATE enrollments SET attiva = false WHERE id = $1', [iscrizione]);
+  }
+
+  // Beta: la banda più bassa è INSUFFICIENTE (fino a 55), con un'altra scala: stessa regola, nessun valore fisso.
+  const beta = await loginESwitch('teacher.math.b@beta.test', 'beta');
+  const teachingBeta = (await beta.get('/teachings')).corpo[0].teaching_id;
+  const progressi = [];
+  for (const s of (await beta.get(`/teachings/${teachingBeta}/students`)).corpo) {
+    const p = (await beta.get(`/teachings/${teachingBeta}/students/${s.enrollment_id}/progress`)).corpo;
+    if (p.complessivo.percentuale !== null) progressi.push(p);
+  }
+  const [basso, alto] = progressi.sort((a, b) => a.complessivo.percentuale - b.complessivo.percentuale);
+  assert.deepEqual(basso.bande.filter((b) => b.critica).map((b) => b.etichetta), ['INSUFFICIENTE']);
+  assert.deepEqual([basso.complessivo.percentuale, basso.complessivo.giudizio, basso.complessivo.critico, basso.difficoltaGeneralizzata], [50, 'INSUFFICIENTE', true, true],
+    '50% è critico in Beta (banda più bassa fino a 55), mentre in Alfa sarebbe SUFFICIENTE');
+  const nucleoBasso = basso.nuclei.find((n) => n.risultatoCorrente.percentuale !== null);
+  assert.deepEqual([nucleoBasso.risultatoCorrente.critico, nucleoBasso.confrontoConComplessivo], [true, { esito: 'allineato', differenzaPunti: 0 }]);
+  assert.deepEqual([alto.complessivo.giudizio, alto.complessivo.critico, alto.difficoltaGeneralizzata], ['ECCELLENTE', false, false]);
 });
 
 test('Coerenza del giudizio: report attività e report studente applicano la stessa regola di soglia sul caso limite (49,99999999999999 = 50)', async () => {

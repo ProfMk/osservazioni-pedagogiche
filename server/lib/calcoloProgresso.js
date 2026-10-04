@@ -43,22 +43,60 @@ function arrotondaONullo(valore) {
  * Bande di giudizio pronte per il calcolo: soglie numeriche, ordinate dalla più alta,
  * ciascuna con il proprio `livello` (0 = banda più bassa). L'ordine è quello delle soglie:
  * lo schema non ha una colonna d'ordine.
+ *
+ * CRITICITÀ: è critica la banda con la posizione più bassa tra quelle configurate dall'istituto
+ * (`critica: true`). Deriva solo dalla struttura delle bande: nessuna soglia numerica e nessuna
+ * etichetta sono scritte nel codice.
  * @param {{soglia_minima: number|string, etichetta: string}[]} bandeDb
  */
 function preparaBande(bandeDb) {
   const crescenti = bandeDb
     .map((b) => ({ sogliaMinima: Number(b.soglia_minima), etichetta: b.etichetta }))
     .sort((a, b) => a.sogliaMinima - b.sogliaMinima);
-  return crescenti.map((b, livello) => ({ ...b, livello })).reverse();
+  return crescenti.map((b, livello) => ({ ...b, livello, critica: livello === LIVELLO_BANDA_CRITICA })).reverse();
 }
 
-/** Giudizio e livello della banda per una percentuale pedagogica ESATTA (null -> non valutato). */
+// Posizione della banda critica nell'ordine crescente delle soglie: la più bassa.
+const LIVELLO_BANDA_CRITICA = 0;
+
+const NON_VALUTATO = Object.freeze({ giudizio: '', livelloGiudizio: null, critico: null });
+
+/**
+ * LIVELLO ASSOLUTO di una percentuale pedagogica ESATTA: giudizio (etichetta della banda), posizione
+ * della banda e criticità. Dipende solo dal valore e dalle bande dell'istituto: nessun confronto con
+ * altri risultati può modificarlo. Null -> non valutato (critico: null, non false).
+ */
 function giudizioDi(percentualeEsatta, bande) {
-  if (percentualeEsatta === null || percentualeEsatta === undefined) return { giudizio: '', livelloGiudizio: null };
+  if (percentualeEsatta === null || percentualeEsatta === undefined) return { ...NON_VALUTATO };
   for (const banda of bande) {
-    if (raggiungeSoglia(percentualeEsatta, banda.sogliaMinima)) return { giudizio: banda.etichetta, livelloGiudizio: banda.livello };
+    if (raggiungeSoglia(percentualeEsatta, banda.sogliaMinima)) {
+      return { giudizio: banda.etichetta, livelloGiudizio: banda.livello, critico: banda.critica };
+    }
   }
-  return { giudizio: '', livelloGiudizio: null };
+  return { ...NON_VALUTATO };
+}
+
+/**
+ * CONFRONTO RELATIVO tra un risultato e il suo riferimento (nucleo vs complessivo, criterio vs nucleo):
+ * solo la posizione reciproca delle due bande, più la differenza in punti percentuali come dato
+ * descrittivo. NON dice nulla sull'adeguatezza del risultato: "allineato" significa "stessa banda del
+ * riferimento", non "va bene". Il livello assoluto e la criticità restano quelli di giudizioDi.
+ * @returns {{esito: 'superiore'|'inferiore'|'allineato', differenzaPunti: number}|null} null se uno dei due non è valutato.
+ */
+function confrontoRelativo(risultato, riferimento) {
+  if (!risultato || !riferimento || risultato.livelloGiudizio === null || riferimento.livelloGiudizio === null) return null;
+  let esito = 'allineato';
+  if (risultato.livelloGiudizio > riferimento.livelloGiudizio) esito = 'superiore';
+  else if (risultato.livelloGiudizio < riferimento.livelloGiudizio) esito = 'inferiore';
+  return { esito, differenzaPunti: arrotondaPerPresentazione(risultato.percentualeEsatta - riferimento.percentualeEsatta) };
+}
+
+/**
+ * Difficoltà generalizzata: il risultato complessivo (dello studente o della classe) è nella banda
+ * critica. In quel caso un nucleo "allineato" non è un nucleo senza problemi: è critico come il resto.
+ */
+function difficoltaGeneralizzata(complessivo) {
+  return complessivo.critico === true;
 }
 
 /**
@@ -88,6 +126,7 @@ function bandeConPosizioneRadar(bande, scala) {
       sogliaMinima: b.sogliaMinima,
       etichetta: b.etichetta,
       livello: b.livello,
+      critica: b.critica,
       posizioneRadar: posizione === null || posizione <= TOLLERANZA ? null : arrotondaPerPresentazione(posizione),
     };
   });
@@ -165,17 +204,6 @@ function aggregaCriteriStudente(criteri, scala, bande) {
 }
 
 /**
- * Confronto relativo tra un nucleo e il complessivo dello STESSO studente (non una diagnosi):
- * banda superiore -> punto di forza, inferiore -> area di attenzione, uguale -> nella norma.
- */
-function confrontoConComplessivo(livelloNucleo, livelloComplessivo) {
-  if (livelloNucleo === null || livelloComplessivo === null) return null;
-  if (livelloNucleo > livelloComplessivo) return 'punto_di_forza';
-  if (livelloNucleo < livelloComplessivo) return 'area_di_attenzione';
-  return 'nella_norma';
-}
-
-/**
  * Avanzamento di un NUCLEO per la CLASSE.
  * @param {(number|string)[]} criteriIds - criteri attivi del nucleo, nell'ordine configurato.
  * @param {Map<number|string, {percentualeEsatta: number, osservazioniTotali: number}>[]} righeStudenti -
@@ -238,7 +266,8 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
       });
     }
     criterio.confronto = confronto;
-    criterio.stato = statoCriterioDiClasse(criterio, risultato.livelloGiudizio);
+    criterio.statoCopertura = statoCoperturaCriterio(criterio);
+    criterio.confrontoConNucleo = confrontoCriterioConNucleo(criterio, risultato);
   });
 
   return {
@@ -253,19 +282,31 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
 }
 
 /**
- * Stato di un criterio nel report di classe. Forte/debole solo se valgono ENTRAMBE le condizioni:
- * banda diversa da quella del nucleo, e almeno 2/3 degli studenti confrontabili (minimo 6, pari
- * inclusi nel denominatore) concordi nella stessa direzione.
+ * COPERTURA di un criterio nel report di classe: dice solo se i dati rappresentano la classe,
+ * mai se il risultato è buono o cattivo ("pochi studenti valutati" non è "classe debole").
  */
-function statoCriterioDiClasse(criterio, livelloNucleo) {
+function statoCoperturaCriterio(criterio) {
   if (criterio.copertura.studentiValutati === 0) return 'non_osservato';
-  if (!criterio.rappresentativo) return 'poco_osservato';
+  return criterio.rappresentativo ? 'rappresentativo' : 'poco_osservato';
+}
+
+/**
+ * CONFRONTO RELATIVO di un criterio di classe con il proprio nucleo. Solo per criteri rappresentativi
+ * (altrimenti null): `esito` e `differenzaPunti` come in confrontoRelativo; `confermato` dice se la
+ * differenza di banda è condivisa dalla classe, cioè se almeno 2/3 degli studenti confrontabili
+ * (minimo 6, pari inclusi nel denominatore) vanno nella stessa direzione. Una differenza non
+ * confermata non va segnalata; in nessun caso questo confronto sostituisce il livello assoluto.
+ */
+function confrontoCriterioConNucleo(criterio, risultatoNucleo) {
+  if (!criterio.rappresentativo) return null;
+  const relativo = confrontoRelativo(criterio.risultato, risultatoNucleo);
+  if (relativo === null) return null;
   const { confrontabili, inferiori, superiori } = criterio.confronto;
-  const livello = criterio.risultato.livelloGiudizio;
-  if (livello === null || livelloNucleo === null || confrontabili < REGOLA_CLASSE.minimoConfrontabili) return 'nella_norma';
-  if (livello < livelloNucleo && inferiori * 3 >= confrontabili * 2) return 'debole';
-  if (livello > livelloNucleo && superiori * 3 >= confrontabili * 2) return 'forte';
-  return 'nella_norma';
+  const concordi = relativo.esito === 'inferiore' ? inferiori : superiori;
+  const confermato = relativo.esito === 'allineato'
+    ? null
+    : confrontabili >= REGOLA_CLASSE.minimoConfrontabili && concordi * 3 >= confrontabili * 2;
+  return { ...relativo, confermato };
 }
 
 /** Complessivo di classe: media semplice dei K(c) di TUTTI i criteri rappresentativi della materia. */
@@ -288,6 +329,7 @@ module.exports = {
   REGOLA_CLASSE,
   preparaBande, giudizioDi, bandeConPosizioneRadar,
   posizioneRadarDaMedia, posizioneRadarDaPercentuale, livelloCopertura, percentualeOsservazione,
-  risultatoCriterioStudente, aggregaCriteriStudente, confrontoConComplessivo,
-  nucleoDiClasse, statoCriterioDiClasse, complessivoDiClasse,
+  confrontoRelativo, difficoltaGeneralizzata,
+  risultatoCriterioStudente, aggregaCriteriStudente,
+  nucleoDiClasse, statoCoperturaCriterio, confrontoCriterioConNucleo, complessivoDiClasse,
 };
