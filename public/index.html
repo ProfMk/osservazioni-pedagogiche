@@ -157,6 +157,23 @@ function el(tag, props, figli) {
   return nodo;
 }
 
+// Catalogo di localizzazione risolto dal server per la lingua della sessione (V2 §17).
+const catalogo = { testi: {} };
+async function caricaCatalogo() {
+  const risposta = await fetch('/api/i18n');
+  if (risposta.ok) Object.assign(catalogo, await risposta.json());
+}
+/** Testo di un errore server { codice, parametri }: mai il codice grezzo, mai una frase del server. */
+function testoErrore(errore) {
+  const modello = errore && catalogo.testi[errore.codice];
+  if (typeof modello !== 'string') return '⟨?⟩';
+  return modello.replace(/\{(\w+)\}/g, (_, nome) => {
+    const valore = errore.parametri ? errore.parametri[nome] : undefined;
+    if (valore === undefined) return '⟨?⟩';
+    return typeof catalogo.testi[valore] === 'string' ? catalogo.testi[valore] : String(valore);
+  });
+}
+
 async function api(percorso, opzioni) {
   const risposta = await fetch('/api' + percorso, {
     ...opzioni,
@@ -168,7 +185,7 @@ async function api(percorso, opzioni) {
   });
   if (!risposta.ok) {
     const corpo = await risposta.json().catch(() => ({}));
-    const errore = new Error(corpo.errore || ('Errore HTTP ' + risposta.status));
+    const errore = new Error(testoErrore(corpo.errore));
     errore.status = risposta.status;
     throw errore;
   }
@@ -288,6 +305,7 @@ document.getElementById('bottoneLogout').addEventListener('click', async () => {
 });
 
 async function avviaApp() {
+  await caricaCatalogo();
   aggiornaIntestazione();
   aggiornaNavPrincipale();
   if (stato.me.activeTenantId) { stato.sezioneAttiva = 'dashboard'; aggiornaNavPrincipale(); mostraDashboard(); }
@@ -1261,6 +1279,7 @@ async function mostraReportClasse(attivitaRif, teaching) {
 // --- Avvio -------------------------------------------------------------
 
 (async () => {
+  await caricaCatalogo();
   try {
     stato.me = await api('/auth/me');
     avviaApp();

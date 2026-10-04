@@ -1,5 +1,7 @@
 'use strict';
 
+const { nonElaborabile } = require('../lib/erroreApplicativo');
+
 /**
  * Configurazione pedagogica tenant-owned (sez. 21-27): livelli scolastici,
  * anni scolastici, materie, unità pedagogiche, criteri, scala di
@@ -62,7 +64,7 @@ async function getScalaApplicabile(client, { tenantId, schoolLevelId }) {
     'SELECT id, nome FROM observation_scales WHERE tenant_id = $1 AND school_level_id IS NULL',
     [tenantId]
   )).rows[0];
-  if (!scala) throw new Error(`Nessuna scala di osservazione configurata per il tenant ${tenantId}.`);
+  if (!scala) throw nonElaborabile('ERR_SCALE_NOT_CONFIGURED');
   const { rows: valori } = await client.query(
     'SELECT valore, etichetta, ordine FROM observation_scale_values WHERE scale_id = $1 ORDER BY ordine',
     [scala.id]

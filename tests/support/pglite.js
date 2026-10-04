@@ -12,7 +12,7 @@
  * codici d'errore.
  *
  * Database disponibili, ricreati da zero a ogni esecuzione:
- *   pglite://completo         schema V1 + ruoli/permessi + audit + seed multi-tenant
+ *   pglite://completo         schema V1 + ruoli/permessi + audit + lingua/contenuti V2 + seed multi-tenant
  *   pglite://senza-migration  solo schema base (test di regressione sulla migration)
  *
  * Limite: una sola sessione per database, quindi nessuna concorrenza reale.
@@ -33,6 +33,7 @@ const SCRIPT_PER_DATABASE = {
     'migrations/000_schema_base.sql',
     'migrations/001_ruoli_permessi_sistema.sql',
     'migrations/002_audit_append_only.sql',
+    'migrations/003_lingua_contenuti_v2.sql',
     'seed/seed_multitenant.sql',
   ],
   [URL_SENZA_MIGRATION]: ['migrations/000_schema_base.sql'],

@@ -56,7 +56,7 @@ async function verificaTeachingNelTenant(client, teachingId, tenantId) {
      WHERE t.id = $1 AND t.tenant_id = $2`,
     [teachingId, tenantId]
   );
-  if (rows.length === 0) throw nonTrovato('Teaching non trovato o non accessibile in questo tenant.');
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_TEACHING' });
   return rows[0];
 }
 
@@ -88,24 +88,24 @@ async function getActivitiesDiTeaching(client, teachingId, tenantId) {
  * sez. 29/34), qui si dà solo un messaggio applicativo più chiaro di una
  * violazione di vincolo generica.
  */
-async function creaActivity(client, { teachingId, tenantId, nome, dataAttivita, pedagogicalUnitId }) {
+async function creaActivity(client, { teachingId, tenantId, nome, dataAttivita, pedagogicalUnitId, linguaContenuto }) {
   const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
-  if (!nome || !nome.trim()) throw datiNonValidi("Il nome dell'attività è obbligatorio.");
-  if (!dataAttivita) throw datiNonValidi("La data dell'attività è obbligatoria.");
+  if (!nome || !nome.trim()) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_NOME' });
+  if (!dataAttivita) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_DATA_ATTIVITA' });
 
   const { rows: unita } = await client.query(
     'SELECT id FROM pedagogical_units WHERE id = $1 AND subject_id = $2',
     [pedagogicalUnitId, teaching.subject_id]
   );
   if (unita.length === 0) {
-    throw datiNonValidi("L'unità pedagogica scelta non appartiene alla materia di questo Teaching.");
+    throw datiNonValidi('ERR_UNIT_NOT_IN_SUBJECT');
   }
 
   const { rows } = await client.query(
-    `INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita, lingua_contenuto)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id AS activity_id, nome, data_attivita`,
-    [tenantId, teaching.school_year_id, teachingId, teaching.class_id, teaching.subject_id, pedagogicalUnitId, nome.trim(), dataAttivita]
+    [tenantId, teaching.school_year_id, teachingId, teaching.class_id, teaching.subject_id, pedagogicalUnitId, nome.trim(), dataAttivita, linguaContenuto]
   );
   return rows[0];
 }
@@ -144,7 +144,7 @@ async function verificaSchoolLevelNelTenant(client, schoolLevelId, tenantId) {
     'SELECT id, nome FROM school_levels WHERE id = $1 AND tenant_id = $2',
     [schoolLevelId, tenantId]
   );
-  if (rows.length === 0) throw nonTrovato('Livello scolastico non trovato o non accessibile in questo tenant.');
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_SCHOOL_LEVEL' });
   return rows[0];
 }
 
@@ -164,7 +164,7 @@ async function verificaClasseNelTenant(client, classId, tenantId) {
     'SELECT id, nome, school_level_id FROM classes WHERE id = $1 AND tenant_id = $2',
     [classId, tenantId]
   );
-  if (rows.length === 0) throw nonTrovato('Classe non trovata o non accessibile in questo tenant.');
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_CLASS' });
   return rows[0];
 }
 
@@ -203,7 +203,7 @@ async function verificaActivityNelTenant(client, activityId, tenantId) {
      WHERE a.id = $1 AND a.tenant_id = $2`,
     [activityId, tenantId]
   );
-  if (rows.length === 0) throw nonTrovato('Attività non trovata o non accessibile in questo tenant.');
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_ACTIVITY' });
   return rows[0];
 }
 
@@ -213,7 +213,7 @@ async function verificaEnrollmentCoerente(client, activityInfo, enrollmentId) {
      WHERE id = $1 AND class_id = $2 AND tenant_id = $3 AND school_year_id = $4 AND attiva`,
     [enrollmentId, activityInfo.class_id, activityInfo.tenant_id, activityInfo.school_year_id]
   );
-  if (rows.length === 0) throw nonTrovato('Alunno non trovato in questa classe/anno per questa attività.');
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_ENROLLMENT' });
   return rows[0];
 }
 
@@ -222,7 +222,7 @@ async function verificaCriterionDiActivity(client, activityInfo, criterionId) {
     'SELECT id, codice, descrizione, ordine FROM criteria WHERE id = $1 AND pedagogical_unit_id = $2',
     [criterionId, activityInfo.pedagogical_unit_id]
   );
-  if (rows.length === 0) throw nonTrovato("Criterio non appartenente all'unità pedagogica di questa attività.");
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_CRITERION' });
   return rows[0];
 }
 
@@ -244,7 +244,7 @@ async function getAnnoScolasticoCorrente(client, tenantId) {
     "SELECT id FROM school_years WHERE tenant_id = $1 AND stato = 'attivo' ORDER BY data_inizio DESC LIMIT 1",
     [tenantId]
   );
-  if (rows.length === 0) throw nonTrovato('Nessun anno scolastico attivo configurato per questo tenant.');
+  if (rows.length === 0) throw nonTrovato('ERR_SCHOOL_YEAR_NOT_CONFIGURED');
   return rows[0].id;
 }
 
@@ -313,7 +313,7 @@ async function salvaObservation(client, { activityId, enrollmentId, criterionId,
     );
     return { eliminato: rowCount > 0 };
   }
-  if (!Number.isInteger(valore)) throw datiNonValidi(`Valore non valido: ${valore}.`);
+  if (!Number.isInteger(valore)) throw datiNonValidi('ERR_OBSERVATION_VALUE_INVALID');
 
   const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: activityInfo.school_level_id });
   const { rows } = await client.query(

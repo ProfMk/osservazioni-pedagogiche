@@ -47,10 +47,15 @@ async function haPermesso(client, {
   return rows.length > 0;
 }
 
+/** Identificatore semantico (catalogo PERMISSION_*) di un codice di permesso, es. observation.read. */
+function chiavePermesso(codice) {
+  return `PERMISSION_${String(codice).toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+}
+
 /** Solleva 403 se l'account non ha il permesso nel contesto indicato. */
 async function richiedePermesso(client, contesto) {
   const concesso = await haPermesso(client, contesto);
-  if (!concesso) throw vietato(`Permesso mancante: ${contesto.permesso}.`);
+  if (!concesso) throw vietato('ERR_PERMISSION_MISSING', { permesso: chiavePermesso(contesto.permesso) });
 }
 
 /** true se l'account ha un RoleAssignment attivo con scope_type = PLATFORM (sez. 7/9). */
@@ -80,4 +85,4 @@ async function permessiNelTenant(client, accountId, tenantId) {
   return rows.map((r) => r.codice);
 }
 
-module.exports = { haPermesso, richiedePermesso, isPlatformAdmin, permessiNelTenant };
+module.exports = { haPermesso, richiedePermesso, isPlatformAdmin, permessiNelTenant, chiavePermesso };

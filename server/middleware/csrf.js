@@ -10,7 +10,7 @@ function richiedeCsrf(req, res, next) {
   if (!METODI_MUTANTI.has(req.method)) return next();
   const token = req.header('X-CSRF-Token');
   if (!req.sessione || !tokenCsrfValido(req.sessione.id, token)) {
-    return next(vietato('Token CSRF mancante o non valido.'));
+    return next(vietato('ERR_CSRF_INVALID'));
   }
   next();
 }

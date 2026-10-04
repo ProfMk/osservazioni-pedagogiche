@@ -10,20 +10,24 @@ const { pool } = require('../db');
 const { isPlatformAdmin } = require('../lib/autorizzazione');
 const { haMembershipAttiva } = require('../queries/account');
 const { vietato } = require('../lib/erroreApplicativo');
+const { risolviLinguaTenant, aggiornaLinguaSessione } = require('../lib/lingua');
 
 async function contestoTenant(req, res, next) {
   try {
     const tenantId = req.sessione.active_tenant_id;
     if (!tenantId) {
-      throw vietato('Nessun tenant attivo per questa sessione: selezionarne uno con POST /api/auth/switch-tenant.');
+      throw vietato('ERR_TENANT_NOT_SELECTED');
     }
     const admin = await isPlatformAdmin(pool, req.accountId);
     if (!admin) {
       const valida = await haMembershipAttiva(pool, req.accountId, tenantId);
-      if (!valida) throw vietato('Il tenant attivo della sessione non corrisponde più a una Membership valida.');
+      if (!valida) throw vietato('ERR_TENANT_MEMBERSHIP_INVALID');
     }
     req.tenantId = tenantId;
     req.isPlatformAdmin = admin;
+    // Lingua C2 rivalutata a ogni richiesta: una lingua disabilitata nel frattempo non resta in uso.
+    req.lingua = await risolviLinguaTenant(pool, { accountId: req.accountId, tenantId });
+    await aggiornaLinguaSessione(pool, req.sessione.id, req.lingua.lingua);
     next();
   } catch (errore) {
     next(errore);

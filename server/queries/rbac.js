@@ -16,17 +16,17 @@ async function creaRoleAssignment(client, { creatoreAccountId, accountId, roleCo
   const creatoreEPlatformAdmin = await isPlatformAdmin(client, creatoreAccountId);
 
   if (scopeType === 'PLATFORM' || roleCodice === 'PLATFORM_ADMIN') {
-    if (!creatoreEPlatformAdmin) throw vietato('Solo un account con ruolo PLATFORM_ADMIN può assegnare uno scope PLATFORM.');
+    if (!creatoreEPlatformAdmin) throw vietato('ERR_ROLE_ASSIGNMENT_PLATFORM_ONLY');
   } else {
-    if (!tenantId) throw datiNonValidi('tenantId obbligatorio per uno scope non-PLATFORM.');
+    if (!tenantId) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_TENANT_ID' });
     if (!creatoreEPlatformAdmin) {
       const puo = await haPermesso(client, { accountId: creatoreAccountId, permesso: 'tenant.manage_roles', tenantId });
-      if (!puo) throw vietato("Permesso mancante: tenant.manage_roles per questo tenant.");
+      if (!puo) throw vietato('ERR_PERMISSION_MISSING', { permesso: 'PERMISSION_TENANT_MANAGE_ROLES' });
     }
   }
 
   const { rows: ruoloRows } = await client.query('SELECT id FROM roles WHERE codice = $1', [roleCodice]);
-  if (ruoloRows.length === 0) throw datiNonValidi(`Ruolo sconosciuto: ${roleCodice}`);
+  if (ruoloRows.length === 0) throw datiNonValidi('ERR_ROLE_UNKNOWN', { ruolo: String(roleCodice) });
 
   const colonne = {
     scope_tenant_id: null, scope_school_level_id: null, scope_class_id: null, scope_teaching_id: null, scope_student_person_id: null,
@@ -36,7 +36,7 @@ async function creaRoleAssignment(client, { creatoreAccountId, accountId, roleCo
   else if (scopeType === 'CLASS') colonne.scope_class_id = scopeIds.classId;
   else if (scopeType === 'TEACHING') colonne.scope_teaching_id = scopeIds.teachingId;
   else if (scopeType === 'STUDENT') colonne.scope_student_person_id = scopeIds.studentPersonId;
-  else if (scopeType !== 'PLATFORM') throw datiNonValidi(`scopeType sconosciuto: ${scopeType}`);
+  else if (scopeType !== 'PLATFORM') throw datiNonValidi('ERR_SCOPE_TYPE_UNKNOWN', { scopeType: String(scopeType) });
 
   const { rows } = await client.query(
     `INSERT INTO role_assignments (

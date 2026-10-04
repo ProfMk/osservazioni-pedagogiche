@@ -119,7 +119,8 @@ test('Login: password errata e account inesistente danno lo stesso 401 generico'
   assert.equal(r1.risposta.status, 401);
   const r2 = await login('non.esiste@alfa.test', 'qualunque');
   assert.equal(r2.risposta.status, 401);
-  assert.equal(r1.risposta.corpo.errore, r2.risposta.corpo.errore, 'messaggio identico: non rivelare quale dei due è sbagliato');
+  assert.deepEqual(r1.risposta.corpo.errore, r2.risposta.corpo.errore, 'errore identico: non rivelare quale dei due è sbagliato');
+  assert.deepEqual(r1.risposta.corpo.errore, { codice: 'ERR_CREDENTIALS_INVALID', parametri: {} }, 'V2: codice semantico, mai una frase');
 });
 
 test('GET /me senza cookie -> 401; con cookie valido -> 200', async () => {
@@ -659,7 +660,7 @@ test('Audit: audit_log è realmente append-only per l\'applicazione (app_role no
 
 test('DB: slug di tenant duplicato è rifiutato (UNIQUE)', async () => {
   await assert.rejects(
-    () => pool.query("INSERT INTO tenants (slug, nome) VALUES ('alfa', 'Duplicato')"),
+    () => pool.query("INSERT INTO tenants (slug, nome, lingua_predefinita, lingua_contenuti, regione) VALUES ('alfa', 'Duplicato', 'it', 'it', 'IT')"),
     (e) => e.code === '23505'
   );
 });
@@ -680,7 +681,7 @@ test('DB (cross-tenant): un\'Activity non può referenziare una PedagogicalUnit 
   )).rows[0];
   await assert.rejects(
     () => pool.query(
-      'INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      'INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita, lingua_contenuto) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,\'it\')',
       [teaching.tenant_id, teaching.school_year_id, teaching.id, teaching.class_id, teaching.subject_id, unitaBeta.id, 'x', '2026-10-06']
     ),
     (e) => e.code === '23503'
@@ -1298,11 +1299,11 @@ test('Report studente v2.7: ogni osservazione dello storico porta percentuale (v
   assert.ok(num2.osservazioni.every((o) => o.nota === null), 'nessuna nota registrata');
 
   const prima = num2.osservazioni[0];
-  await pool.query("UPDATE observations SET note = 'Con materiale concreto' WHERE id = $1", [prima.observationId]);
+  await pool.query("UPDATE observations SET note = 'Con materiale concreto', lingua_nota = 'it' WHERE id = $1", [prima.observationId]);
   try {
     assert.equal((await leggi()).osservazioni[0].nota, 'Con materiale concreto');
   } finally {
-    await pool.query('UPDATE observations SET note = NULL WHERE id = $1', [prima.observationId]);
+    await pool.query('UPDATE observations SET note = NULL, lingua_nota = NULL WHERE id = $1', [prima.observationId]);
   }
 
   // Scala 1-4 di Beta: il valore 2 vale 50%, non 33,33 (quella è solo la posizione sul radar).

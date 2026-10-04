@@ -20,6 +20,8 @@ const progresso = require('../queries/progresso');
 const { getSchoolLevels } = require('../queries/configurazione');
 const { creaRoleAssignment } = require('../queries/rbac');
 const { datiNonValidi } = require('../lib/erroreApplicativo');
+const { lingueAbilitate, risolviLinguaTenant, aggiornaLinguaSessione } = require('../lib/lingua');
+const { CAMPI, salvaTraduzione, completezzaTraduzioni } = require('../lib/contenuti');
 const { asincrono } = require('../lib/asincrono');
 
 const router = express.Router();
@@ -66,6 +68,8 @@ router.post('/teachings/:teachingId/activities', asincrono(async (req, res) => {
     });
     return dominio.creaActivity(client, {
       teachingId, tenantId: req.tenantId, nome, dataAttivita, pedagogicalUnitId: Number(pedagogicalUnitId),
+      // Contenuto d'autore: registrato nella lingua della sessione in cui è scritto (B).
+      linguaContenuto: req.lingua.lingua,
     });
   });
   res.status(201).json(risultato);
@@ -87,8 +91,8 @@ router.get('/teachings/:teachingId/students', asincrono(async (req, res) => {
 router.get('/teachings/:teachingId/students/:enrollmentId/progress', asincrono(async (req, res) => {
   const teachingId = Number(req.params.teachingId);
   const enrollmentId = Number(req.params.enrollmentId);
-  if (!Number.isInteger(teachingId)) throw datiNonValidi('Identificativo Teaching non valido.');
-  if (!Number.isInteger(enrollmentId)) throw datiNonValidi('Identificativo iscrizione non valido.');
+  if (!Number.isInteger(teachingId)) throw datiNonValidi('ERR_INVALID_IDENTIFIER', { campo: 'UI_FIELD_TEACHING_ID' });
+  if (!Number.isInteger(enrollmentId)) throw datiNonValidi('ERR_INVALID_IDENTIFIER', { campo: 'UI_FIELD_ENROLLMENT_ID' });
   await richiedePermesso(pool, {
     accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
     ...(await scopeDiTeaching(teachingId, req.tenantId)),
@@ -175,7 +179,7 @@ router.put('/activities/:activityId/enrollments/:enrollmentId/criteria/:criterio
   const criterionId = Number(req.params.criterionId);
   const valore = req.body ? req.body.valore : undefined;
   if (valore !== null && typeof valore !== 'number') {
-    throw datiNonValidi('Il campo valore deve essere un numero oppure null (non valutato).');
+    throw datiNonValidi('ERR_OBSERVATION_VALUE_INVALID');
   }
 
   const risultato = await transazione(async (client) => {
@@ -232,6 +236,68 @@ router.post('/role-assignments', asincrono(async (req, res) => {
     return creato;
   });
   res.status(201).json(risultato);
+}));
+
+// PUT /api/me/lingua  body: { lingua } — preferenza linguistica dell'utente per il tenant attivo (C2).
+// Non è un parametro di richiesta: è una preferenza persistente, accettata solo se la lingua è abilitata
+// nel tenant. La lingua della sessione viene subito rivalutata dal server.
+router.put('/me/lingua', asincrono(async (req, res) => {
+  const lingua = req.body ? req.body.lingua : undefined;
+  const abilitate = (await lingueAbilitate(pool, req.tenantId)).map((l) => l.codice);
+  if (typeof lingua !== 'string' || !abilitate.includes(lingua)) throw datiNonValidi('ERR_LANGUAGE_NOT_ENABLED');
+  const risultato = await transazione(async (client) => {
+    const { rowCount } = await client.query(
+      "UPDATE memberships SET lingua_preferita = $1 WHERE account_id = $2 AND tenant_id = $3 AND stato = 'attiva'",
+      [lingua, req.accountId, req.tenantId]
+    );
+    if (rowCount === 0) throw datiNonValidi('ERR_LANGUAGE_PREFERENCE_UNAVAILABLE');
+    const contesto = await risolviLinguaTenant(client, { accountId: req.accountId, tenantId: req.tenantId });
+    await aggiornaLinguaSessione(client, req.sessione.id, contesto.lingua);
+    return { lingua: contesto.lingua, direzione: contesto.direzione, locale: contesto.locale };
+  });
+  res.json(risultato);
+}));
+
+// GET /api/admin/traduzioni/completezza — completezza delle traduzioni dei contenuti per lingua abilitata (B-6).
+router.get('/admin/traduzioni/completezza', asincrono(async (req, res) => {
+  await richiedePermesso(pool, { accountId: req.accountId, permesso: 'tenant.manage_config', tenantId: req.tenantId });
+  const lingue = (await lingueAbilitate(pool, req.tenantId)).map((l) => l.codice);
+  res.json({
+    linguaOrigine: req.lingua.linguaOrigine,
+    lingue: await completezzaTraduzioni(pool, { tenantId: req.tenantId, linguaOrigine: req.lingua.linguaOrigine, lingue }),
+  });
+}));
+
+// PUT /api/admin/traduzioni  body: { campo, riferimento, lingua, testo } — traduzione di un contenuto
+// pedagogico (B). Sottoposta ad audit nella stessa transazione (B-5). Isolamento: le FK composte di
+// content_translations rifiutano qualunque riferimento a un oggetto di un altro tenant.
+router.put('/admin/traduzioni', asincrono(async (req, res) => {
+  const { campo, riferimento, lingua, testo } = req.body || {};
+  if (!CAMPI[campo]) throw datiNonValidi('ERR_TRANSLATION_FIELD_UNKNOWN');
+  const valori = [].concat(riferimento);
+  if (valori.length !== CAMPI[campo].colonne.length || !valori.every((v) => Number.isInteger(v))) {
+    throw datiNonValidi('ERR_INVALID_IDENTIFIER', { campo: 'UI_FIELD_RIFERIMENTO' });
+  }
+  if (typeof testo !== 'string' || testo.trim() === '') throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_TESTO' });
+  const abilitate = (await lingueAbilitate(pool, req.tenantId)).map((l) => l.codice);
+  if (!abilitate.includes(lingua) || lingua === req.lingua.linguaOrigine) throw datiNonValidi('ERR_LANGUAGE_NOT_ENABLED');
+  const risultato = await transazione(async (client) => {
+    await richiedePermesso(client, { accountId: req.accountId, permesso: 'tenant.manage_config', tenantId: req.tenantId });
+    const salvata = await salvaTraduzione(client, {
+      tenantId: req.tenantId, lingua, campo, riferimento: valori, testo: testo.trim(), accountId: req.accountId,
+    });
+    await registraAudit(client, {
+      tenantId: req.tenantId,
+      actorAccountId: req.accountId,
+      azione: salvata.prima ? 'content_translation.update' : 'content_translation.create',
+      risorsa: 'content_translation',
+      risorsaId: salvata.id,
+      prima: salvata.prima,
+      dopo: { campo, riferimento: valori, lingua, testo: testo.trim() },
+    });
+    return { id: salvata.id };
+  });
+  res.json(risultato);
 }));
 
 module.exports = router;

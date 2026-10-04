@@ -129,6 +129,8 @@ async function verificaVincoliRichiesti(pool) {
       to_regclass('public.role_assignments') IS NOT NULL AS ha_role_assignments,
       to_regclass('public.sessions') IS NOT NULL AS ha_sessions,
       to_regclass('public.audit_log') IS NOT NULL AS ha_audit_log,
+      to_regclass('public.languages') IS NOT NULL AS ha_languages,
+      to_regclass('public.content_translations') IS NOT NULL AS ha_content_translations,
       EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_role') AS ha_app_role
   `);
   const stato = rows[0];
@@ -137,6 +139,8 @@ async function verificaVincoliRichiesti(pool) {
     !stato.ha_role_assignments && 'tabella role_assignments',
     !stato.ha_sessions && 'tabella sessions',
     !stato.ha_audit_log && 'tabella audit_log',
+    !stato.ha_languages && 'tabella languages (003_lingua_contenuti_v2.sql)',
+    !stato.ha_content_translations && 'tabella content_translations (003_lingua_contenuti_v2.sql)',
     !stato.ha_app_role && 'ruolo app_role (002_audit_append_only.sql)',
   ].filter(Boolean);
   if (mancanti.length > 0) {

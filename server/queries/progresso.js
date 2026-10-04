@@ -164,7 +164,7 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
      WHERE e.id = $1 AND e.tenant_id = $2 AND e.class_id = $3 AND e.school_year_id = $4 AND e.attiva`,
     [enrollmentId, tenantId, teaching.class_id, teaching.school_year_id]
   );
-  if (iscritti.length === 0) throw nonTrovato('Studente non trovato tra gli iscritti attivi della classe di questo Teaching.');
+  if (iscritti.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_ENROLLMENT' });
   const alunno = iscritti[0];
 
   const struttura = await caricaStruttura(client, { subjectId: teaching.subject_id, tenantId });
