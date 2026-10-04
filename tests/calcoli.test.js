@@ -89,3 +89,16 @@ test('mediaSemplicePercentuali: nessun criterio valutato -> percentuale nulla', 
   assert.equal(media.percentuale, null);
   assert.equal(media.criteriConsiderati, 0);
 });
+
+test('risultatoCorrenteMediaMobile: 0,1,2,2 -> ultime 3 = 1,2,2 -> media 1,67; con meno di 3 usa tutte; vuoto = non valutato', () => {
+  const { risultatoCorrenteMediaMobile } = require('../server/lib/calcoloEsiti');
+  const r = risultatoCorrenteMediaMobile([0, 1, 2, 2], 2);
+  assert.equal(r.media, 1.67);
+  assert.equal(r.percentuale, 83.33);
+  assert.equal(r.osservazioniConsiderate, 3);
+  assert.equal(r.osservazioniTotali, 4);
+  assert.equal(risultatoCorrenteMediaMobile([0, 2], 2).media, 1);
+  const vuoto = risultatoCorrenteMediaMobile([], 2);
+  assert.equal(vuoto.media, null);
+  assert.equal(vuoto.percentuale, null);
+});

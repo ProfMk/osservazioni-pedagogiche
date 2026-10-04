@@ -66,4 +66,33 @@ function mediaSemplicePercentuali(esitiValutati) {
   };
 }
 
-module.exports = { arrotondaPerPresentazione, calcolaEsito, calcolaGiudizio, mediaSemplicePercentuali };
+/**
+ * Finestra della media mobile del risultato CORRENTE di un criterio: le ultime
+ * N osservazioni dello studente su quel criterio (o tutte, se sono meno).
+ * Lo storico completo non viene mai scartato: la media è solo una lettura derivata.
+ */
+const FINESTRA_MEDIA_MOBILE = 3;
+
+/**
+ * Risultato corrente di UN criterio per uno studente (media mobile).
+ * @param {number[]} valoriCronologici - i valori osservati, GIÀ in ordine cronologico (dal più vecchio).
+ * @param {number} valoreMassimo - massimo della scala applicabile.
+ * @returns {{media: number|null, punteggioOttenuto: number|null, punteggioMassimo: number|null,
+ *   percentuale: number|null, percentualeEsatta: number|null, osservazioniConsiderate: number, osservazioniTotali: number}}
+ * Esempio: [0, 1, 2, 2] -> finestra [1, 2, 2] -> media 1,67 (5/3 arrotondato a 2 decimali).
+ */
+function risultatoCorrenteMediaMobile(valoriCronologici, valoreMassimo, finestra = FINESTRA_MEDIA_MOBILE) {
+  const considerati = valoriCronologici.slice(-finestra);
+  const esito = calcolaEsito(considerati, valoreMassimo);
+  return {
+    ...esito,
+    media: considerati.length === 0 ? null : arrotondaPerPresentazione(esito.punteggioOttenuto / considerati.length),
+    osservazioniConsiderate: considerati.length,
+    osservazioniTotali: valoriCronologici.length,
+  };
+}
+
+module.exports = {
+  arrotondaPerPresentazione, calcolaEsito, calcolaGiudizio, mediaSemplicePercentuali,
+  FINESTRA_MEDIA_MOBILE, risultatoCorrenteMediaMobile,
+};

@@ -80,6 +80,20 @@ router.get('/teachings/:teachingId/students', asincrono(async (req, res) => {
   res.json(await dominio.getStudentiDiTeaching(pool, teachingId, req.tenantId));
 }));
 
+// GET /api/teachings/:teachingId/students/:enrollmentId/progress — avanzamento pedagogico dello studente
+// (storico per criterio + media mobile delle ultime 3 osservazioni). Stesso permesso/scope del roster:
+// l'iscrizione è poi verificata lato server contro classe/anno/tenant del Teaching.
+router.get('/teachings/:teachingId/students/:enrollmentId/progress', asincrono(async (req, res) => {
+  const teachingId = Number(req.params.teachingId);
+  const enrollmentId = Number(req.params.enrollmentId);
+  if (!Number.isInteger(enrollmentId)) throw datiNonValidi('Identificativo iscrizione non valido.');
+  await richiedePermesso(pool, {
+    accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
+    ...(await scopeDiTeaching(teachingId, req.tenantId)),
+  });
+  res.json(await dominio.getProgressoStudenteDiTeaching(pool, { teachingId, enrollmentId, tenantId: req.tenantId }));
+}));
+
 // GET /api/teachings/:teachingId/assessments — Assessment del Teaching (pagina "Valutazioni", sola lettura in V1).
 router.get('/teachings/:teachingId/assessments', asincrono(async (req, res) => {
   const teachingId = Number(req.params.teachingId);

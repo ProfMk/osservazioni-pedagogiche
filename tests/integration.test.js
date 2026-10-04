@@ -833,3 +833,123 @@ test('Platform admin: crea un nuovo tenant (audit incluso)', async () => {
   assert.equal(audit.length, 1);
   assert.equal(audit[0].actor_account_id, (await pool.query("SELECT id FROM accounts WHERE email='platform.admin@platform.test'")).rows[0].id);
 });
+
+// ===========================================================================
+// SEZIONE J — AVANZAMENTO PEDAGOGICO DELLO STUDENTE (storico + media mobile ultime 3)
+// ===========================================================================
+
+async function contestoProgressoAlfa2A() {
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const teachings = await sessione.get('/teachings');
+  const teaching2A = teachings.corpo.find((t) => t.classe === '2A').teaching_id;
+  const studenti = await sessione.get(`/teachings/${teaching2A}/students`);
+  return { sessione, teaching2A, studenti: studenti.corpo };
+}
+
+function criterioNum1(progresso) {
+  return progresso.nuclei.find((n) => n.nome === 'Numeri').criteri.find((c) => c.codice === 'NUM-1');
+}
+
+test('Progresso studente: il docente vede l\'avanzamento di uno studente del proprio Teaching (nuclei, criteri, storico)', async () => {
+  const { sessione, teaching2A, studenti } = await contestoProgressoAlfa2A();
+  const s1 = studenti.find((s) => s.nome === 'A-Student-01');
+  const r = await sessione.get(`/teachings/${teaching2A}/students/${s1.enrollment_id}/progress`);
+  assert.equal(r.status, 200);
+  assert.equal(r.corpo.alunno.nome, 'A-Student-01');
+  assert.deepEqual(r.corpo.regola, { tipo: 'media_mobile', finestra: 3 });
+  const num1 = criterioNum1(r.corpo);
+  // Seed: la prima osservazione su NUM-1 è un 2 del 2026-10-06 (test precedenti possono averne aggiunte altre allo stesso studente).
+  assert.equal(num1.osservazioni[0].valore, 2);
+  assert.equal(num1.osservazioni[0].dataOsservazione, '2026-10-06');
+  assert.equal(num1.risultatoCorrente.osservazioniTotali, num1.osservazioni.length);
+  assert.equal(num1.risultatoCorrente.osservazioniConsiderate, Math.min(3, num1.osservazioni.length));
+  // I criteri senza osservazioni compaiono comunque, come non valutati.
+  const num2 = r.corpo.nuclei.find((n) => n.nome === 'Numeri').criteri.find((c) => c.codice === 'NUM-2');
+  assert.equal(num2.risultatoCorrente.percentuale, null);
+  assert.deepEqual(num2.osservazioni, []);
+  // Le osservazioni di Italiano (altro Teaching) non entrano nel progresso di Matematica.
+  assert.ok(!r.corpo.nuclei.some((n) => n.criteri.some((c) => c.codice === 'LET-1')));
+});
+
+test('Progresso studente: un docente non può vedere lo studente di un altro Teaching (403) né di un\'altra classe (404)', async () => {
+  const { sessione, teaching2A, studenti } = await contestoProgressoAlfa2A();
+  const teachingItaliano = (await pool.query(
+    "SELECT t.id FROM teachings t JOIN accounts a ON a.id=t.account_id WHERE a.email='teacher.italian.a@alfa.test'"
+  )).rows[0].id;
+  const s1 = studenti.find((s) => s.nome === 'A-Student-01');
+  // Stesso studente, ma tramite un Teaching su cui il docente di Matematica non ha alcun ruolo.
+  const r403 = await sessione.get(`/teachings/${teachingItaliano}/students/${s1.enrollment_id}/progress`);
+  assert.equal(r403.status, 403);
+  // Teaching proprio (2A) ma iscrizione di uno studente della 2B: non appartiene alla classe del Teaching.
+  const enrollment2B = (await pool.query(
+    'SELECT e.id FROM enrollments e JOIN people p ON p.id = e.student_person_id WHERE p.nome = $1', ['A-Student-03']
+  )).rows[0].id;
+  const r404 = await sessione.get(`/teachings/${teaching2A}/students/${enrollment2B}/progress`);
+  assert.equal(r404.status, 404);
+  const rNonNumerico = await sessione.get(`/teachings/${teaching2A}/students/abc/progress`);
+  assert.equal(rNonNumerico.status, 400, 'identificativo non numerico rifiutato');
+});
+
+test('Progresso studente: un utente con tenant attivo diverso non vede studente/Teaching di Alfa (404)', async () => {
+  const { teaching2A, studenti } = await contestoProgressoAlfa2A();
+  const s1 = studenti.find((s) => s.nome === 'A-Student-01');
+  const sessioneBeta = await loginESwitch('teacher.math.b@beta.test', 'beta');
+  const r = await sessioneBeta.get(`/teachings/${teaching2A}/students/${s1.enrollment_id}/progress`);
+  assert.equal(r.status, 404);
+  const sessioneMulti = await loginESwitch('multitenant.user@example.test', 'beta');
+  const rMulti = await sessioneMulti.get(`/teachings/${teaching2A}/students/${s1.enrollment_id}/progress`);
+  assert.equal(rMulti.status, 404);
+});
+
+test('Progresso studente: media mobile delle ultime 3 (0,1,2,2 -> 1,67), ordine cronologico, storico completo; report attività separato', async () => {
+  const { sessione, teaching2A, studenti } = await contestoProgressoAlfa2A();
+  const s2 = studenti.find((s) => s.nome === 'A-Student-02'); // seed: NUM-1 = 0 il 2026-10-06
+  const unita = (await sessione.get(`/teachings/${teaching2A}/pedagogical-units`)).corpo.find((u) => u.nome === 'Numeri');
+
+  // Create volutamente fuori ordine cronologico: l'ordine deve dipendere dalla data, non dall'inserimento.
+  const nuove = {};
+  for (const [nome, data, valore] of [['Prova C', '2026-10-27', 2], ['Prova A', '2026-10-13', 1], ['Prova B', '2026-10-20', 2]]) {
+    const a = await sessione.post(`/teachings/${teaching2A}/activities`, { nome, dataAttivita: data, pedagogicalUnitId: unita.id });
+    assert.equal(a.status, 201);
+    const griglia = await sessione.get(`/activities/${a.corpo.activity_id}/griglia`);
+    const num1 = griglia.corpo.criteri.find((c) => c.codice === 'NUM-1');
+    const w = await sessione.put(`/activities/${a.corpo.activity_id}/enrollments/${s2.enrollment_id}/criteria/${num1.id}`, { valore });
+    assert.equal(w.status, 200);
+    nuove[nome] = a.corpo.activity_id;
+  }
+
+  const r = await sessione.get(`/teachings/${teaching2A}/students/${s2.enrollment_id}/progress`);
+  assert.equal(r.status, 200);
+  const num1 = criterioNum1(r.corpo);
+  // Storico COMPLETO, in ordine cronologico (lo 0 del seed, poi 1, 2, 2).
+  assert.deepEqual(num1.osservazioni.map((o) => o.valore), [0, 1, 2, 2]);
+  assert.deepEqual(num1.osservazioni.map((o) => o.dataOsservazione), ['2026-10-06', '2026-10-13', '2026-10-20', '2026-10-27']);
+  assert.deepEqual(num1.osservazioni.map((o) => o.inRisultatoCorrente), [false, true, true, true]);
+  // Valore corrente: ultime 3 = 1, 2, 2 -> 5/3 = 1,67 (83,33%); lo 0 resta nello storico ma non nella media.
+  assert.equal(num1.risultatoCorrente.media, 1.67);
+  assert.equal(num1.risultatoCorrente.osservazioniConsiderate, 3);
+  assert.equal(num1.risultatoCorrente.osservazioniTotali, 4);
+  assert.equal(num1.risultatoCorrente.percentuale, 83.33);
+  assert.equal(num1.risultatoCorrente.giudizio, 'DISTINTO');
+  // Nucleo e complessivo: un solo criterio valutato -> coincidono con il criterio.
+  assert.equal(r.corpo.nuclei.find((n) => n.nome === 'Numeri').risultatoCorrente.percentuale, 83.33);
+  assert.equal(r.corpo.complessivo.percentuale, 83.33);
+  assert.equal(r.corpo.complessivo.criteriValutati, 1);
+
+  // Lo storico non è stato sostituito dalla media: 4 righe reali nel database.
+  const { rows } = await pool.query(
+    'SELECT count(*)::int AS n FROM observations WHERE enrollment_id = $1 AND criterion_id = $2', [s2.enrollment_id, num1.id]
+  );
+  assert.equal(rows[0].n, 4);
+
+  // Il report della SINGOLA attività usa solo i dati di quell'attività (niente media mobile, niente altre attività).
+  const reportB = await sessione.get(`/activities/${nuove['Prova B']}/report-classe`);
+  assert.equal(reportB.status, 200);
+  const n1 = reportB.corpo.unitaPedagogiche[0].criteri.find((c) => c.codice === 'NUM-1');
+  assert.equal(n1.valutati, 1);
+  assert.deepEqual(n1.distribuzione, { 0: 0, 1: 0, 2: 1 });
+  assert.equal(n1.esito.percentuale, 100, 'solo il 2 di questa attività: 100%, non 83,33 (media mobile)');
+  const grigliaB = await sessione.get(`/activities/${nuove['Prova B']}/griglia`);
+  const riga = grigliaB.corpo.righe.find((x) => x.enrollmentId === s2.enrollment_id);
+  assert.deepEqual(riga.celle.filter((c) => c.valore !== null).map((c) => c.valore), [2]);
+});

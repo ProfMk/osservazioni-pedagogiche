@@ -4,14 +4,16 @@
  * Dominio operativo (sez. 28-34): Teaching, Activity, Observation, e il
  * Report classe (fotografia di una singola attività, senza media mobile —
  * stessa scelta già validata nel prototipo, qui riportata sul nuovo schema
- * multi-tenant). L'aggregazione storica per studente nel tempo (media
- * mobile delle ultime osservazioni) del prototipo NON è stata riportata in
- * questa V1: vedi "Remaining work" nella risposta finale.
+ * multi-tenant). L'avanzamento pedagogico del singolo studente nel tempo
+ * (media mobile delle ultime osservazioni per criterio) è separato e vive in
+ * getProgressoStudenteDiTeaching.
  */
 
 const { nonTrovato, datiNonValidi } = require('../lib/erroreApplicativo');
 const { getCriteria, getScalaApplicabile, getBandeGiudizio } = require('./configurazione');
-const { calcolaEsito, calcolaGiudizio, mediaSemplicePercentuali } = require('../lib/calcoloEsiti');
+const {
+  calcolaEsito, calcolaGiudizio, mediaSemplicePercentuali, risultatoCorrenteMediaMobile, FINESTRA_MEDIA_MOBILE,
+} = require('../lib/calcoloEsiti');
 
 /** I Teaching di cui l'account è titolare (account_id sul Teaching stesso), in un tenant. */
 async function getTeachingsPropri(client, { accountId, tenantId }) {
@@ -391,7 +393,118 @@ async function getReportClasseActivity(client, { activityId, tenantId }) {
   };
 }
 
+/**
+ * Avanzamento pedagogico di UNO studente nel contesto di un Teaching (tenant, anno, classe e materia
+ * del Teaching): per ogni nucleo tematico (PedagogicalUnit della materia) e per ogni criterio, lo
+ * storico COMPLETO delle osservazioni in ordine cronologico e il risultato corrente = media mobile
+ * delle ultime FINESTRA_MEDIA_MOBILE (3) osservazioni di quel criterio.
+ *
+ * Ambito dei dati: solo le osservazioni sulle Activity di QUESTO Teaching (stesso criterio di
+ * autorizzazione dell'endpoint: un docente non vede le osservazioni registrate da altri Teaching).
+ * L'iscrizione è verificata lato server nella classe/anno/tenant del Teaching: l'enrollmentId
+ * ricevuto dal client non determina mai da solo cosa si legge.
+ *
+ * Distinto dal Report classe: quello mostra una sola attività e NON usa la media mobile.
+ */
+async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId, tenantId }) {
+  const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
+
+  const { rows: iscritti } = await client.query(
+    `SELECT e.id AS enrollment_id, e.student_person_id, p.nome, p.cognome
+     FROM enrollments e JOIN people p ON p.id = e.student_person_id AND p.tenant_id = e.tenant_id
+     WHERE e.id = $1 AND e.tenant_id = $2 AND e.class_id = $3 AND e.school_year_id = $4 AND e.attiva`,
+    [enrollmentId, tenantId, teaching.class_id, teaching.school_year_id]
+  );
+  if (iscritti.length === 0) throw nonTrovato('Studente non trovato tra gli iscritti attivi della classe di questo Teaching.');
+  const alunno = iscritti[0];
+
+  const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: teaching.school_level_id });
+  const bande = await getBandeGiudizio(client, { tenantId, schoolLevelId: teaching.school_level_id });
+  const etichette = new Map(scala.valori.map((v) => [v.valore, v.etichetta]));
+
+  const { rows: struttura } = await client.query(
+    `SELECT pu.id AS unit_id, pu.nome AS unit_nome, c.id AS criterion_id, c.codice, c.descrizione
+     FROM pedagogical_units pu
+     LEFT JOIN criteria c ON c.pedagogical_unit_id = pu.id AND c.stato = 'attivo'
+     WHERE pu.subject_id = $1 AND pu.tenant_id = $2 AND pu.stato = 'attiva'
+     ORDER BY pu.ordine, pu.nome, pu.id, c.ordine`,
+    [teaching.subject_id, tenantId]
+  );
+
+  const { rows: osservazioni } = await client.query(
+    `SELECT o.id AS observation_id, o.criterion_id, o.valore, a.id AS activity_id, a.nome AS attivita,
+            to_char(o.data_osservazione, 'YYYY-MM-DD') AS data_osservazione
+     FROM observations o JOIN activities a ON a.id = o.activity_id AND a.tenant_id = o.tenant_id
+     WHERE o.enrollment_id = $1 AND o.tenant_id = $2 AND a.teaching_id = $3
+     ORDER BY o.data_osservazione, a.data_attivita, a.id, o.id`,
+    [enrollmentId, tenantId, teachingId]
+  );
+  const perCriterio = new Map();
+  osservazioni.forEach((o) => {
+    if (!perCriterio.has(o.criterion_id)) perCriterio.set(o.criterion_id, []);
+    perCriterio.get(o.criterion_id).push(o);
+  });
+
+  const nuclei = new Map();
+  struttura.forEach((r) => {
+    if (!nuclei.has(r.unit_id)) nuclei.set(r.unit_id, { id: r.unit_id, nome: r.unit_nome, criteri: [] });
+    if (r.criterion_id === null) return;
+    const storico = perCriterio.get(r.criterion_id) || [];
+    const corrente = risultatoCorrenteMediaMobile(storico.map((o) => o.valore), scala.valoreMassimo);
+    const nelleUltime = new Set(storico.slice(-FINESTRA_MEDIA_MOBILE).map((o) => o.observation_id));
+    nuclei.get(r.unit_id).criteri.push({
+      id: r.criterion_id,
+      codice: r.codice,
+      descrizione: r.descrizione,
+      risultatoCorrente: {
+        media: corrente.media,
+        percentuale: corrente.percentuale,
+        giudizio: calcolaGiudizio(corrente.percentualeEsatta, bande),
+        osservazioniConsiderate: corrente.osservazioniConsiderate,
+        osservazioniTotali: corrente.osservazioniTotali,
+        punteggioOttenuto: corrente.punteggioOttenuto,
+        punteggioMassimo: corrente.punteggioMassimo,
+      },
+      osservazioni: storico.map((o) => ({
+        observationId: o.observation_id,
+        activityId: o.activity_id,
+        attivita: o.attivita,
+        dataOsservazione: o.data_osservazione,
+        valore: o.valore,
+        etichetta: etichette.get(o.valore) || null,
+        inRisultatoCorrente: nelleUltime.has(o.observation_id),
+      })),
+    });
+  });
+
+  /** Risultato corrente di un insieme di criteri: media semplice, a pesi uguali, dei soli criteri valutati. */
+  const aggrega = (criteri) => {
+    const valutati = criteri.filter((c) => c.risultatoCorrente.osservazioniConsiderate > 0);
+    const media = mediaSemplicePercentuali(valutati.map((c) => c.risultatoCorrente));
+    return {
+      percentuale: media.percentuale,
+      giudizio: calcolaGiudizio(media.percentualeEsatta, bande),
+      criteriConsiderati: media.criteriConsiderati,
+      criteriValutati: valutati.length,
+      criteriTotali: criteri.length,
+    };
+  };
+  const elencoNuclei = [...nuclei.values()].map((n) => ({
+    ...n, grigliaNonConfigurata: n.criteri.length === 0, risultatoCorrente: aggrega(n.criteri),
+  }));
+
+  return {
+    teaching: { id: teaching.id, materia: teaching.materia, classe: teaching.classe },
+    alunno: { enrollmentId: alunno.enrollment_id, studentPersonId: alunno.student_person_id, cognome: alunno.cognome, nome: alunno.nome },
+    scala: { id: scala.id, nome: scala.nome, valori: scala.valori, valoreMassimo: scala.valoreMassimo },
+    regola: { tipo: 'media_mobile', finestra: FINESTRA_MEDIA_MOBILE },
+    complessivo: aggrega(elencoNuclei.flatMap((n) => n.criteri)),
+    nuclei: elencoNuclei,
+  };
+}
+
 module.exports = {
+  getProgressoStudenteDiTeaching,
   getTeachingsPropri, getTeachingsDelTenant, verificaTeachingNelTenant, getPedagogicalUnitsDiTeaching,
   getActivitiesDiTeaching, creaActivity, verificaActivityNelTenant, getGrigliaActivity, salvaObservation,
   getReportClasseActivity, getStudentiDiTeaching, getAssessmentsDiTeaching,

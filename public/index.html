@@ -587,8 +587,74 @@ async function mostraStudentiDiTeaching(teaching) {
     contenuto.append(el('h2', { textContent: `Studenti — ${teaching.materia} (${teaching.classe})` }));
     if (studenti.length === 0) { contenuto.append(el('p', { textContent: 'Nessuno studente iscritto.' })); return; }
     const tabella = el('table', { className: 'semplice' }, [el('tr', {}, ['Cognome', 'Nome'].map((t) => el('th', { textContent: t })))]);
-    studenti.forEach((s) => tabella.append(el('tr', {}, [el('td', { textContent: s.cognome }), el('td', { textContent: s.nome })])));
+    studenti.forEach((s) => {
+      const apri = (e) => { e.preventDefault(); mostraProgressoStudente(teaching, s); };
+      const link = (testo) => el('a', { href: '#', textContent: testo, onclick: apri, title: 'Apri l\'avanzamento pedagogico' });
+      tabella.append(el('tr', {}, [el('td', {}, [link(s.cognome)]), el('td', {}, [link(s.nome)])]));
+    });
     contenuto.append(tabella);
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
+// --- Avanzamento pedagogico di uno studente (media mobile ultime 3 osservazioni) ----------
+
+async function mostraProgressoStudente(teaching, studente) {
+  mostraErrore(null);
+  const nomeStudente = `${studente.cognome} ${studente.nome}`;
+  const tornaAStudenti = { testo: 'Studenti', onclick: () => mostraStudentiDiTeaching(teaching) };
+  impostaPercorso(teaching.viaMateria
+    ? percorsoTeaching(teaching, [tornaAStudenti, { testo: nomeStudente }])
+    : [CROCE_DASHBOARD, tornaAStudenti, { testo: nomeStudente }]);
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const p = await api(`/teachings/${teaching.teaching_id}/students/${studente.enrollment_id}/progress`);
+    contenuto.innerHTML = '';
+    contenuto.append(el('div', { className: 'barra-sezioni' }, [
+      el('button', { className: 'azione', textContent: '← Torna agli studenti', onclick: () => mostraStudentiDiTeaching(teaching) }),
+    ]));
+    contenuto.append(el('h2', { textContent: `Avanzamento pedagogico — ${nomeStudente}` }));
+    contenuto.append(el('p', {
+      className: 'sub',
+      textContent: `${p.teaching.materia} · ${p.teaching.classe}. Risultato corrente = media delle ultime ${p.regola.finestra} osservazioni di ogni criterio `
+        + '(nucleo e materia: media dei criteri valutati, a pesi uguali). Lo storico mostra tutte le osservazioni; quelle in grassetto entrano nella media. '
+        + 'Non è il risultato di una singola attività (vedi "Report classe").',
+    }));
+    const c = p.complessivo;
+    contenuto.append(el('p', {
+      textContent: `Risultato corrente complessivo: ${testoEsito(c)} · ${c.criteriValutati}/${c.criteriTotali} criteri valutati`,
+    }));
+    if (p.nuclei.length === 0) { contenuto.append(el('p', { textContent: 'Nessun nucleo tematico configurato per questa materia.' })); return; }
+    p.nuclei.forEach((n) => {
+      const corpo = el('div', { className: 'corpo-nucleo' });
+      if (n.grigliaNonConfigurata) {
+        corpo.append(el('p', { textContent: 'Nessun criterio configurato per questo nucleo.' }));
+      }
+      n.criteri.forEach((cr) => {
+        const r = cr.risultatoCorrente;
+        corpo.append(el('div', { className: 'sezione-titolo', textContent: `${cr.codice} — ${cr.descrizione}` }));
+        corpo.append(el('p', {
+          textContent: r.percentuale === null
+            ? 'Risultato corrente: non valutato.'
+            : `Risultato corrente: media ${numeroIt(r.media)} (${r.osservazioniConsiderate < r.osservazioniTotali
+              ? `ultime ${r.osservazioniConsiderate} di ${r.osservazioniTotali}` : `tutte le ${r.osservazioniTotali} osservazioni`}) · ${testoEsito(r)}`,
+        }));
+        if (cr.osservazioni.length > 0) {
+          const tabella = el('table', {}, [el('tr', {}, ['Data', 'Attività', 'Valore', 'Nella media'].map((t) => el('th', { textContent: t })))]);
+          cr.osservazioni.forEach((o) => tabella.append(el('tr', { style: o.inRisultatoCorrente ? 'font-weight:600' : '' }, [
+            el('td', { textContent: new Date(o.dataOsservazione + 'T00:00:00').toLocaleDateString('it-IT') }),
+            el('td', { textContent: o.attivita }),
+            el('td', { textContent: `${o.valore}${o.etichetta ? ` · ${o.etichetta}` : ''}` }),
+            el('td', { textContent: o.inRisultatoCorrente ? 'sì' : 'no' }),
+          ])));
+          corpo.append(tabella);
+        }
+      });
+      contenuto.append(el('details', { className: 'nucleo', open: true }, [
+        el('summary', {}, [document.createTextNode(n.nome), el('span', { className: 'badge', textContent: testoEsito(n.risultatoCorrente) })]),
+        corpo,
+      ]));
+    });
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
