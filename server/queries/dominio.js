@@ -11,7 +11,8 @@
 
 const { nonTrovato, datiNonValidi } = require('../lib/erroreApplicativo');
 const { getCriteria, getScalaApplicabile, getBandeGiudizio } = require('./configurazione');
-const { calcolaEsito, calcolaGiudizio, mediaSemplicePercentuali } = require('../lib/calcoloEsiti');
+const { calcolaEsito, mediaSemplicePercentuali } = require('../lib/calcoloEsiti');
+const { preparaBande, giudizioDi } = require('../lib/calcoloProgresso');
 
 /** I Teaching di cui l'account è titolare (account_id sul Teaching stesso), in un tenant. */
 async function getTeachingsPropri(client, { accountId, tenantId }) {
@@ -255,7 +256,7 @@ async function getGrigliaActivity(client, { activityId, tenantId }) {
     classId: activityInfo.class_id, tenantId: activityInfo.tenant_id, schoolYearId: activityInfo.school_year_id,
   });
   const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: activityInfo.school_level_id });
-  const bande = await getBandeGiudizio(client, { tenantId, schoolLevelId: activityInfo.school_level_id });
+  const bande = preparaBande(await getBandeGiudizio(client, { tenantId, schoolLevelId: activityInfo.school_level_id }));
 
   const { rows: osservazioni } = await client.query(
     'SELECT id AS observation_id, enrollment_id, criterion_id, valore, note FROM observations WHERE activity_id = $1',
@@ -278,7 +279,7 @@ async function getGrigliaActivity(client, { activityId, tenantId }) {
       celle,
       valutazionePresenti: presenti.length,
       valutazioniTotali: criteri.length,
-      esito: { ...esito, giudizio: calcolaGiudizio(esito.percentualeEsatta, bande) },
+      esito: { ...esito, giudizio: giudizioDi(esito.percentualeEsatta, bande).giudizio },
     };
   });
 
@@ -342,10 +343,10 @@ async function salvaObservation(client, { activityId, enrollmentId, criterionId,
  */
 async function getReportClasseActivity(client, { activityId, tenantId }) {
   const griglia = await getGrigliaActivity(client, { activityId, tenantId });
-  const bande = await getBandeGiudizio(client, {
+  const bande = preparaBande(await getBandeGiudizio(client, {
     tenantId,
     schoolLevelId: (await client.query('SELECT school_level_id FROM classes WHERE id = (SELECT class_id FROM activities WHERE id = $1)', [activityId])).rows[0].school_level_id,
-  });
+  }));
 
   if (griglia.grigliaNonConfigurata) {
     return {
@@ -372,13 +373,13 @@ async function getReportClasseActivity(client, { activityId, tenantId }) {
       valutati: punteggi.length,
       nonValutati: griglia.righe.length - punteggi.length,
       distribuzione,
-      esito: { ...esito, giudizio: calcolaGiudizio(esito.percentualeEsatta, bande) },
+      esito: { ...esito, giudizio: giudizioDi(esito.percentualeEsatta, bande).giudizio },
     };
   });
 
   const esitiValutati = criteriConDettaglio.filter((c) => c.valutati > 0).map((c) => c.esito);
   const media = mediaSemplicePercentuali(esitiValutati);
-  const risultato = { percentuale: media.percentuale, giudizio: calcolaGiudizio(media.percentualeEsatta, bande), criteriConsiderati: media.criteriConsiderati };
+  const risultato = { percentuale: media.percentuale, giudizio: giudizioDi(media.percentualeEsatta, bande).giudizio, criteriConsiderati: media.criteriConsiderati };
 
   return {
     activity: griglia.activity,

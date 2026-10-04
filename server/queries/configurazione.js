@@ -73,15 +73,21 @@ async function getScalaApplicabile(client, { tenantId, schoolLevelId }) {
   return { ...scala, valori, valoreMinimo, valoreMassimo };
 }
 
-/** Soglie di giudizio applicabili: stesso pattern override/default della scala (sez. 26). */
+/**
+ * Soglie di giudizio applicabili: stesso pattern override/default della scala (sez. 26).
+ * soglia_centesimi è calcolata da PostgreSQL in aritmetica decimale esatta: la conversione
+ * in centesimi non passa mai per la virgola mobile (Regola B).
+ */
 async function getBandeGiudizio(client, { tenantId, schoolLevelId }) {
   const override = await client.query(
-    'SELECT soglia_minima, etichetta FROM judgment_bands WHERE tenant_id = $1 AND school_level_id = $2 ORDER BY soglia_minima DESC',
+    `SELECT id, soglia_minima, (soglia_minima * 100)::integer AS soglia_centesimi, etichetta
+     FROM judgment_bands WHERE tenant_id = $1 AND school_level_id = $2 ORDER BY soglia_minima DESC`,
     [tenantId, schoolLevelId]
   );
   if (override.rows.length > 0) return override.rows;
   const { rows } = await client.query(
-    'SELECT soglia_minima, etichetta FROM judgment_bands WHERE tenant_id = $1 AND school_level_id IS NULL ORDER BY soglia_minima DESC',
+    `SELECT id, soglia_minima, (soglia_minima * 100)::integer AS soglia_centesimi, etichetta
+     FROM judgment_bands WHERE tenant_id = $1 AND school_level_id IS NULL ORDER BY soglia_minima DESC`,
     [tenantId]
   );
   return rows;

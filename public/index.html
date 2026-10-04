@@ -883,7 +883,7 @@ function bloccoCriterio(criterio, p) {
       : (r.osservazioniTotali === 1 ? '1 osservazione' : `tutte le ${r.osservazioniTotali} osservazioni`);
     blocco.append(el('div', { className: 'riga-dato' }, [
       el('strong', { textContent: `Risultato corrente: ${numeroIt(r.percentuale)}%` }),
-      document.createTextNode(` · media ${numeroIt(r.media)} (scala ${p.scala.valoreMinimo}–${p.scala.valoreMassimo}) · ${quante}`),
+      document.createTextNode(` · ${quante}`),
     ]));
     blocco.append(el('div', { className: 'riga-dato' }, [
       el('span', { className: 'copertura', textContent: `${copertura.simbolo} ${copertura.testo}` }),

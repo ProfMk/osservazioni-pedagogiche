@@ -12,13 +12,13 @@
  * - `posizioneRadar` = (media − minimo) / (massimo − minimo) × 100: serve SOLO
  *   alla geometria del radar, non entra in alcun giudizio o aggregazione.
  *
- * Tutte le aggregazioni lavorano sui valori esatti (`percentualeEsatta`);
- * l'arrotondamento a 2 decimali è solo di presentazione.
+ * Tutte le aggregazioni lavorano sui valori esatti (`percentualeEsatta`); ogni valore
+ * pubblico e ogni banda derivano dall'intero in centesimi kc (Regola B, calcoloEsiti.js).
  */
 
 const {
-  arrotondaPerPresentazione, calcolaEsito, risultatoCorrenteMediaMobile, FINESTRA_MEDIA_MOBILE,
-  TOLLERANZA_NUMERICA: TOLLERANZA, raggiungeSoglia,
+  calcolaEsito, risultatoCorrenteMediaMobile, FINESTRA_MEDIA_MOBILE,
+  centesimi, daCentesimi, centesimiDaDecimale, raggiungeSoglia,
 } = require('./calcoloEsiti');
 
 // Parametri della regola di classe (specifica v2.7, approvati): restituiti anche dall'API.
@@ -35,8 +35,9 @@ function mediaSemplice(valori) {
   return valori.reduce((totale, v) => totale + v, 0) / valori.length;
 }
 
-function arrotondaONullo(valore) {
-  return valore === null ? null : arrotondaPerPresentazione(valore);
+/** Valore pubblico (dettaglio, 2 decimali) di una percentuale esatta: sempre via kc (Regola B). */
+function pubblica(percentualeEsatta) {
+  return daCentesimi(centesimi(percentualeEsatta));
 }
 
 /**
@@ -51,12 +52,21 @@ function arrotondaONullo(valore) {
  */
 function preparaBande(bandeDb) {
   const crescenti = bandeDb
-    .map((b) => ({ sogliaMinima: Number(b.soglia_minima), etichetta: b.etichetta }))
-    .sort((a, b) => a.sogliaMinima - b.sogliaMinima);
-  return crescenti.map((b, livello) => ({ ...b, livello, critica: livello === LIVELLO_BANDA_CRITICA })).reverse();
+    .map((b) => {
+      const sogliaCentesimi = b.soglia_centesimi !== undefined && b.soglia_centesimi !== null
+        ? Number(b.soglia_centesimi)
+        : centesimiDaDecimale(b.soglia_minima);
+      return { id: b.id === undefined ? null : b.id, sogliaCentesimi, sogliaMinima: sogliaCentesimi / 100, etichetta: b.etichetta };
+    })
+    .sort((a, b) => a.sogliaCentesimi - b.sogliaCentesimi);
+  // V2: con una sola banda configurata non esiste banda critica.
+  const esisteCritica = crescenti.length >= 2;
+  return crescenti
+    .map((b, livello) => ({ ...b, livello, critica: esisteCritica && livello === LIVELLO_BANDA_CRITICA }))
+    .reverse();
 }
 
-// Posizione della banda critica nell'ordine crescente delle soglie: la più bassa.
+// Posizione della banda critica nell'ordine crescente delle soglie: la più bassa (se le bande sono almeno due).
 const LIVELLO_BANDA_CRITICA = 0;
 
 const NON_VALUTATO = Object.freeze({ giudizio: '', livelloGiudizio: null, critico: null });
@@ -68,8 +78,9 @@ const NON_VALUTATO = Object.freeze({ giudizio: '', livelloGiudizio: null, critic
  */
 function giudizioDi(percentualeEsatta, bande) {
   if (percentualeEsatta === null || percentualeEsatta === undefined) return { ...NON_VALUTATO };
+  const kc = centesimi(percentualeEsatta);
   for (const banda of bande) {
-    if (raggiungeSoglia(percentualeEsatta, banda.sogliaMinima)) {
+    if (raggiungeSoglia(kc, banda.sogliaCentesimi)) {
       return { giudizio: banda.etichetta, livelloGiudizio: banda.livello, critico: banda.critica };
     }
   }
@@ -88,7 +99,8 @@ function confrontoRelativo(risultato, riferimento) {
   let esito = 'allineato';
   if (risultato.livelloGiudizio > riferimento.livelloGiudizio) esito = 'superiore';
   else if (risultato.livelloGiudizio < riferimento.livelloGiudizio) esito = 'inferiore';
-  return { esito, differenzaPunti: arrotondaPerPresentazione(risultato.percentualeEsatta - riferimento.percentualeEsatta) };
+  // Differenza tra i valori GIÀ mostrati alla stessa precisione (V2 §9): differenza di centesimi.
+  return { esito, differenzaPunti: (centesimi(risultato.percentualeEsatta) - centesimi(riferimento.percentualeEsatta)) / 100 };
 }
 
 /**
@@ -127,7 +139,7 @@ function bandeConPosizioneRadar(bande, scala) {
       etichetta: b.etichetta,
       livello: b.livello,
       critica: b.critica,
-      posizioneRadar: posizione === null || posizione <= TOLLERANZA ? null : arrotondaPerPresentazione(posizione),
+      posizioneRadar: posizione === null || posizione <= 0 ? null : pubblica(posizione),
     };
   });
 }
@@ -142,6 +154,7 @@ function percentualeOsservazione(valore, scala) {
   return calcolaEsito([valore], scala.valoreMassimo).percentuale;
 }
 
+
 /**
  * Risultato di UN criterio per UNO studente.
  * @param {number[]} valoriCronologici - valori delle sole osservazioni VALIDE, dal più vecchio.
@@ -153,7 +166,6 @@ function risultatoCriterioStudente(valoriCronologici, scala, bande) {
   const corrente = risultatoCorrenteMediaMobile(valoriCronologici, scala.valoreMassimo);
   const cumulativo = calcolaEsito(valoriCronologici, scala.valoreMassimo);
   return {
-    media: corrente.media,
     percentuale: corrente.percentuale,
     percentualeEsatta: corrente.percentualeEsatta,
     ...giudizioDi(corrente.percentualeEsatta, bande),
@@ -184,20 +196,20 @@ function aggregaCriteriStudente(criteri, scala, bande) {
   const cumulativoEsatto = valutati.length === 0 ? null : mediaSemplice(valutati.map((c) => c.cumulativo.percentualeEsatta));
   const perLivello = (livello) => criteri.filter((c) => c.livelloCopertura === livello).length;
   return {
-    percentuale: arrotondaONullo(percentualeEsatta),
+    percentuale: pubblica(percentualeEsatta),
     percentualeEsatta,
     ...giudizioDi(percentualeEsatta, bande),
     criteriValutati: valutati.length,
     criteriTotali: criteri.length,
     cumulativo: {
-      percentuale: arrotondaONullo(cumulativoEsatto),
+      percentuale: pubblica(cumulativoEsatto),
       percentualeEsatta: cumulativoEsatto,
       giudizio: giudizioDi(cumulativoEsatto, bande).giudizio,
     },
     copertura: {
       consolidati: perLivello(3), provvisori: perLivello(2), indicativi: perLivello(1), nonValutati: perLivello(0),
     },
-    posizioneRadar: arrotondaONullo(posizioneRadarDaPercentuale(percentualeEsatta, scala)),
+    posizioneRadar: pubblica(posizioneRadarDaPercentuale(percentualeEsatta, scala)),
     // Punto pieno sul radar solo se TUTTI i criteri sono valutati e ciascuno è consolidato.
     puntoPieno: criteri.length > 0 && criteri.every((c) => c.livelloCopertura === LIVELLO_COPERTURA_CONSOLIDATO),
   };
@@ -219,14 +231,15 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
   const criteri = criteriIds.map((id) => {
     const valutati = righeStudenti.map((riga) => riga.get(id)).filter(Boolean);
     const percentualeEsatta = valutati.length === 0 ? null : mediaSemplice(valutati.map((r) => r.percentualeEsatta));
-    const perEtichetta = new Map(bande.map((b) => [b.etichetta, 0]));
+    // B-4: la distribuzione è indicizzata dalla posizione della banda, mai dal suo testo.
+    const perLivello = new Map(bande.map((b) => [b.livello, 0]));
     valutati.forEach((r) => {
-      const { giudizio } = giudizioDi(r.percentualeEsatta, bande);
-      if (perEtichetta.has(giudizio)) perEtichetta.set(giudizio, perEtichetta.get(giudizio) + 1);
+      const { livelloGiudizio } = giudizioDi(r.percentualeEsatta, bande);
+      if (perLivello.has(livelloGiudizio)) perLivello.set(livelloGiudizio, perLivello.get(livelloGiudizio) + 1);
     });
     return {
       id,
-      risultato: { percentuale: arrotondaONullo(percentualeEsatta), percentualeEsatta, ...giudizioDi(percentualeEsatta, bande) },
+      risultato: { percentuale: pubblica(percentualeEsatta), percentualeEsatta, ...giudizioDi(percentualeEsatta, bande) },
       copertura: {
         studentiValutati: valutati.length,
         studentiTotali,
@@ -234,7 +247,7 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
       },
       osservazioniTotali: valutati.reduce((totale, r) => totale + r.osservazioniTotali, 0),
       rappresentativo: valutati.length > studentiTotali * REGOLA_CLASSE.rappresentativitaOltre,
-      distribuzioneGiudizi: bande.map((b) => ({ etichetta: b.etichetta, studenti: perEtichetta.get(b.etichetta) })),
+      distribuzioneGiudizi: bande.map((b) => ({ livello: b.livello, etichetta: b.etichetta, studenti: perLivello.get(b.livello) })),
     };
   });
 
@@ -243,7 +256,7 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
     ? null
     : mediaSemplice(rappresentativi.map((c) => c.risultato.percentualeEsatta));
   const risultato = {
-    percentuale: arrotondaONullo(percentualeNucleo),
+    percentuale: pubblica(percentualeNucleo),
     percentualeEsatta: percentualeNucleo,
     ...giudizioDi(percentualeNucleo, bande),
     criteriRappresentativi: rappresentativi.length,
@@ -258,9 +271,10 @@ function nucleoDiClasse(criteriIds, righeStudenti, bande) {
         const proprio = riga.get(criterio.id);
         const altriValutati = altri.map((id) => riga.get(id)).filter(Boolean);
         if (!proprio || altriValutati.length === 0) return;
-        const differenza = proprio.percentualeEsatta - mediaSemplice(altriValutati.map((r) => r.percentualeEsatta));
+        // P1: "pari" = stesso valore in centesimi (stesso kc).
+        const differenza = centesimi(proprio.percentualeEsatta) - centesimi(mediaSemplice(altriValutati.map((r) => r.percentualeEsatta)));
         confronto.confrontabili += 1;
-        if (Math.abs(differenza) <= TOLLERANZA) confronto.pari += 1;
+        if (differenza === 0) confronto.pari += 1;
         else if (differenza < 0) confronto.inferiori += 1;
         else confronto.superiori += 1;
       });
@@ -317,7 +331,7 @@ function complessivoDiClasse(nuclei, bande) {
     ? null
     : mediaSemplice(rappresentativi.map((c) => c.risultato.percentualeEsatta));
   return {
-    percentuale: arrotondaONullo(percentualeEsatta),
+    percentuale: pubblica(percentualeEsatta),
     percentualeEsatta,
     ...giudizioDi(percentualeEsatta, bande),
     criteriRappresentativi: rappresentativi.length,

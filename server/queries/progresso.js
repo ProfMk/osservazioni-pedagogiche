@@ -113,7 +113,6 @@ function descriviOsservazione(osservazione, scala, etichette, extra) {
 /** Campi pubblici del risultato corrente di un criterio (il valore esatto resta interno al calcolo). */
 function descriviRisultatoCriterio(r) {
   return {
-    media: r.media,
     percentuale: r.percentuale,
     giudizio: r.giudizio,
     livelloGiudizio: r.livelloGiudizio,
