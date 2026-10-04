@@ -128,6 +128,22 @@
   .corpo-nucleo tr.nella-media td { font-weight: 600; }
   .corpo-nucleo tr.non-conteggiata td { color: #8a8c84; font-style: italic; }
   @media (max-width: 640px) { .barra-nucleo { grid-template-columns: 1fr; gap: .2rem; } .complessivo .numero { font-size: 1.8rem; } }
+  /* --- Report globale della classe --- */
+  .letture { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: .8rem 1.6rem; }
+  .lettura { display: flex; flex-direction: column; gap: .25rem; }
+  .lettura .titolo { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--inchiostro-tenue); font-weight: 600; }
+  .lettura .riga { display: flex; gap: .4rem .6rem; align-items: center; flex-wrap: wrap; }
+  .lettura .numero { font-size: 2.2rem; font-weight: 700; line-height: 1.1; }
+  .lettura.storica { border-left: 3px solid var(--riga); padding-left: .9rem; }
+  .lettura.storica .numero { font-size: 1.6rem; font-weight: 600; color: var(--inchiostro-tenue); }
+  .copertura-classe { font-size: .78rem; font-weight: 600; white-space: nowrap; }
+  .copertura-classe.poco_osservato, .copertura-classe.non_osservato { color: #7a5d1e; }
+  .confronto-non-confermato { color: var(--inchiostro-tenue); font-style: italic; }
+  .distribuzione { display: flex; gap: .3rem; flex-wrap: wrap; align-items: center; font-size: .78rem; margin-top: .35rem; }
+  .distribuzione .voce { border: 1px solid var(--riga); border-radius: 6px; padding: .05rem .4rem; background: var(--carta); }
+  .come-leggere ul { margin: .3rem 0 0; padding-left: 1.2rem; font-size: .86rem; }
+  .come-leggere li { margin-bottom: .25rem; }
+  @media (max-width: 640px) { .lettura .numero { font-size: 1.8rem; } }
 </style>
 </head>
 <body>
@@ -1064,6 +1080,318 @@ async function mostraProgressoStudente(teaching, studente) {
   } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
 }
 
+// --- Report globale della classe ----------------------------------------------------------------
+//
+// SOLO presentazione, come il report dello studente: attuale, storico, giudizi, criticità, copertura, confronti
+// e posizioni del radar arrivano già calcolati dal server (GET /teachings/:id/class-progress). Il report è
+// aggregato e anonimo. Tre letture restano sempre separate: livello assoluto (giudizio e criticità, dal solo
+// risultato attuale), confronto relativo (sopra/sotto/allineato) e copertura del dato.
+
+const COPERTURA_CRITERIO_CLASSE = {
+  rappresentativo: { simbolo: '●', testo: 'Rappresentativo', plurale: 'rappresentativi' },
+  poco_osservato: { simbolo: '◐', testo: 'Poco osservato', plurale: 'poco osservati' },
+  non_osservato: { simbolo: '○', testo: 'Non osservato', plurale: 'non osservati' },
+};
+// Confronto RELATIVO di un criterio con il proprio nucleo: sopra/sotto compaiono solo se confermati dalla classe.
+const CONFRONTI_CON_NUCLEO = {
+  superiore: { simbolo: '▲', testo: 'Sopra il nucleo' },
+  inferiore: { simbolo: '▼', testo: 'Sotto il nucleo' },
+  allineato: { simbolo: '=', testo: 'Allineato al nucleo' },
+};
+const MOTIVI_NON_CONTEGGIATE_CLASSE = {
+  iscrizione_non_attiva: 'iscrizione non attiva',
+  nucleo_non_attivo: 'nucleo non più attivo',
+  criterio_non_attivo: 'criterio non più attivo',
+  attivita_disattivata: 'attività disattivata',
+  scala_non_compatibile: 'scala diversa da quella in uso',
+};
+
+function testoPunti(punti) {
+  let segno = '';
+  if (punti > 0) segno = '+';
+  else if (punti < 0) segno = '−';
+  return `${segno}${numeroIt(Math.abs(punti))} punti`;
+}
+
+function quanti(numero, singolare, plurale) {
+  return `${numero} ${numero === 1 ? singolare : plurale}`;
+}
+
+function testoCoperturaCriteri(perStato) {
+  return Object.entries(COPERTURA_CRITERIO_CLASSE)
+    .map(([stato, voce]) => `${voce.simbolo} ${quanti(perStato[stato], voce.testo.toLowerCase(), voce.plurale)}`).join(' · ');
+}
+
+/**
+ * Confronto di un criterio con il proprio nucleo. Sopra/sotto solo se la classe lo conferma; una differenza
+ * non confermata resta un numero, dichiarato come tale. Non è mai un giudizio sul livello.
+ */
+function testoConfrontoConNucleo(criterio, regola) {
+  const c = criterio.confrontoConNucleo;
+  if (!c) {
+    return criterio.statoCopertura === 'non_osservato'
+      ? 'nessun confronto: criterio non osservato.'
+      : 'nessun confronto: criterio poco osservato, il dato non rappresenta la classe.';
+  }
+  const differenza = c.differenzaPunti === 0 ? '' : ` (${testoPunti(c.differenzaPunti)})`;
+  if (c.esito === 'allineato') return `${CONFRONTI_CON_NUCLEO.allineato.simbolo} ${CONFRONTI_CON_NUCLEO.allineato.testo}${differenza}: stessa banda del nucleo.`;
+  const concordi = c.esito === 'inferiore' ? criterio.confronto.inferiori : criterio.confronto.superiori;
+  const confrontabili = criterio.confronto.confrontabili;
+  if (c.confermato) {
+    const voce = CONFRONTI_CON_NUCLEO[c.esito];
+    return `${voce.simbolo} ${voce.testo}${differenza}, confermato dalla classe (${concordi} studenti su ${confrontabili} confrontabili).`;
+  }
+  const motivo = c.motivoNonConfermato === 'confrontabili_insufficienti'
+    ? `non sufficientemente determinata: ${quanti(confrontabili, 'studente confrontabile', 'studenti confrontabili')}, ne servono almeno ${regola.minimoConfrontabili}`
+    : `solo ${quanti(concordi, 'studente', 'studenti')} su ${confrontabili} nella stessa direzione, ne servono almeno ${regola.quotaConcordi}`;
+  return `differenza di ${testoPunti(c.differenzaPunti)} non confermata dalla classe (${motivo}).`;
+}
+
+/** Complessivo: livello ATTUALE (con giudizio e criticità) e storico (solo un numero) affiancati. */
+function schedaComplessivoClasse(p) {
+  const c = p.complessivo;
+  const r = c.risultatoCorrente;
+  return el('div', { className: 'scheda' }, senzaVuoti([
+    el('div', { className: 'letture' }, [
+      el('div', { className: 'lettura' }, [
+        el('div', { className: 'titolo', textContent: 'Livello attuale della classe' }),
+        el('div', { className: 'riga' }, senzaVuoti([
+          el('span', { className: 'numero', textContent: testoPercentuale(r.percentuale) }),
+          pastigliaGiudizio(r, p.bande.length),
+          marcaCritico(r),
+        ])),
+        el('div', {
+          className: 'tenue piccola',
+          textContent: `Cosa sa fare la classe ora: per ogni studente, le ultime ${p.regola.finestra} osservazioni valide di ciascun criterio. `
+            + 'È l\'unica lettura che determina giudizio, criticità e confronti.',
+        }),
+      ]),
+      el('div', { className: 'lettura storica' }, [
+        el('div', { className: 'titolo', textContent: 'Storico dall\'inizio dell\'anno' }),
+        el('div', { className: 'riga' }, [el('span', { className: 'numero', textContent: testoPercentuale(c.risultatoStorico.percentuale) })]),
+        el('div', {
+          className: 'tenue piccola',
+          textContent: 'Cosa emerge dalla storia delle osservazioni: tutte le osservazioni valide di ogni studente. Seconda lettura: non cambia il giudizio.',
+        }),
+      ]),
+    ]),
+    c.differenzaCorrenteStorico === null ? null : el('div', {
+      className: 'riga-dato',
+      textContent: `Attuale rispetto allo storico: ${testoPunti(c.differenzaCorrenteStorico)} (dato descrittivo, non una valutazione).`,
+    }),
+    el('div', {
+      className: 'riga-dato tenue',
+      textContent: `Media dei criteri rappresentativi della materia: ${c.criteriRappresentativi} su ${c.criteriTotali} (${c.criteriValutati} osservati), `
+        + 'non media dei nuclei: ogni criterio rappresentativo pesa una volta.',
+    }),
+  ]));
+}
+
+function bloccoCriterioClasse(criterio, p) {
+  const r = criterio.risultatoCorrente;
+  const copertura = COPERTURA_CRITERIO_CLASSE[criterio.statoCopertura];
+  const blocco = el('div', { className: 'criterio-report' }, [
+    el('div', { className: 'intestazione' }, senzaVuoti([
+      el('strong', { textContent: criterio.codice }),
+      el('span', { textContent: criterio.descrizione }),
+      pastigliaGiudizio(r, p.bande.length),
+      marcaCritico(r),
+      el('span', { className: `copertura-classe ${criterio.statoCopertura}`, textContent: `${copertura.simbolo} ${copertura.testo}` }),
+    ])),
+  ]);
+  if (r.percentuale === null) {
+    blocco.append(el('div', { className: 'riga-dato tenue', textContent: 'Nessuno studente con osservazioni valide su questo criterio.' }));
+    return blocco;
+  }
+  blocco.append(el('div', { className: 'riga-dato' }, [
+    el('strong', { textContent: `Attuale: ${numeroIt(r.percentuale)}%` }),
+    document.createTextNode(` · storico: ${numeroIt(criterio.risultatoStorico.percentuale)}% (attuale − storico: ${testoPunti(criterio.differenzaCorrenteStorico)})`),
+  ]));
+  blocco.append(el('div', {
+    className: 'riga-dato tenue',
+    textContent: `Copertura: studenti osservati ${criterio.copertura.studentiValutati} su ${criterio.copertura.studentiTotali} `
+      + `(con almeno ${p.regola.finestra} osservazioni: ${criterio.copertura.studentiConsolidati}) · `
+      + `${quanti(criterio.osservazioniTotali, 'osservazione valida', 'osservazioni valide')}`
+      + (criterio.rappresentativo ? '.' : ' · dato incompleto: non entra nel nucleo né nel complessivo.'),
+  }));
+  const nonConfermato = criterio.confrontoConNucleo && criterio.confrontoConNucleo.confermato === false;
+  blocco.append(el('div', {
+    className: 'riga-dato' + (nonConfermato ? ' confronto-non-confermato' : ''),
+    textContent: `Confronto con il nucleo: ${testoConfrontoConNucleo(criterio, p.regola)}`,
+  }));
+  blocco.append(el('div', { className: 'distribuzione' }, [
+    el('span', { className: 'tenue', textContent: 'Studenti per livello attuale:' }),
+    ...criterio.distribuzioneGiudizi.map((d) => el('span', { className: 'voce', textContent: `${d.etichetta} ${d.studenti}` })),
+  ]));
+  return blocco;
+}
+
+function bloccoNucleoClasse(nucleo, p) {
+  const r = nucleo.risultatoCorrente;
+  const confronto = testoConfronto(nucleo.confrontoConComplessivo);
+  const sintesi = senzaVuoti([
+    el('span', { className: 'nome', textContent: nucleo.nome }),
+    pastigliaGiudizio(r, p.bande.length),
+    marcaCritico(r),
+    r.percentuale === null ? null : el('span', { className: 'dato', textContent: `${numeroIt(r.percentuale)}%` }),
+    nucleo.risultatoStorico.percentuale === null ? null
+      : el('span', { className: 'dato tenue', textContent: `storico ${numeroIt(nucleo.risultatoStorico.percentuale)}%` }),
+    confronto ? el('span', { className: 'dato tenue', textContent: confronto }) : null,
+    el('span', { className: 'dato tenue', textContent: `${nucleo.copertura.studentiValutati}/${nucleo.copertura.studentiTotali} studenti osservati` }),
+  ]);
+
+  const corpo = el('div', { className: 'corpo-nucleo' });
+  if (nucleo.grigliaNonConfigurata) {
+    corpo.append(el('p', { textContent: 'Nessun criterio configurato per questo nucleo.' }));
+    return el('details', { className: 'nucleo' }, [el('summary', {}, sintesi), corpo]);
+  }
+  corpo.append(el('div', {
+    className: 'riga-dato',
+    textContent: r.percentuale === null
+      ? 'Nucleo non valutato: nessun criterio è stato osservato su più della metà della classe.'
+      : `Attuale ${numeroIt(r.percentuale)}% · storico ${numeroIt(nucleo.risultatoStorico.percentuale)}% `
+        + `(attuale − storico: ${testoPunti(nucleo.differenzaCorrenteStorico)}) · media dei criteri rappresentativi: ${nucleo.criteriRappresentativi}.`,
+  }));
+  corpo.append(el('div', {
+    className: 'riga-dato tenue',
+    textContent: `Copertura: studenti osservati ${nucleo.copertura.studentiValutati} su ${nucleo.copertura.studentiTotali} · `
+      + `${testoCoperturaCriteri(nucleo.copertura.criteriPerStato)} (criteri osservati: ${nucleo.criteriValutati} su ${nucleo.criteriTotali}).`,
+  }));
+  const codici = (ids) => ids.map((id) => nucleo.criteri.find((c) => c.id === id).codice).join(', ');
+  if (nucleo.criteriForti.length > 0) {
+    corpo.append(el('div', { className: 'riga-dato', textContent: `${CONFRONTI_CON_NUCLEO.superiore.simbolo} Sopra il nucleo, confermati dalla classe: ${codici(nucleo.criteriForti)}.` }));
+  }
+  if (nucleo.criteriDeboli.length > 0) {
+    corpo.append(el('div', { className: 'riga-dato', textContent: `${CONFRONTI_CON_NUCLEO.inferiore.simbolo} Sotto il nucleo, confermati dalla classe: ${codici(nucleo.criteriDeboli)}.` }));
+  }
+  nucleo.criteri.forEach((criterio) => corpo.append(bloccoCriterioClasse(criterio, p)));
+  return el('details', { className: 'nucleo' }, [el('summary', {}, sintesi), corpo]);
+}
+
+async function mostraProgressoClasse(teaching) {
+  mostraErrore(null);
+  impostaPercorso(percorsoTeaching(teaching, [{ testo: 'Report globale della classe' }]));
+  const contenuto = document.getElementById('contenuto');
+  contenuto.textContent = 'Caricamento…';
+  try {
+    const p = await api(`/teachings/${teaching.teaching_id}/class-progress`);
+    const numeroBande = p.bande.length;
+    contenuto.innerHTML = '';
+    contenuto.append(el('div', { className: 'barra-sezioni' }, [
+      el('button', { className: 'azione', textContent: '← Torna alle attività', onclick: () => mostraActivities(teaching) }),
+    ]));
+
+    // 1. Intestazione
+    contenuto.append(el('div', { className: 'report-testa' }, [
+      el('div', { className: 'sopratitolo', textContent: 'Report globale della classe' }),
+      el('h2', { textContent: `${p.teaching.materia} — ${p.teaching.classe}` }),
+      el('div', { className: 'contesto' }, [
+        el('span', { textContent: `Classe: ${p.teaching.classe}` }),
+        el('span', { textContent: `Materia: ${p.teaching.materia}` }),
+        el('span', { textContent: `Anno scolastico: ${p.teaching.annoScolastico || '—'}` }),
+        el('span', { textContent: `Studenti iscritti: ${p.classe.studentiTotali} (${p.classe.studentiValutati} con osservazioni valide)` }),
+      ]),
+      el('div', {
+        className: 'nota-perimetro',
+        textContent: 'Dati aggregati e anonimi: nessuno studente compare per nome. Solo le osservazioni valide delle attività attive di questo '
+          + 'insegnamento, sugli studenti con iscrizione attiva; ogni studente pesa una volta per criterio.',
+      }),
+    ]));
+
+    // 2. Complessivo: attuale e storico
+    contenuto.append(schedaComplessivoClasse(p));
+
+    // 3. Difficoltà generalizzata: dal solo complessivo ATTUALE, mai dal confronto tra nuclei né dallo storico.
+    if (p.complessivo.difficoltaGeneralizzata) {
+      const bandaCritica = p.bande.find((b) => b.critica);
+      contenuto.append(el('div', { className: 'avviso-critico' }, [
+        el('strong', { textContent: '⚠ Difficoltà generalizzata. ' }),
+        document.createTextNode(`Il livello attuale complessivo della classe è nella banda più bassa configurata dall'istituto `
+          + `(${bandaCritica ? bandaCritica.etichetta : p.complessivo.risultatoCorrente.giudizio}): il problema riguarda il livello complessivo `
+          + 'della classe. Un nucleo «allineato al complessivo» non è quindi un nucleo senza difficoltà.'),
+      ]));
+    }
+
+    if (p.classe.studentiTotali === 0) {
+      contenuto.append(el('p', { textContent: 'Nessuno studente con iscrizione attiva in questa classe: non ci sono dati da aggregare.' }));
+    }
+    if (p.nuclei.length === 0) {
+      contenuto.append(el('p', { textContent: 'Nessun nucleo tematico configurato per questa materia.' }));
+      return;
+    }
+
+    // 4. Radar dei nuclei (livello attuale) + lettura: livello assoluto, criticità e confronto con il complessivo
+    const lettura = el('div', { className: 'lettura-nuclei' }, [
+      el('div', { className: 'titolo', textContent: 'Nuclei a confronto (livello attuale)' }),
+    ]);
+    p.nuclei.forEach((n) => {
+      lettura.append(el('div', { className: 'voce' }, senzaVuoti([
+        el('span', { className: 'nome', textContent: n.nome }),
+        pastigliaGiudizio(n.risultatoCorrente, numeroBande),
+        marcaCritico(n.risultatoCorrente),
+        el('span', { className: 'tenue', textContent: testoConfronto(n.confrontoConComplessivo) || '' }),
+      ])));
+    });
+    lettura.append(el('div', {
+      className: 'tenue piccola',
+      textContent: 'Il giudizio indica il livello raggiunto («è basso»). «Sopra / sotto / allineato» indica solo la posizione del nucleo rispetto '
+        + 'al complessivo della classe («è più basso del complessivo»): non dice se il livello è adeguato.',
+    }));
+    const aBarre = p.nuclei.length < RadarNuclei.MINIMO_ASSI_RADAR;
+    contenuto.append(el('div', { className: 'scheda grafico-nuclei' }, [
+      el('div', { className: 'grafico' }, [
+        costruisciGraficoNuclei(p),
+        el('div', {
+          className: 'tenue piccola legenda-radar',
+          textContent: (aBarre
+            ? 'Barra piena = tutti i criteri del nucleo osservati, ciascuno con almeno 3 osservazioni valide · barra attenuata = dato incompleto · '
+              + 'riquadro tratteggiato = nucleo non valutato.'
+            : '● tutti i criteri del nucleo osservati, ciascuno con almeno 3 osservazioni valide · ○ dato incompleto · '
+              + 'asse tratteggiato = nucleo non valutato.')
+            + ' Pieno o vuoto descrive la completezza del dato, non il livello di apprendimento.',
+        }),
+        el('div', {
+          className: 'tenue piccola legenda-radar',
+          textContent: (aBarre ? 'Tacche di riferimento, da destra a sinistra' : 'Linee di riferimento, dall\'esterno verso il centro')
+            + ' (soglie di giudizio dell\'istituto): '
+            + p.bande.filter((b) => b.posizioneRadar !== null).map((b) => `${b.etichetta} da ${numeroIt(b.sogliaMinima)}%`).join(' · ') + '.',
+        }),
+      ]),
+      lettura,
+    ]));
+
+    // 5. Nuclei (chiusi) -> criteri
+    contenuto.append(el('div', { className: 'sezione-titolo', textContent: 'Nuclei tematici' }));
+    p.nuclei.forEach((n) => contenuto.append(bloccoNucleoClasse(n, p)));
+
+    // 6. Osservazioni registrate ma non conteggiate
+    const escluse = p.osservazioniNonConteggiate;
+    if (escluse.totale > 0) {
+      contenuto.append(el('div', { className: 'scheda tenue piccola' }, [
+        el('strong', { textContent: `Osservazioni non conteggiate: ${escluse.totale}. ` }),
+        document.createTextNode(Object.entries(escluse.perMotivo).filter(([, n]) => n > 0)
+          .map(([motivo, n]) => `${MOTIVI_NON_CONTEGGIATE_CLASSE[motivo] || motivo}: ${n}`).join(' · ')
+          + '. Restano registrate, ma non entrano in alcun risultato.'),
+      ]));
+    }
+
+    // 7. Come leggere il report
+    contenuto.append(el('div', { className: 'scheda come-leggere' }, [
+      el('strong', { textContent: 'Come leggere questo report' }),
+      el('ul', {}, [
+        `Attuale: per ogni studente e criterio, media delle ultime ${p.regola.finestra} osservazioni valide; il criterio di classe è la media `
+          + 'degli studenti osservati, ognuno con lo stesso peso. Solo l\'attuale determina giudizio, criticità e confronti.',
+        'Storico: la stessa catena con tutte le osservazioni valide dall\'inizio dell\'anno. È una seconda lettura nel tempo e non cambia il giudizio.',
+        'Nucleo: media dei soli criteri rappresentativi. Complessivo: media di tutti i criteri rappresentativi della materia, non dei nuclei.',
+        'Copertura: un criterio è rappresentativo se è osservato su più della metà della classe. «Poco osservato» indica un dato incompleto, '
+          + 'non un livello basso.',
+        `Sopra o sotto il nucleo compaiono solo se la differenza di banda è condivisa da almeno ${p.regola.quotaConcordi} degli studenti `
+          + `confrontabili, con almeno ${p.regola.minimoConfrontabili} studenti confrontabili; altrimenti resta solo la differenza in punti.`,
+      ].map((testo) => el('li', { textContent: testo }))),
+    ]));
+  } catch (errore) { contenuto.textContent = ''; mostraErrore(errore.message); }
+}
+
 // --- Valutazioni (Assessment, sola lettura in questa V1) --------------------
 
 async function mostraValutazioniDiTeaching(teaching) {
@@ -1142,6 +1470,7 @@ async function mostraActivities(teaching) {
     contenuto.append(el('h2', { textContent: `${teaching.materia} — ${teaching.classe}` }));
     contenuto.append(el('div', { className: 'barra-sezioni' }, [
       el('button', { className: 'azione', textContent: 'Studenti della classe', onclick: () => mostraStudentiDiTeaching(teaching) }),
+      el('button', { className: 'azione', textContent: 'Report globale della classe', onclick: () => mostraProgressoClasse(teaching) }),
     ]));
     if (haPermesso('activity.create')) contenuto.append(costruisciFormNuovaActivity(teaching, unita));
     if (attivita.length === 0) {

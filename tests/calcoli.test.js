@@ -539,3 +539,374 @@ test('Giudizio: il percorso del report attività e il motore dei report pedagogi
     assert.equal(vecchio, nuovo, `divergenza attorno alla soglia ${banda.soglia_minima}`);
   }));
 });
+
+// ===========================================================================
+// REPORT GLOBALE DELLA CLASSE — progressoDiClasse (motore) e le parti pure del report di classe in
+// server/queries/progresso.js. Le righe sono costruite come in produzione: valori VALIDI per studente e
+// criterio -> rigaStudenteDiClasse, cioè la stessa funzione del report individuale.
+// ===========================================================================
+
+const datiProgresso = require('../server/queries/progresso');
+
+/**
+ * @param {Object<string, (number[]|null)[]>} perCriterio - criterio -> per ogni studente i valori osservati in
+ *   ordine cronologico (null o assente = studente non osservato su quel criterio).
+ */
+function righeDiClasse(perCriterio, numeroStudenti, scala = SCALA_ALFA, bande = P_ALFA) {
+  return Array.from({ length: numeroStudenti }, (_, s) => progresso.rigaStudenteDiClasse(
+    new Map(Object.entries(perCriterio).map(([criterio, valori]) => [criterio, valori[s] || []])), scala, bande
+  ));
+}
+
+function reportClasse(criteriPerNucleo, perCriterio, numeroStudenti, scala = SCALA_ALFA, bande = P_ALFA) {
+  return progresso.progressoDiClasse(criteriPerNucleo, righeDiClasse(perCriterio, numeroStudenti, scala, bande), scala, bande);
+}
+
+const criteriPerId = (nucleo) => Object.fromEntries(nucleo.criteri.map((c) => [c.id, c]));
+const perTutti = (valori, numeroStudenti) => Array.from({ length: numeroStudenti }, () => valori);
+/** I primi `quanti` studenti con questi valori, gli altri non osservati. */
+const soloIPrimi = (valori, quanti, numeroStudenti) => Array.from({ length: numeroStudenti }, (_, s) => (s < quanti ? valori : null));
+
+test('Report globale della classe U14 coerenza con il report individuale: R(s,c) e Cum(s,c) sono quelli di risultatoCriterioStudente', () => {
+  for (const valori of [[0, 1, 2, 2], [2, 0], [1], [2, 2, 2, 0, 0, 0]]) {
+    const individuale = criterioAlfa(valori);
+    assert.deepEqual(progresso.rigaStudenteDiClasse(new Map([['C', valori]]), SCALA_ALFA, P_ALFA).get('C'), {
+      percentualeEsatta: individuale.percentualeEsatta,
+      cumulativoEsatto: individuale.cumulativo.percentualeEsatta,
+      osservazioniTotali: valori.length,
+    }, `valori ${valori}`);
+  }
+  assert.equal(progresso.rigaStudenteDiClasse(new Map([['C', []]]), SCALA_ALFA, P_ALFA).has('C'), false,
+    'nessuna osservazione valida: lo studente non è valutato su quel criterio');
+});
+
+test('Report globale della classe U15 criterio: attuale e storico = media degli R(s,c) e dei Cum(s,c) degli studenti valutati, mai il pool delle osservazioni', () => {
+  // Tre studenti con 6, 1 e 2 osservazioni: ognuno pesa una volta.
+  const r = reportClasse([['C1']], { C1: [[2, 2, 2, 2, 2, 2], [0], [1, 1]] }, 3);
+  const c1 = r.nuclei[0].criteri[0];
+  assert.equal(c1.risultato.percentuale, 50, '(100 + 0 + 50) / 3');
+  assert.equal(c1.storico.percentuale, 50, '(100 + 0 + 50) / 3');
+  assert.notEqual(c1.risultato.percentuale, 66.67, 'pool delle finestre: (6 + 0 + 2) / 12');
+  assert.notEqual(c1.storico.percentuale, 77.78, 'pool di tutte le osservazioni: 14 / 18');
+  assert.deepEqual([c1.rappresentativo, c1.statoCopertura], [true, 'rappresentativo'], 'tutti valutati');
+  assert.deepEqual(c1.copertura, { studentiValutati: 3, studentiTotali: 3, studentiConsolidati: 1 });
+  assert.equal(c1.osservazioniTotali, 9);
+  assert.deepEqual(c1.distribuzioneGiudizi.filter((d) => d.studenti > 0), [
+    { etichetta: 'OTTIMO', studenti: 1 }, { etichetta: 'SUFFICIENTE', studenti: 1 }, { etichetta: 'NON SUFFICIENTE', studenti: 1 },
+  ], 'la distribuzione usa il risultato attuale di ogni studente');
+});
+
+test('Report globale della classe U16 attuale e storico sono letture distinte: classe in crescita e in calo; giudizio e criticità seguono solo l\'attuale', () => {
+  // In crescita: ogni studente 0,0,2,2,2 -> attuale 100 (ultime 3), storico 6/10 = 60.
+  const crescita = reportClasse([['C1']], { C1: perTutti([0, 0, 2, 2, 2], 6) }, 6);
+  const n = crescita.nuclei[0];
+  assert.deepEqual([n.risultato.percentuale, n.risultato.giudizio, n.risultato.critico], [100, 'OTTIMO', false]);
+  assert.deepEqual([n.storico.percentuale, n.differenzaCorrenteStorico], [60, 40]);
+  assert.deepEqual(
+    [crescita.complessivo.risultato.percentuale, crescita.complessivo.storico.percentuale, crescita.complessivo.differenzaCorrenteStorico],
+    [100, 60, 40]
+  );
+  assert.equal(progresso.giudizioDi(60, P_ALFA).giudizio, 'DISCRETO', 'lo storico, se fosse giudicato, darebbe un altro giudizio');
+
+  // In calo: 2,2,2,0,0,0 -> attuale 0 (banda critica), storico 6/12 = 50 (che sarebbe SUFFICIENTE).
+  const calo = reportClasse([['C1']], { C1: perTutti([2, 2, 2, 0, 0, 0], 6) }, 6);
+  const m = calo.nuclei[0];
+  assert.deepEqual([m.risultato.percentuale, m.risultato.giudizio, m.risultato.critico], [0, 'NON SUFFICIENTE', true]);
+  assert.deepEqual([m.storico.percentuale, m.differenzaCorrenteStorico], [50, -50]);
+  assert.equal(calo.complessivo.difficoltaGeneralizzata, true, 'decisa dal complessivo ATTUALE, anche con lo storico al 50%');
+  // Lo storico è solo un numero: nessun giudizio, criticità o confronto.
+  for (const storico of [m.storico, m.criteri[0].storico, calo.complessivo.storico]) {
+    assert.deepEqual(Object.keys(storico).sort(), ['percentuale', 'percentualeEsatta']);
+  }
+});
+
+test('Report globale della classe U17 rappresentatività (più della metà sì, metà esatta no), copertura, criteri valutati e rappresentativi distinti', () => {
+  const r = reportClasse([['C1', 'C2', 'C3', 'C4'], ['D1']], {
+    C1: perTutti([2], 4), C2: soloIPrimi([1], 3, 4), C3: soloIPrimi([2], 2, 4), D1: soloIPrimi([2, 2, 2], 1, 4),
+  }, 4);
+  const [n, d] = r.nuclei;
+  const c = criteriPerId(n);
+  assert.deepEqual([c.C1.rappresentativo, c.C2.rappresentativo], [true, true], '4 su 4 e 3 su 4');
+  assert.deepEqual([c.C3.rappresentativo, c.C3.statoCopertura, c.C3.risultato.percentuale], [false, 'poco_osservato', 100], 'metà esatta: 2 su 4');
+  assert.deepEqual([c.C4.statoCopertura, c.C4.risultato.percentuale], ['non_osservato', null], 'mai 0');
+  assert.equal(n.risultato.percentuale, 75, '(100 + 50) / 2: il 100% di C3, osservato su metà classe, non entra');
+  assert.deepEqual([n.criteriValutati, n.risultato.criteriRappresentativi, n.risultato.criteriTotali], [3, 2, 4]);
+  assert.deepEqual(n.copertura, {
+    studentiValutati: 4, studentiTotali: 4, criteriPerStato: { rappresentativo: 2, poco_osservato: 1, non_osservato: 1 },
+  });
+  // Un solo studente valutato su 4: nucleo non valutato, ma la copertura resta leggibile.
+  assert.deepEqual([d.risultato.percentuale, d.criteri[0].statoCopertura, d.copertura.studentiValutati, d.criteriValutati], [null, 'poco_osservato', 1, 1]);
+  assert.deepEqual(
+    [r.complessivo.risultato.percentuale, r.complessivo.criteriValutati, r.complessivo.risultato.criteriRappresentativi, r.complessivo.risultato.criteriTotali],
+    [75, 4, 2, 5]
+  );
+  assert.deepEqual(r.classe, { studentiTotali: 4, studentiValutati: 4 });
+});
+
+test('Report globale della classe U18 nucleo e complessivo, attuale e storico: complessivo = media dei K di TUTTI i criteri rappresentativi, non dei nuclei', () => {
+  const r = reportClasse([['C1', 'C2', 'C3'], ['D1']], {
+    C1: perTutti([0, 1, 2, 2], 6), // R 83,33 · Cum 62,5
+    C2: perTutti([2, 2, 0, 0], 6), // R 33,33 · Cum 50
+    C3: perTutti([1], 6), //          R 50    · Cum 50
+    D1: perTutti([2, 2, 2], 6), //    R 100   · Cum 100
+  }, 6);
+  const [n1, n2] = r.nuclei;
+  assert.deepEqual([n1.risultato.percentuale, n1.risultato.giudizio, n1.storico.percentuale, n1.differenzaCorrenteStorico], [55.56, 'SUFFICIENTE', 54.17, 1.39]);
+  assert.deepEqual([n2.risultato.percentuale, n2.storico.percentuale], [100, 100]);
+  const c = r.complessivo;
+  assert.deepEqual([c.risultato.percentuale, c.risultato.giudizio, c.storico.percentuale, c.differenzaCorrenteStorico], [66.67, 'DISCRETO', 65.63, 1.04],
+    '(83,33 + 33,33 + 50 + 100) / 4 e (62,5 + 50 + 50 + 100) / 4; la media dei nuclei sarebbe 77,78 e 77,08');
+  assert.deepEqual([c.risultato.criteriRappresentativi, c.risultato.criteriTotali, c.criteriValutati], [4, 4, 4]);
+  // Confronto RELATIVO dei nuclei con il complessivo: il livello assoluto resta quello del nucleo.
+  assert.deepEqual(n1.confrontoConComplessivo, { esito: 'inferiore', differenzaPunti: -11.11 });
+  assert.deepEqual(n2.confrontoConComplessivo, { esito: 'superiore', differenzaPunti: 33.33 });
+  // Criteri sopra/sotto il nucleo confermati dalla classe (6 confrontabili, tutti concordi); C3 è nella stessa banda del nucleo.
+  const k = criteriPerId(n1);
+  assert.deepEqual(k.C1.confrontoConNucleo, { esito: 'superiore', differenzaPunti: 27.78, confermato: true, motivoNonConfermato: null });
+  assert.deepEqual(k.C2.confrontoConNucleo, { esito: 'inferiore', differenzaPunti: -22.22, confermato: true, motivoNonConfermato: null });
+  assert.deepEqual(k.C3.confrontoConNucleo, { esito: 'allineato', differenzaPunti: -5.56, confermato: null, motivoNonConfermato: null });
+  assert.deepEqual([n1.criteriForti, n1.criteriDeboli], [['C1'], ['C2']]);
+  assert.deepEqual([k.C3.confronto.inferiori, k.C3.confronto.confrontabili], [6, 6], 'tutti sotto la propria media, ma stessa banda: nessuna classificazione');
+});
+
+test('Report globale della classe U19 forte/debole: banda diversa E almeno 2/3 dei confrontabili concordi (pari nel denominatore), con esattamente 6 confrontabili', () => {
+  // A: 100 per tutti. B: 0 per quattro studenti, 100 per due -> K(B) = 33,33; nucleo = 66,67 (DISCRETO).
+  const r = reportClasse([['A', 'B']], { A: perTutti([2, 2, 2], 6), B: [...perTutti([0, 0, 0], 4), ...perTutti([2, 2, 2], 2)] }, 6);
+  const n = r.nuclei[0];
+  const c = criteriPerId(n);
+  assert.deepEqual([n.risultato.percentuale, n.risultato.giudizio], [66.67, 'DISCRETO']);
+  assert.deepEqual(c.B.confronto, { confrontabili: 6, inferiori: 4, superiori: 0, pari: 2 });
+  assert.deepEqual(c.B.confrontoConNucleo, { esito: 'inferiore', differenzaPunti: -33.33, confermato: true, motivoNonConfermato: null },
+    '4 su 6: esattamente 2/3, pari inclusi nel denominatore');
+  assert.deepEqual(c.A.confrontoConNucleo, { esito: 'superiore', differenzaPunti: 33.33, confermato: true, motivoNonConfermato: null });
+  assert.deepEqual([n.criteriForti, n.criteriDeboli], [['A'], ['B']]);
+  assert.deepEqual([c.B.risultato.giudizio, c.B.risultato.critico], ['NON SUFFICIENTE', true], 'il livello assoluto resta accanto al confronto');
+
+  // Banda inferiore, ma 3 studenti sotto e 3 pari: 3/6 < 2/3 (escludendo i pari sarebbe 3/3).
+  const q = reportClasse([['A', 'B']], { A: perTutti([2, 2, 2], 6), B: [...perTutti([0, 0, 0], 3), ...perTutti([2, 2, 2], 3)] }, 6);
+  const m = q.nuclei[0];
+  const cq = criteriPerId(m);
+  assert.deepEqual([m.risultato.percentuale, m.risultato.giudizio], [75, 'BUONO']);
+  assert.deepEqual(cq.B.confronto, { confrontabili: 6, inferiori: 3, superiori: 0, pari: 3 });
+  assert.deepEqual(cq.B.confrontoConNucleo, { esito: 'inferiore', differenzaPunti: -25, confermato: false, motivoNonConfermato: 'quota_concordi_non_raggiunta' });
+  assert.deepEqual(cq.A.confrontoConNucleo, { esito: 'superiore', differenzaPunti: 25, confermato: false, motivoNonConfermato: 'quota_concordi_non_raggiunta' });
+  assert.deepEqual([m.criteriForti, m.criteriDeboli], [[], []], 'differenza non confermata: nessuna classificazione');
+});
+
+test('Report globale della classe U20 meno di 6 confrontabili: nessuna classificazione, anche con tutti gli studenti concordi; poco osservato non è mai debole', () => {
+  const r = reportClasse([['A', 'B']], { A: perTutti([2, 2, 2], 5), B: perTutti([0, 0, 0], 5) }, 5);
+  const n = r.nuclei[0];
+  const c = criteriPerId(n);
+  assert.deepEqual(c.B.confronto, { confrontabili: 5, inferiori: 5, superiori: 0, pari: 0 });
+  assert.deepEqual(c.B.confrontoConNucleo, { esito: 'inferiore', differenzaPunti: -50, confermato: false, motivoNonConfermato: 'confrontabili_insufficienti' });
+  assert.equal(c.A.confrontoConNucleo.motivoNonConfermato, 'confrontabili_insufficienti');
+  assert.deepEqual([n.criteriForti, n.criteriDeboli], [[], []], 'classe con meno di 6 studenti: nessuna conferma possibile');
+  assert.deepEqual([c.B.risultato.giudizio, c.B.risultato.critico], ['NON SUFFICIENTE', true], 'non confermato come "sotto", ma il livello critico resta');
+
+  const poco = reportClasse([['A', 'B']], { A: perTutti([2, 2, 2], 8), B: soloIPrimi([0, 0, 0], 4, 8) }, 8);
+  const b = criteriPerId(poco.nuclei[0]).B;
+  assert.deepEqual([b.statoCopertura, b.confrontoConNucleo, b.risultato.critico], ['poco_osservato', null, true],
+    'poco osservato: nessun confronto, nessuna classificazione; il livello resta un dato a sé');
+  assert.deepEqual(poco.nuclei[0].criteriDeboli, []);
+});
+
+test('Report globale della classe U21 classe al 25% e nucleo al 25%: NON SUFFICIENTE + livello critico + allineato al complessivo + difficoltà generalizzata', () => {
+  const r = reportClasse([['C1', 'C2']], { C1: perTutti([0, 1], 6), C2: perTutti([1, 0], 6) }, 6);
+  const n = r.nuclei[0];
+  assert.deepEqual([n.risultato.percentuale, n.risultato.giudizio, n.risultato.critico], [25, 'NON SUFFICIENTE', true]);
+  assert.deepEqual([r.complessivo.risultato.percentuale, r.complessivo.risultato.critico, r.complessivo.difficoltaGeneralizzata], [25, true, true]);
+  assert.deepEqual(n.confrontoConComplessivo, { esito: 'allineato', differenzaPunti: 0 }, 'allineato a un complessivo critico: non è "nella norma"');
+  n.criteri.forEach((c) => {
+    assert.deepEqual([c.risultato.giudizio, c.risultato.critico], ['NON SUFFICIENTE', true], `criterio ${c.id}: critico...`);
+    assert.deepEqual([c.confrontoConNucleo.esito, c.confrontoConNucleo.confermato], ['allineato', null], '...e allineato al nucleo');
+  });
+  const testo = JSON.stringify(r);
+  for (const vietato of ['nella_norma', 'Nella norma', 'punto_di_forza', 'Punto di forza', 'area_di_attenzione', 'Area di attenzione']) {
+    assert.ok(!testo.includes(vietato), `il report non deve contenere "${vietato}"`);
+  }
+});
+
+test('Report globale della classe U22 nucleo critico ma non allineato: sotto un complessivo non critico, senza difficoltà generalizzata', () => {
+  const r = reportClasse([['C1', 'C2'], ['D1', 'D2', 'D3']], {
+    C1: perTutti([0, 1], 6), C2: perTutti([1, 0], 6), D1: perTutti([2, 2, 2], 6), D2: perTutti([2, 2, 2], 6), D3: perTutti([2, 2, 2], 6),
+  }, 6);
+  const [basso, alto] = r.nuclei;
+  assert.deepEqual([r.complessivo.risultato.percentuale, r.complessivo.risultato.giudizio, r.complessivo.difficoltaGeneralizzata], [70, 'BUONO', false],
+    '(25 + 25 + 100 + 100 + 100) / 5');
+  assert.deepEqual([basso.risultato.giudizio, basso.risultato.critico], ['NON SUFFICIENTE', true]);
+  assert.deepEqual(basso.confrontoConComplessivo, { esito: 'inferiore', differenzaPunti: -45 }, 'critico E sotto il complessivo: due assi distinti');
+  assert.deepEqual([alto.confrontoConComplessivo, alto.risultato.critico], [{ esito: 'superiore', differenzaPunti: 30 }, false]);
+});
+
+test('Report globale della classe U23 nessun criterio rappresentativo: nucleo e complessivo non valutati, copertura comunque disponibile', () => {
+  const r = reportClasse([['C1', 'C2']], { C1: soloIPrimi([2], 2, 4), C2: [null, null, [1], null] }, 4);
+  const n = r.nuclei[0];
+  assert.deepEqual([n.risultato.percentuale, n.risultato.livelloGiudizio, n.risultato.critico, n.storico.percentuale], [null, null, null, null]);
+  assert.deepEqual(n.copertura, {
+    studentiValutati: 3, studentiTotali: 4, criteriPerStato: { rappresentativo: 0, poco_osservato: 2, non_osservato: 0 },
+  });
+  assert.deepEqual([n.criteriValutati, n.risultato.criteriRappresentativi], [2, 0]);
+  assert.deepEqual([n.radar, n.confrontoConComplessivo, n.differenzaCorrenteStorico], [{ posizioneRadar: null, puntoPieno: false }, null, null]);
+  assert.deepEqual(
+    [r.complessivo.risultato.percentuale, r.complessivo.risultato.critico, r.complessivo.storico.percentuale, r.complessivo.difficoltaGeneralizzata],
+    [null, null, null, false]
+  );
+});
+
+test('Report globale della classe U24 casi limite: classe senza studenti, studente senza osservazioni, meno di 3 osservazioni, nucleo senza criteri o senza osservazioni', () => {
+  const vuota = progresso.progressoDiClasse([['C1'], []], [], SCALA_ALFA, P_ALFA);
+  assert.deepEqual(vuota.classe, { studentiTotali: 0, studentiValutati: 0 });
+  assert.deepEqual([vuota.complessivo.risultato.percentuale, vuota.complessivo.difficoltaGeneralizzata], [null, false]);
+  assert.deepEqual(vuota.nuclei[0].criteri[0].copertura, { studentiValutati: 0, studentiTotali: 0, studentiConsolidati: 0 });
+  assert.equal(vuota.nuclei[0].criteri[0].statoCopertura, 'non_osservato');
+
+  // Tre iscritti, il terzo senza alcuna osservazione: resta nel denominatore, non nella media.
+  const r = reportClasse([['C1', 'C2'], ['D1'], []], { C1: [[2, 0], [1], null], C2: [[2, 2, 2, 2], [2, 2, 2], null] }, 3);
+  assert.deepEqual(r.classe, { studentiTotali: 3, studentiValutati: 2 });
+  const [c1, c2] = r.nuclei[0].criteri;
+  assert.deepEqual([c1.risultato.percentuale, c1.copertura.studentiValutati, c1.copertura.studentiTotali, c1.rappresentativo], [50, 2, 3, true],
+    'meno di 3 osservazioni: si usano tutte (2,0 -> 50%; 1 -> 50%); 2 studenti su 3 sono più della metà');
+  assert.deepEqual([c1.copertura.studentiConsolidati, c2.copertura.studentiConsolidati], [0, 2]);
+  // Nucleo senza osservazioni e nucleo senza criteri: non valutati, nessun punto sul radar, mai zero.
+  for (const n of [r.nuclei[1], r.nuclei[2]]) {
+    assert.deepEqual([n.risultato.percentuale, n.radar.posizioneRadar, n.radar.puntoPieno, n.copertura.studentiValutati], [null, null, false, 0]);
+  }
+  assert.equal(r.nuclei[2].risultato.criteriTotali, 0);
+});
+
+test('Report globale della classe U25 scala 1-4 e 0-2: percentuale pedagogica = valore/massimo, posizione sul radar = minimo->massimo', () => {
+  // Beta: valore 4 = 100%, valore 2 = 50% -> K = 75 (BUONO); sul radar 75% equivale a 3 su 1-4 -> 66,67.
+  const r = reportClasse([['C1']], { C1: [[4], [2]] }, 2, SCALA_BETA, P_BETA);
+  const n = r.nuclei[0];
+  assert.deepEqual([n.risultato.percentuale, n.risultato.giudizio, n.risultato.critico, n.radar.posizioneRadar], [75, 'BUONO', false, 66.67]);
+  assert.deepEqual(n.criteri[0].distribuzioneGiudizi, [
+    { etichetta: 'ECCELLENTE', studenti: 1 }, { etichetta: 'BUONO', studenti: 0 }, { etichetta: 'SUFFICIENTE', studenti: 0 }, { etichetta: 'INSUFFICIENTE', studenti: 1 },
+  ]);
+  // Il minimo della scala vale 25%, non 0%: critico in Beta (banda più bassa fino a 55) e al centro del radar.
+  const minimo = reportClasse([['C1']], { C1: [[1], [1]] }, 2, SCALA_BETA, P_BETA);
+  assert.deepEqual([minimo.nuclei[0].risultato.percentuale, minimo.nuclei[0].risultato.giudizio, minimo.nuclei[0].radar.posizioneRadar], [25, 'INSUFFICIENTE', 0]);
+  assert.equal(minimo.complessivo.difficoltaGeneralizzata, true);
+  // Scala 0-2: percentuale pedagogica e posizione sul radar coincidono.
+  const alfa = reportClasse([['C1']], { C1: [[2], [1]] }, 2);
+  assert.deepEqual([alfa.nuclei[0].risultato.percentuale, alfa.nuclei[0].radar.posizioneRadar], [75, 75]);
+});
+
+test('Report globale della classe U26 bande del tenant: personalizzate, in ordine diverso, una sola banda; critica è la banda più bassa, mai un\'etichetta', () => {
+  const dati = { C1: perTutti([0, 1, 2], 6), C2: perTutti([0, 0, 1], 6) }; // 50% e 16,67% -> nucleo 33,33
+  const ordinate = reportClasse([['C1', 'C2']], dati, 6);
+  const disordinate = reportClasse([['C1', 'C2']], dati, 6, SCALA_ALFA, progresso.preparaBande([...BANDE_ALFA].reverse()));
+  assert.deepEqual(disordinate, ordinate, 'stesse bande fornite in un altro ordine: stesso report');
+
+  const altre = progresso.preparaBande([
+    { soglia_minima: 75, etichetta: 'Verde' }, { soglia_minima: 0, etichetta: 'Rosso' }, { soglia_minima: 40, etichetta: 'Giallo' },
+  ]);
+  const r = reportClasse([['C1', 'C2']], dati, 6, SCALA_ALFA, altre);
+  const c = criteriPerId(r.nuclei[0]);
+  assert.deepEqual([c.C1.risultato.giudizio, c.C1.risultato.critico, c.C2.risultato.giudizio, c.C2.risultato.critico], ['Giallo', false, 'Rosso', true]);
+  assert.deepEqual([r.nuclei[0].risultato.giudizio, r.complessivo.difficoltaGeneralizzata], ['Rosso', true]);
+  assert.deepEqual(r.nuclei[0].criteri[0].distribuzioneGiudizi.map((d) => d.etichetta), ['Verde', 'Giallo', 'Rosso']);
+
+  const unica = reportClasse([['C1', 'C2']], dati, 6, SCALA_ALFA, progresso.preparaBande([{ soglia_minima: 0, etichetta: 'Unica' }]));
+  assert.deepEqual([unica.nuclei[0].risultato.giudizio, unica.nuclei[0].risultato.critico, unica.complessivo.difficoltaGeneralizzata], ['Unica', true, true],
+    'una sola banda configurata: è per forza la più bassa');
+});
+
+test('Report globale della classe U27 radar H3: punto pieno, punto vuoto (osservazioni insufficienti o criterio non valutato), nucleo non valutato', () => {
+  const r = reportClasse([['A1', 'A2'], ['B1', 'B2'], ['C1', 'C2'], ['D1'], ['E1', 'E2']], {
+    A1: perTutti([2], 4), A2: soloIPrimi([1], 3, 4), //          tutti valutati, 4 e 3 osservazioni -> pieno
+    B1: perTutti([2], 4), B2: soloIPrimi([1, 1], 1, 4), //       B2 valutato con sole 2 osservazioni -> vuoto
+    C1: perTutti([2], 4), //                                    C2 non valutato -> vuoto
+    E1: soloIPrimi([2, 2, 2], 1, 4), E2: perTutti([1], 4), //    E1 poco osservato ma con 3 osservazioni -> pieno
+  }, 4);
+  const [a, b, c, d, e] = r.nuclei;
+  assert.deepEqual(a.radar, { posizioneRadar: 75, puntoPieno: true });
+  assert.deepEqual(b.radar, { posizioneRadar: 100, puntoPieno: false });
+  assert.deepEqual(c.radar, { posizioneRadar: 100, puntoPieno: false });
+  assert.deepEqual(d.radar, { posizioneRadar: null, puntoPieno: false });
+  assert.deepEqual(e.radar, { posizioneRadar: 50, puntoPieno: true },
+    'H3 usa solo "tutti i criteri valutati" e "almeno 3 osservazioni": la rappresentatività è un asse distinto');
+
+  // La geometria del radar dello studente (public/radar.js) riceve queste posizioni senza modifiche.
+  const g = RadarNuclei.geometria({ assi: r.nuclei.map((n, i) => ({ id: i, posizione: n.radar.posizioneRadar, pieno: n.radar.puntoPieno })), bande: [] });
+  assert.deepEqual(g.assi.map((x) => [x.valutato, x.pieno]), [[true, true], [true, false], [true, false], [false, false], [true, true]]);
+  assert.equal(g.assi[3].punto, null, 'nucleo non valutato: asse presente, nessun punto, nessuno zero inventato');
+  assert.deepEqual(g.tratti.map((t) => t.tratteggiato), [true, true, false],
+    'lati solo tra assi adiacenti valutati (A-B, B-C, E-A): il poligono non attraversa D; tratteggiati se toccano un punto vuoto');
+});
+
+test('Report globale della classe U28 osservazioni del Teaching: valide in ordine cronologico, escluse contate per motivo, un solo motivo per osservazione', () => {
+  const contesto = { iscrizioniAttive: new Set(['1', '2']), criteriAttivi: new Set(['10', '11']), scala: { id: 7 } };
+  const o = (iscrizione, criterio, valore, extra = {}) => ({
+    enrollment_id: iscrizione, criterion_id: criterio, valore, scale_id: 7, attivita_stato: 'attiva', unit_stato: 'attiva', ...extra,
+  });
+  const tuttiIMotivi = { unit_stato: 'disattivata', attivita_stato: 'disattivata', scale_id: 99 };
+  const { validePerIscrizione, nonConteggiate } = datiProgresso.classificaOsservazioniDiClasse([
+    o(1, 10, 0), o(2, 11, 1), o(1, 10, 2),
+    o(1, 10, 2, { attivita_stato: 'disattivata' }),
+    o(2, 11, 2, { scale_id: 99 }),
+    o(1, 12, 2), //                          criterio non più attivo in un nucleo attivo
+    o(1, 13, 2, { unit_stato: 'disattivata' }),
+    o(3, 10, 2), //                          iscrizione non attiva
+    o(3, 13, 2, tuttiIMotivi), //            conta una volta sola, come iscrizione non attiva
+    o(1, 13, 2, tuttiIMotivi), //            il nucleo disattivato prevale su attività e scala
+  ], contesto);
+  assert.deepEqual([...validePerIscrizione].map(([i, perCriterio]) => [i, [...perCriterio]]), [['1', [['10', [0, 2]]]], ['2', [['11', [1]]]]],
+    'le valide restano nell\'ordine ricevuto (cronologico)');
+  assert.deepEqual(nonConteggiate, {
+    iscrizione_non_attiva: 2, nucleo_non_attivo: 2, criterio_non_attivo: 1, attivita_disattivata: 1, scala_non_compatibile: 1,
+  });
+  assert.deepEqual([...datiProgresso.MOTIVI_NON_CONTEGGIATE_CLASSE], Object.keys(nonConteggiate));
+});
+
+/** Tutte le chiavi di un valore JSON, col percorso (es. "nuclei[].criteri[].codice"). */
+function percorsiDelleChiavi(valore, percorso = '') {
+  if (Array.isArray(valore)) return valore.flatMap((v) => percorsiDelleChiavi(v, `${percorso}[]`));
+  if (valore === null || typeof valore !== 'object') return [];
+  return Object.entries(valore).flatMap(([chiave, v]) => {
+    const qui = percorso ? `${percorso}.${chiave}` : chiave;
+    return [qui, ...percorsiDelleChiavi(v, qui)];
+  });
+}
+
+test('Report globale della classe U29 risposta: "non valutato" è null (solo nel report classe), nessun dato nominativo, regole e motivi esposti', () => {
+  const struttura = [
+    { id: 1, nome: 'Numeri', ordine: 1, criteri: [{ id: 10, codice: 'N-1', descrizione: 'Calcolo', ordine: 1 }, { id: 11, codice: 'N-2', descrizione: 'Stima', ordine: 2 }] },
+    { id: 2, nome: 'Spazio', ordine: 2, criteri: [{ id: 20, codice: 'S-1', descrizione: 'Figure', ordine: 1 }] },
+    { id: 3, nome: 'Senza criteri', ordine: 3, criteri: [] },
+  ];
+  // Sette iscritti, il settimo senza osservazioni. 10: 100 per sei studenti; 11: 0 per quattro e 100 per due.
+  const righe = righeDiClasse({ 10: perTutti([2, 2, 2], 6), 11: [...perTutti([0, 0, 0], 4), ...perTutti([2, 2, 2], 2)] }, 7);
+  const report = progresso.progressoDiClasse(struttura.map((n) => n.criteri.map((c) => String(c.id))), righe, SCALA_ALFA, P_ALFA);
+  const nonConteggiate = Object.fromEntries(datiProgresso.MOTIVI_NON_CONTEGGIATE_CLASSE.map((motivo) => [motivo, 0]));
+  nonConteggiate.attivita_disattivata = 2;
+  const p = datiProgresso.descriviProgressoClasse({
+    teaching: { id: 5, materia: 'Matematica', classe: '3C' }, annoScolastico: '2026/2027',
+    scala: { id: 1, nome: 'Scala 0-2', valori: [], ...SCALA_ALFA }, bande: P_ALFA, struttura, report, nonConteggiate,
+  });
+
+  const nonValutato = { percentuale: null, giudizio: null, livelloGiudizio: null, critico: null };
+  assert.deepEqual(p.nuclei[1].risultatoCorrente, nonValutato, 'nel report classe "non valutato" è null, non \'\'');
+  assert.deepEqual(p.nuclei[1].criteri[0].risultatoCorrente, nonValutato);
+  assert.deepEqual([p.nuclei[2].grigliaNonConfigurata, p.nuclei[2].risultatoCorrente], [true, nonValutato]);
+  assert.deepEqual(p.nuclei[0].risultatoCorrente, { percentuale: 66.67, giudizio: 'DISCRETO', livelloGiudizio: 2, critico: false });
+  assert.deepEqual([p.nuclei[0].criteriForti, p.nuclei[0].criteriDeboli], [[10], [11]], 'id originali dei criteri');
+  assert.deepEqual(p.complessivo, {
+    risultatoCorrente: { percentuale: 66.67, giudizio: 'DISCRETO', livelloGiudizio: 2, critico: false },
+    risultatoStorico: { percentuale: 66.67 },
+    differenzaCorrenteStorico: 0,
+    difficoltaGeneralizzata: false,
+    criteriValutati: 2,
+    criteriRappresentativi: 2,
+    criteriTotali: 3,
+  });
+  assert.deepEqual(p.classe, { studentiTotali: 7, studentiValutati: 6 });
+  assert.deepEqual(p.regola, { tipo: 'media_mobile', finestra: 3, rappresentativitaOltre: 0.5, quotaConcordi: '2/3', minimoConfrontabili: 6 });
+  assert.deepEqual(p.osservazioniNonConteggiate, { totale: 2, perMotivo: nonConteggiate });
+
+  // Anonimato: gli unici "nome" sono quelli della scala e dei nuclei; nessuna chiave che identifichi studenti.
+  const percorsi = [...new Set(percorsiDelleChiavi(p))];
+  const nominativi = /(^|\.)(nome|cognome|alunno|alunni|enrollmentId|enrollment_id|studentPersonId|student_person_id|studentId|osservazioni)$/;
+  assert.deepEqual(percorsi.filter((x) => nominativi.test(x)).sort(), ['nuclei[].nome', 'scala.nome']);
+  assert.ok(percorsi.filter((x) => x.endsWith('.studenti')).every((x) => x === 'nuclei[].criteri[].distribuzioneGiudizi[].studenti'),
+    'gli studenti compaiono solo come conteggi della distribuzione');
+});

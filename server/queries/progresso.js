@@ -25,6 +25,10 @@ const CRITERIO_ATTIVO = 'attivo';
 const MOTIVO_ATTIVITA_DISATTIVATA = 'attivita_disattivata';
 const MOTIVO_SCALA_NON_COMPATIBILE = 'scala_non_compatibile';
 const MOTIVO_CRITERIO_NON_ATTIVO = 'criterio_non_attivo';
+// Solo nel report di classe (il report individuale verifica l'iscrizione a monte e conta un nucleo disattivato
+// come "criterio non attivo"): il suo contratto resta invariato.
+const MOTIVO_NUCLEO_NON_ATTIVO = 'nucleo_non_attivo';
+const MOTIVO_ISCRIZIONE_NON_ATTIVA = 'iscrizione_non_attiva';
 
 /** Teaching verificato nel tenant, con scala e bande applicabili (tenant + eventuale override di livello). */
 async function caricaContestoTeaching(client, teachingId, tenantId) {
@@ -253,4 +257,195 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
   };
 }
 
-module.exports = { getProgressoStudenteDiTeaching };
+// ===========================================================================
+// REPORT GLOBALE DELLA CLASSE: aggregato e anonimo. Nessun dato nominativo viene letto: gli studenti
+// compaiono solo come id di iscrizione, usati come chiavi interne e mai restituiti.
+// ===========================================================================
+
+/**
+ * Motivi per cui un'osservazione del Teaching non entra nel report di classe, dal più ampio al più
+ * specifico: un'osservazione esclusa è conteggiata UNA volta, con il primo motivo che la riguarda.
+ */
+const MOTIVI_NON_CONTEGGIATE_CLASSE = Object.freeze([
+  MOTIVO_ISCRIZIONE_NON_ATTIVA, MOTIVO_NUCLEO_NON_ATTIVO, MOTIVO_CRITERIO_NON_ATTIVO,
+  MOTIVO_ATTIVITA_DISATTIVATA, MOTIVO_SCALA_NON_COMPATIBILE,
+]);
+
+/** Id delle iscrizioni ATTIVE della classe/anno del Teaching (solo gli id: nessun dato della persona). */
+async function caricaIscrizioniAttive(client, { teaching, tenantId }) {
+  const { rows } = await client.query(
+    `SELECT e.id FROM enrollments e
+     WHERE e.tenant_id = $1 AND e.class_id = $2 AND e.school_year_id = $3 AND e.attiva
+     ORDER BY e.id`,
+    [tenantId, teaching.class_id, teaching.school_year_id]
+  );
+  return rows.map((r) => r.id);
+}
+
+/**
+ * TUTTE le osservazioni del Teaching in UNA query (mai una query per studente), con quanto serve a decidere
+ * se contano. Solo le attività di QUESTO Teaching: le osservazioni di un altro Teaching (co-docenza, anche
+ * stessa classe/materia/anno) non vengono lette. Il nucleo è quello del criterio (la FK composta di
+ * observations impone che coincidano). Stesso ordine cronologico del report individuale: ogni studente ha,
+ * per ogni criterio, la stessa sequenza di valori del suo report.
+ */
+async function caricaOsservazioniDelTeaching(client, { teachingId, tenantId }) {
+  const { rows } = await client.query(
+    `SELECT o.enrollment_id, o.criterion_id, o.valore, o.scale_id,
+            a.stato AS attivita_stato, pu.stato AS unit_stato
+     FROM observations o
+     JOIN activities a ON a.id = o.activity_id AND a.tenant_id = o.tenant_id
+     JOIN pedagogical_units pu ON pu.id = o.pedagogical_unit_id AND pu.tenant_id = o.tenant_id
+     WHERE o.tenant_id = $1 AND a.teaching_id = $2
+     ORDER BY o.data_osservazione, a.data_attivita, a.id, o.id`,
+    [tenantId, teachingId]
+  );
+  return rows;
+}
+
+/** Perché un'osservazione del Teaching NON entra nel report di classe (null = è valida). */
+function motivoEsclusioneDiClasse(osservazione, { iscrizioniAttive, criteriAttivi, scala }) {
+  if (!iscrizioniAttive.has(String(osservazione.enrollment_id))) return MOTIVO_ISCRIZIONE_NON_ATTIVA;
+  if (!criteriAttivi.has(String(osservazione.criterion_id))) {
+    return osservazione.unit_stato === NUCLEO_ATTIVO ? MOTIVO_CRITERIO_NON_ATTIVO : MOTIVO_NUCLEO_NON_ATTIVO;
+  }
+  return motivoEsclusione(osservazione, scala);
+}
+
+/**
+ * Separa le osservazioni VALIDE, raggruppate per iscrizione e criterio nell'ordine ricevuto (cronologico),
+ * da quelle non conteggiate, contate per motivo.
+ * @param {object[]} osservazioni - da caricaOsservazioniDelTeaching.
+ * @param {{iscrizioniAttive: Set<string>, criteriAttivi: Set<string>, scala: {id: *}}} contesto
+ * @returns {{validePerIscrizione: Map<string, Map<string, number[]>>, nonConteggiate: Object<string, number>}}
+ */
+function classificaOsservazioniDiClasse(osservazioni, contesto) {
+  const nonConteggiate = Object.fromEntries(MOTIVI_NON_CONTEGGIATE_CLASSE.map((motivo) => [motivo, 0]));
+  const validePerIscrizione = new Map();
+  osservazioni.forEach((o) => {
+    const motivo = motivoEsclusioneDiClasse(o, contesto);
+    if (motivo !== null) {
+      nonConteggiate[motivo] += 1;
+      return;
+    }
+    const iscrizione = String(o.enrollment_id);
+    const criterio = String(o.criterion_id);
+    if (!validePerIscrizione.has(iscrizione)) validePerIscrizione.set(iscrizione, new Map());
+    const perCriterio = validePerIscrizione.get(iscrizione);
+    if (!perCriterio.has(criterio)) perCriterio.set(criterio, []);
+    perCriterio.get(criterio).push(o.valore);
+  });
+  return { validePerIscrizione, nonConteggiate };
+}
+
+/** Livello ASSOLUTO di un risultato di classe. In questo report "non valutato" è null, mai ''. */
+function descriviLivelloDiClasse(r) {
+  return { percentuale: r.percentuale, giudizio: r.giudizio || null, livelloGiudizio: r.livelloGiudizio, critico: r.critico };
+}
+
+/**
+ * Risposta pubblica del report di classe. Contiene solo dati aggregati e la struttura della materia:
+ * nessun nome, cognome o identificativo di studenti.
+ * @param {{teaching: object, annoScolastico: string|null, scala: object, bande: object[], struttura: object[],
+ *   report: object, nonConteggiate: Object<string, number>}} dati - report da motore.progressoDiClasse.
+ */
+function descriviProgressoClasse({ teaching, annoScolastico, scala, bande, struttura, report, nonConteggiate }) {
+  // Il motore lavora su chiavi stringa: si torna agli id originali dei criteri.
+  const idCriterio = new Map(struttura.flatMap((n) => n.criteri.map((c) => [String(c.id), c.id])));
+  const { complessivo } = report;
+  return {
+    teaching: { id: teaching.id, materia: teaching.materia, classe: teaching.classe, annoScolastico },
+    classe: report.classe,
+    scala: {
+      id: scala.id, nome: scala.nome, valori: scala.valori, valoreMinimo: scala.valoreMinimo, valoreMassimo: scala.valoreMassimo,
+    },
+    bande: motore.bandeConPosizioneRadar(bande, scala),
+    regola: { tipo: 'media_mobile', ...motore.REGOLA_CLASSE },
+    complessivo: {
+      risultatoCorrente: descriviLivelloDiClasse(complessivo.risultato),
+      risultatoStorico: { percentuale: complessivo.storico.percentuale },
+      differenzaCorrenteStorico: complessivo.differenzaCorrenteStorico,
+      difficoltaGeneralizzata: complessivo.difficoltaGeneralizzata,
+      criteriValutati: complessivo.criteriValutati,
+      criteriRappresentativi: complessivo.risultato.criteriRappresentativi,
+      criteriTotali: complessivo.risultato.criteriTotali,
+    },
+    nuclei: struttura.map((nucleo, i) => {
+      const n = report.nuclei[i];
+      return {
+        id: nucleo.id,
+        nome: nucleo.nome,
+        ordine: nucleo.ordine,
+        grigliaNonConfigurata: nucleo.criteri.length === 0,
+        risultatoCorrente: descriviLivelloDiClasse(n.risultato),
+        risultatoStorico: { percentuale: n.storico.percentuale },
+        differenzaCorrenteStorico: n.differenzaCorrenteStorico,
+        criteriValutati: n.criteriValutati,
+        criteriRappresentativi: n.risultato.criteriRappresentativi,
+        criteriTotali: n.risultato.criteriTotali,
+        copertura: n.copertura,
+        osservazioniTotali: n.osservazioniTotali,
+        confrontoConComplessivo: n.confrontoConComplessivo,
+        criteriForti: n.criteriForti.map((id) => idCriterio.get(id)),
+        criteriDeboli: n.criteriDeboli.map((id) => idCriterio.get(id)),
+        radar: n.radar,
+        criteri: nucleo.criteri.map((criterio, j) => {
+          const c = n.criteri[j];
+          return {
+            id: criterio.id,
+            codice: criterio.codice,
+            descrizione: criterio.descrizione,
+            ordine: criterio.ordine,
+            risultatoCorrente: descriviLivelloDiClasse(c.risultato),
+            risultatoStorico: { percentuale: c.storico.percentuale },
+            differenzaCorrenteStorico: c.differenzaCorrenteStorico,
+            rappresentativo: c.rappresentativo,
+            statoCopertura: c.statoCopertura,
+            copertura: c.copertura,
+            osservazioniTotali: c.osservazioniTotali,
+            distribuzioneGiudizi: c.distribuzioneGiudizi,
+            confronto: c.confronto,
+            confrontoConNucleo: c.confrontoConNucleo,
+          };
+        }),
+      };
+    }),
+    osservazioniNonConteggiate: {
+      totale: Object.values(nonConteggiate).reduce((totale, n) => totale + n, 0),
+      perMotivo: nonConteggiate,
+    },
+  };
+}
+
+/**
+ * REPORT GLOBALE DELLA CLASSE per un Teaching: un numero fisso di query (contesto, iscrizioni attive,
+ * struttura, osservazioni del Teaching), poi solo il motore puro. Ogni studente iscritto attivo entra nel
+ * denominatore della copertura, anche senza osservazioni; le iscrizioni non attive non entrano in nulla.
+ * Distinto dal Report classe della singola attività, che è una fotografia senza media mobile.
+ */
+async function getProgressoClasseDiTeaching(client, { teachingId, tenantId }) {
+  const { teaching, annoScolastico, scala, bande } = await caricaContestoTeaching(client, teachingId, tenantId);
+  const iscrizioni = await caricaIscrizioniAttive(client, { teaching, tenantId });
+  const struttura = await caricaStruttura(client, { subjectId: teaching.subject_id, tenantId });
+  const osservazioni = await caricaOsservazioniDelTeaching(client, { teachingId, tenantId });
+
+  const { validePerIscrizione, nonConteggiate } = classificaOsservazioniDiClasse(osservazioni, {
+    iscrizioniAttive: new Set(iscrizioni.map(String)),
+    criteriAttivi: new Set(struttura.flatMap((n) => n.criteri.map((c) => String(c.id)))),
+    scala,
+  });
+  const righeStudenti = iscrizioni.map(
+    (id) => motore.rigaStudenteDiClasse(validePerIscrizione.get(String(id)) || new Map(), scala, bande)
+  );
+  const report = motore.progressoDiClasse(
+    struttura.map((n) => n.criteri.map((c) => String(c.id))), righeStudenti, scala, bande
+  );
+  return descriviProgressoClasse({ teaching, annoScolastico, scala, bande, struttura, report, nonConteggiate });
+}
+
+module.exports = {
+  getProgressoStudenteDiTeaching,
+  getProgressoClasseDiTeaching,
+  // Parti pure del report di classe, esportate per i test unitari.
+  MOTIVI_NON_CONTEGGIATE_CLASSE, classificaOsservazioniDiClasse, descriviProgressoClasse,
+};

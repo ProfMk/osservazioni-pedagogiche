@@ -96,6 +96,19 @@ router.get('/teachings/:teachingId/students/:enrollmentId/progress', asincrono(a
   res.json(await progresso.getProgressoStudenteDiTeaching(pool, { teachingId, enrollmentId, tenantId: req.tenantId }));
 }));
 
+// GET /api/teachings/:teachingId/class-progress — report globale della classe per il Teaching: aggregato e
+// anonimo (nessun dato nominativo degli studenti), solo le osservazioni di QUESTO Teaching. Permesso
+// report.read nello scope del Teaching, come il Report classe della singola attività.
+router.get('/teachings/:teachingId/class-progress', asincrono(async (req, res) => {
+  const teachingId = Number(req.params.teachingId);
+  if (!Number.isInteger(teachingId)) throw datiNonValidi('Identificativo Teaching non valido.');
+  await richiedePermesso(pool, {
+    accountId: req.accountId, permesso: 'report.read', tenantId: req.tenantId,
+    ...(await scopeDiTeaching(teachingId, req.tenantId)),
+  });
+  res.json(await progresso.getProgressoClasseDiTeaching(pool, { teachingId, tenantId: req.tenantId }));
+}));
+
 // GET /api/teachings/:teachingId/assessments — Assessment del Teaching (pagina "Valutazioni", sola lettura in V1).
 router.get('/teachings/:teachingId/assessments', asincrono(async (req, res) => {
   const teachingId = Number(req.params.teachingId);

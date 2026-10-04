@@ -1431,3 +1431,424 @@ test('Coerenza del giudizio: report attività e report studente applicano la ste
     await pool.query('UPDATE enrollments SET attiva = false WHERE id = $1', [terzo]);
   }
 });
+
+// ===========================================================================
+// SEZIONE L — REPORT GLOBALE DELLA CLASSE: GET /teachings/:teachingId/class-progress
+//
+// Il seed ha due studenti per classe: qui si crea, una sola volta, una classe dedicata (5F, Primaria di
+// Alfa) con 8 iscrizioni attive (l'ottava senza osservazioni) e una che viene disattivata, una materia con
+// nuclei e criteri propri, due Teaching sulla stessa classe/materia/anno (co-docenza), più un Teaching su
+// una classe senza studenti e uno in un altro livello scolastico. Le osservazioni sono inserite
+// direttamente, con valori scelti perché ogni risultato si possa calcolare a mano.
+// ===========================================================================
+
+async function idDa(sql, parametri = []) {
+  return (await pool.query(sql, parametri)).rows[0].id;
+}
+
+/** Valori per gli iscritti 0..8 della 5F: 0..6 con `valore`, 7 mai osservato, 8 = iscrizione poi disattivata. */
+const primiSette = (valore) => [valore, valore, valore, valore, valore, valore, valore, null, null];
+const soloIPrimiDella5F = (valore, quanti) => Array.from({ length: 9 }, (_, i) => (i < quanti ? valore : null));
+
+/** Un'attività del Teaching nel nucleo indicato e, per ogni criterio, il valore di ogni iscritto (null = non osservato). */
+async function attivita5F(f, { teaching = f.teaching, autore = f.docente, nome, data, nucleo, valori, scala = f.scala }) {
+  const activityId = await idDa(
+    `INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [f.tenant, f.anno, teaching, f.classe, f.materia, f.nuclei[nucleo], nome, data]
+  );
+  for (const [codice, perIscritto] of Object.entries(valori)) {
+    for (const [indice, valore] of perIscritto.entries()) {
+      if (valore === null) continue;
+      await pool.query(
+        `INSERT INTO observations (tenant_id, school_year_id, activity_id, enrollment_id, class_id, criterion_id,
+           pedagogical_unit_id, scale_id, valore, recorded_by_account_id, data_osservazione)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [f.tenant, f.anno, activityId, f.iscrizioni[indice], f.classe, f.criteri[codice], f.nuclei[nucleo], scala, valore, autore, data]
+      );
+    }
+  }
+  return activityId;
+}
+
+async function creaClasse5F() {
+  const tenant = await idDa("SELECT id FROM tenants WHERE slug = 'alfa'");
+  const anno = await idDa("SELECT id FROM school_years WHERE tenant_id = $1 AND nome = '2026/2027'", [tenant]);
+  const livello = (nome) => idDa('SELECT id FROM school_levels WHERE tenant_id = $1 AND nome = $2', [tenant, nome]);
+  const account = (email) => idDa('SELECT id FROM accounts WHERE email = $1', [email]);
+  const primaria = await livello('Primaria');
+  const docente = await account('teacher.math.a@alfa.test');
+  const coDocente = await account('multitenant.user@example.test');
+  const ruoloDocente = await idDa("SELECT id FROM roles WHERE codice = 'TEACHER'");
+  const scala = await idDa('SELECT id FROM observation_scales WHERE tenant_id = $1 AND school_level_id IS NULL', [tenant]);
+
+  const classe = await idDa("INSERT INTO classes (tenant_id, school_level_id, nome) VALUES ($1, $2, '5F') RETURNING id", [tenant, primaria]);
+  const iscrizioni = [];
+  for (let i = 0; i < 9; i += 1) {
+    const persona = await idDa('INSERT INTO people (tenant_id, nome, cognome) VALUES ($1, $2, $3) RETURNING id', [tenant, `F5-Nome-${i}`, `F5-Cognome-${i}`]);
+    iscrizioni.push(await idDa(
+      'INSERT INTO enrollments (tenant_id, school_year_id, class_id, student_person_id) VALUES ($1, $2, $3, $4) RETURNING id',
+      [tenant, anno, classe, persona]
+    ));
+  }
+  const creaMateria = (nome, livelloId) => idDa(
+    'INSERT INTO subjects (tenant_id, school_level_id, school_year_id, nome, ordine) VALUES ($1, $2, $3, $4, 9) RETURNING id', [tenant, livelloId, anno, nome]
+  );
+  const materia = await creaMateria('Scienze sperimentali (5F)', primaria);
+  const nuclei = {};
+  const criteri = {};
+  const struttura = [
+    ['Osservare', ['O1', 'O2', 'O3', 'O4', 'O5']],
+    ['Sperimentare', ['S1', 'S2']],
+    ['Comunicare', ['C1', 'C2']],
+    ['Rappresentare', ['R1', 'R2']],
+    ['Nucleo senza criteri', []],
+    ['Nucleo da disattivare', ['E1']],
+  ];
+  for (const [posizioneNucleo, [nome, codici]] of struttura.entries()) {
+    nuclei[nome] = await idDa(
+      'INSERT INTO pedagogical_units (tenant_id, school_year_id, subject_id, nome, ordine) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [tenant, anno, materia, nome, posizioneNucleo + 1]
+    );
+    for (const [posizione, codice] of codici.entries()) {
+      criteri[codice] = await idDa(
+        'INSERT INTO criteria (tenant_id, school_year_id, pedagogical_unit_id, codice, descrizione, ordine) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+        [tenant, anno, nuclei[nome], codice, `Criterio ${codice}`, posizione + 1]
+      );
+    }
+  }
+  const creaTeaching = async ({ accountId, classeId = classe, materiaId = materia, conRuolo = true }) => {
+    const id = await idDa(
+      'INSERT INTO teachings (tenant_id, school_year_id, class_id, subject_id, account_id) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [tenant, anno, classeId, materiaId, accountId]
+    );
+    if (conRuolo) {
+      await pool.query(
+        "INSERT INTO role_assignments (account_id, role_id, scope_type, tenant_id, scope_teaching_id) VALUES ($1, $2, 'TEACHING', $3, $4)",
+        [accountId, ruoloDocente, tenant, id]
+      );
+    }
+    return id;
+  };
+  const f = { tenant, anno, classe, materia, nuclei, criteri, iscrizioni, scala, docente, coDocente };
+  f.teaching = await creaTeaching({ accountId: docente });
+  f.teachingCoDocenza = await creaTeaching({ accountId: coDocente });
+
+  // Classe senza studenti, stessa materia; e un Teaching in un altro livello scolastico (fuori dallo scope del coordinatore).
+  const classeVuota = await idDa("INSERT INTO classes (tenant_id, school_level_id, nome) VALUES ($1, $2, '5V') RETURNING id", [tenant, primaria]);
+  f.teachingClasseVuota = await creaTeaching({ accountId: docente, classeId: classeVuota });
+  const secondaria = await livello('Secondaria di primo grado');
+  const classeSecondaria = await idDa("INSERT INTO classes (tenant_id, school_level_id, nome) VALUES ($1, $2, '5S') RETURNING id", [tenant, secondaria]);
+  f.teachingSecondaria = await creaTeaching({
+    accountId: docente, classeId: classeSecondaria, materiaId: await creaMateria('Scienze secondaria (5F)', secondaria), conRuolo: false,
+  });
+
+  // Una seconda scala del tenant (legata a un altro livello): incompatibile con quella della 5F.
+  const livelloScala = await idDa("INSERT INTO school_levels (tenant_id, nome, ordine) VALUES ($1, 'Livello scala 5F (test)', 95) RETURNING id", [tenant]);
+  const altraScala = await idDa("INSERT INTO observation_scales (tenant_id, school_level_id, nome) VALUES ($1, $2, 'Scala 5F (test)') RETURNING id", [tenant, livelloScala]);
+  await pool.query("INSERT INTO observation_scale_values (scale_id, valore, etichetta, ordine) VALUES ($1, 2, 'Due', 1)", [altraScala]);
+
+  // Osservare — O1: 0,1,2,2 per gli iscritti 0..6 · O2: 2,2,0,0 · O3: 2,2,2 per gli iscritti 0..3 (metà classe) ·
+  // O4 (poi disattivato): 2 · O5: mai osservato · per l'iscritto 0, un'osservazione di O1 con la scala incompatibile.
+  await attivita5F(f, { nome: 'A1', data: '2026-10-05', nucleo: 'Osservare', valori: { O1: primiSette(0), O2: primiSette(2), O3: soloIPrimiDella5F(2, 4), O4: primiSette(2) } });
+  await attivita5F(f, { nome: 'A2', data: '2026-10-12', nucleo: 'Osservare', valori: { O1: primiSette(1), O2: primiSette(2), O3: soloIPrimiDella5F(2, 4) } });
+  await attivita5F(f, { nome: 'A3', data: '2026-10-19', nucleo: 'Osservare', valori: { O1: primiSette(2), O2: primiSette(0), O3: soloIPrimiDella5F(2, 4) } });
+  await attivita5F(f, { nome: 'A4', data: '2026-10-26', nucleo: 'Osservare', valori: { O1: primiSette(2), O2: primiSette(0) } });
+  await attivita5F(f, { nome: 'A5 scala diversa', data: '2026-11-02', nucleo: 'Osservare', valori: { O1: soloIPrimiDella5F(2, 1) }, scala: altraScala });
+  // Sperimentare — S1: 2,2,2 per gli iscritti 0..6 e 0,0,0 per l'iscrizione poi disattivata · S2: 1 per gli iscritti 0..4,
+  // più un 2 in un'attività poi disattivata.
+  const s1 = [...primiSette(2).slice(0, 8), 0];
+  await attivita5F(f, { nome: 'B1', data: '2026-10-06', nucleo: 'Sperimentare', valori: { S1: s1, S2: soloIPrimiDella5F(1, 5) } });
+  await attivita5F(f, { nome: 'B2', data: '2026-10-13', nucleo: 'Sperimentare', valori: { S1: s1 } });
+  await attivita5F(f, { nome: 'B3', data: '2026-10-20', nucleo: 'Sperimentare', valori: { S1: s1 } });
+  const disattivata = await attivita5F(f, { nome: 'B4 disattivata', data: '2026-10-27', nucleo: 'Sperimentare', valori: { S2: soloIPrimiDella5F(2, 5) } });
+  // Comunicare — C1: 2 per gli iscritti 0..4 · C2: 1 per gli iscritti 5 e 6 (due osservazioni in tutto).
+  await attivita5F(f, { nome: 'D1', data: '2026-10-07', nucleo: 'Comunicare', valori: { C1: soloIPrimiDella5F(2, 5), C2: [null, null, null, null, null, 1, 1, null, null] } });
+  // Nucleo poi disattivato — E1: 1 per gli iscritti 0..6.
+  await attivita5F(f, { nome: 'E1', data: '2026-10-08', nucleo: 'Nucleo da disattivare', valori: { E1: primiSette(1) } });
+  // Co-docente, su un Teaching distinto: O1 e O2 = 0,1 per gli iscritti 0..6 (25%).
+  const coDocenza = { teaching: f.teachingCoDocenza, autore: coDocente, nucleo: 'Osservare' };
+  await attivita5F(f, { ...coDocenza, nome: 'Co-1', data: '2026-10-09', valori: { O1: primiSette(0), O2: primiSette(0) } });
+  await attivita5F(f, { ...coDocenza, nome: 'Co-2', data: '2026-10-16', valori: { O1: primiSette(1), O2: primiSette(1) } });
+
+  await pool.query("UPDATE criteria SET stato = 'disattivato' WHERE id = $1", [criteri.O4]);
+  await pool.query("UPDATE activities SET stato = 'disattivata' WHERE id = $1", [disattivata]);
+  await pool.query("UPDATE pedagogical_units SET stato = 'disattivata' WHERE id = $1", [nuclei['Nucleo da disattivare']]);
+  await pool.query('UPDATE enrollments SET attiva = false WHERE id = $1', [iscrizioni[8]]);
+  return f;
+}
+
+let classe5F = null;
+function contestoClasse5F() {
+  if (!classe5F) classe5F = creaClasse5F();
+  return classe5F;
+}
+
+const VOCI_SUPERATE = ['nella_norma', 'Nella norma', 'punto_di_forza', 'Punto di forza', 'area_di_attenzione', 'Area di attenzione'];
+const criterioDelNucleo = (nucleo, codice) => nucleo.criteri.find((c) => c.codice === codice);
+
+test('Report globale della classe: attuale e storico per criterio, nucleo e complessivo (valori calcolati a mano), rappresentatività, confronti e radar H3', async () => {
+  const f = await contestoClasse5F();
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const r = await sessione.get(`/teachings/${f.teaching}/class-progress`);
+  assert.equal(r.status, 200);
+  const p = r.corpo;
+  assert.deepEqual([p.teaching.id, p.teaching.classe, p.teaching.materia, p.teaching.annoScolastico], [f.teaching, '5F', 'Scienze sperimentali (5F)', '2026/2027']);
+  assert.deepEqual(p.classe, { studentiTotali: 8, studentiValutati: 7 }, "8 iscrizioni attive (una senza osservazioni); quella non attiva non conta");
+  assert.deepEqual(p.nuclei.map((n) => n.nome), ['Osservare', 'Sperimentare', 'Comunicare', 'Rappresentare', 'Nucleo senza criteri'], 'il nucleo disattivato non compare');
+  const [osservare, sperimentare, comunicare, rappresentare, senzaCriteri] = p.nuclei;
+  const c = criterioDelNucleo;
+  assert.deepEqual(osservare.criteri.map((x) => x.codice), ['O1', 'O2', 'O3', 'O5'], 'il criterio disattivato non compare');
+
+  // O1 (0,1,2,2): attuale 83,33 sopra lo storico 62,5 · O2 (2,2,0,0): attuale 33,33 sotto lo storico 50. Il giudizio segue l'attuale.
+  assert.deepEqual(c(osservare, 'O1').risultatoCorrente, { percentuale: 83.33, giudizio: 'DISTINTO', livelloGiudizio: 4, critico: false });
+  assert.deepEqual([c(osservare, 'O1').risultatoStorico, c(osservare, 'O1').differenzaCorrenteStorico], [{ percentuale: 62.5 }, 20.83]);
+  assert.deepEqual(c(osservare, 'O2').risultatoCorrente, { percentuale: 33.33, giudizio: 'NON SUFFICIENTE', livelloGiudizio: 0, critico: true },
+    'critico anche se lo storico (50%) sarebbe SUFFICIENTE');
+  assert.deepEqual([c(osservare, 'O2').risultatoStorico, c(osservare, 'O2').differenzaCorrenteStorico], [{ percentuale: 50 }, -16.67]);
+  assert.deepEqual(c(osservare, 'O1').copertura, { studentiValutati: 7, studentiTotali: 8, studentiConsolidati: 7 });
+  assert.equal(c(osservare, 'O1').osservazioniTotali, 28);
+  assert.deepEqual(c(osservare, 'O2').distribuzioneGiudizi.filter((d) => d.studenti > 0), [{ etichetta: 'NON SUFFICIENTE', studenti: 7 }]);
+  // O3: osservato su metà classe (4 su 8): poco osservato, fuori dal nucleo, senza confronto. O5: mai osservato.
+  const o3 = c(osservare, 'O3');
+  assert.deepEqual([o3.statoCopertura, o3.rappresentativo, o3.risultatoCorrente.percentuale, o3.confrontoConNucleo], ['poco_osservato', false, 100, null]);
+  assert.deepEqual([c(osservare, 'O5').statoCopertura, c(osservare, 'O5').risultatoCorrente],
+    ['non_osservato', { percentuale: null, giudizio: null, livelloGiudizio: null, critico: null }]);
+  // Nucleo: media dei soli criteri rappresentativi (O1, O2); copertura in studenti e in stato dei criteri.
+  assert.deepEqual(osservare.risultatoCorrente, { percentuale: 58.33, giudizio: 'SUFFICIENTE', livelloGiudizio: 1, critico: false });
+  assert.deepEqual([osservare.risultatoStorico, osservare.differenzaCorrenteStorico], [{ percentuale: 56.25 }, 2.08]);
+  assert.deepEqual([osservare.criteriValutati, osservare.criteriRappresentativi, osservare.criteriTotali, osservare.osservazioniTotali], [3, 2, 4, 68]);
+  assert.deepEqual(osservare.copertura, { studentiValutati: 7, studentiTotali: 8, criteriPerStato: { rappresentativo: 2, poco_osservato: 1, non_osservato: 1 } });
+  // Confronti con il nucleo confermati dalla classe (7 confrontabili, tutti concordi).
+  assert.deepEqual(c(osservare, 'O1').confronto, { confrontabili: 7, inferiori: 0, superiori: 7, pari: 0 });
+  assert.deepEqual(c(osservare, 'O1').confrontoConNucleo, { esito: 'superiore', differenzaPunti: 25, confermato: true, motivoNonConfermato: null });
+  assert.deepEqual(c(osservare, 'O2').confrontoConNucleo, { esito: 'inferiore', differenzaPunti: -25, confermato: true, motivoNonConfermato: null });
+  assert.deepEqual([osservare.criteriForti, osservare.criteriDeboli], [[f.criteri.O1], [f.criteri.O2]]);
+  // Sperimentare: S1 e S2 sono confrontabili solo su 5 studenti -> differenze di banda non confermate.
+  assert.deepEqual([sperimentare.risultatoCorrente.percentuale, sperimentare.risultatoCorrente.giudizio, sperimentare.copertura.studentiValutati], [75, 'BUONO', 7]);
+  assert.deepEqual(c(sperimentare, 'S1').confrontoConNucleo, { esito: 'superiore', differenzaPunti: 25, confermato: false, motivoNonConfermato: 'confrontabili_insufficienti' });
+  assert.deepEqual(c(sperimentare, 'S2').confrontoConNucleo, { esito: 'inferiore', differenzaPunti: -25, confermato: false, motivoNonConfermato: 'confrontabili_insufficienti' });
+  assert.deepEqual([sperimentare.criteriForti, sperimentare.criteriDeboli], [[], []]);
+  // Comunicare: C1 su 5 studenti (rappresentativo), C2 su 2 (poco osservato).
+  assert.deepEqual([comunicare.risultatoCorrente.percentuale, comunicare.criteriValutati, comunicare.criteriRappresentativi], [100, 2, 1]);
+  assert.deepEqual(c(comunicare, 'C1').confrontoConNucleo, { esito: 'allineato', differenzaPunti: 0, confermato: null, motivoNonConfermato: null });
+  // Nucleo senza osservazioni e nucleo senza criteri: non valutati, mai zero.
+  assert.deepEqual([rappresentare.risultatoCorrente, rappresentare.copertura.studentiValutati, rappresentare.radar],
+    [{ percentuale: null, giudizio: null, livelloGiudizio: null, critico: null }, 0, { posizioneRadar: null, puntoPieno: false }]);
+  assert.deepEqual([senzaCriteri.grigliaNonConfigurata, senzaCriteri.risultatoCorrente.percentuale, senzaCriteri.criteri], [true, null, []]);
+  // Radar H3: punto pieno solo se tutti i criteri del nucleo sono valutati con almeno 3 osservazioni valide.
+  assert.deepEqual(sperimentare.radar, { posizioneRadar: 75, puntoPieno: true });
+  assert.deepEqual(osservare.radar, { posizioneRadar: 58.33, puntoPieno: false }, 'O5 non valutato');
+  assert.deepEqual(comunicare.radar, { posizioneRadar: 100, puntoPieno: false }, 'C2 ha due sole osservazioni');
+  // Complessivo: media dei K di TUTTI i criteri rappresentativi (O1, O2, S1, S2, C1), non dei nuclei.
+  assert.deepEqual(p.complessivo, {
+    risultatoCorrente: { percentuale: 73.33, giudizio: 'BUONO', livelloGiudizio: 3, critico: false },
+    risultatoStorico: { percentuale: 72.5 },
+    differenzaCorrenteStorico: 0.83,
+    difficoltaGeneralizzata: false,
+    criteriValutati: 7,
+    criteriRappresentativi: 5,
+    criteriTotali: 10,
+  });
+  assert.deepEqual(p.nuclei.map((n) => n.confrontoConComplessivo), [
+    { esito: 'inferiore', differenzaPunti: -15 }, { esito: 'allineato', differenzaPunti: 1.67 }, { esito: 'superiore', differenzaPunti: 26.67 }, null, null,
+  ]);
+  assert.deepEqual(p.regola, { tipo: 'media_mobile', finestra: 3, rappresentativitaOltre: 0.5, quotaConcordi: '2/3', minimoConfrontabili: 6 });
+});
+
+test('Report globale della classe: attività, criterio e nucleo disattivati, scala incompatibile e iscrizione non attiva restano fuori da ogni risultato e sono contati per motivo', async () => {
+  const f = await contestoClasse5F();
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const p = (await sessione.get(`/teachings/${f.teaching}/class-progress`)).corpo;
+  assert.deepEqual(p.osservazioniNonConteggiate, {
+    totale: 23,
+    perMotivo: { iscrizione_non_attiva: 3, nucleo_non_attivo: 7, criterio_non_attivo: 7, attivita_disattivata: 5, scala_non_compatibile: 1 },
+  });
+  // Se contassero: l'iscrizione non attiva (0,0,0) abbasserebbe S1, l'attività disattivata porterebbe S2 al 75%,
+  // il 2 con la scala incompatibile porterebbe la finestra dell'iscritto 0 su O1 a 2,2,2.
+  const [osservare, sperimentare] = p.nuclei;
+  assert.deepEqual(sperimentare.criteri.map((x) => [x.codice, x.risultatoCorrente.percentuale, x.risultatoStorico.percentuale, x.copertura.studentiValutati, x.osservazioniTotali]),
+    [['S1', 100, 100, 7, 21], ['S2', 50, 50, 5, 5]]);
+  assert.deepEqual([criterioDelNucleo(osservare, 'O1').risultatoCorrente.percentuale, criterioDelNucleo(osservare, 'O1').osservazioniTotali], [83.33, 28]);
+  // Ogni osservazione del Teaching è conteggiata oppure esclusa con un motivo; nessuna è stata cancellata.
+  const { rows } = await pool.query(
+    'SELECT count(*)::int AS n FROM observations o JOIN activities a ON a.id = o.activity_id WHERE a.teaching_id = $1', [f.teaching]
+  );
+  const conteggiate = p.nuclei.reduce((totale, n) => totale + n.osservazioniTotali, 0);
+  assert.deepEqual([conteggiate, rows[0].n], [101, 124]);
+  assert.equal(conteggiate + p.osservazioniNonConteggiate.totale, rows[0].n);
+});
+
+test('Report globale della classe: coerenza con il report studente — K(c) è la media degli R(s,c), lo storico la media dei Cum(s,c), degli studenti validamente osservati', async () => {
+  const f = await contestoClasse5F();
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const classe = (await sessione.get(`/teachings/${f.teaching}/class-progress`)).corpo;
+  const studenti = (await sessione.get(`/teachings/${f.teaching}/students`)).corpo;
+  assert.equal(studenti.length, classe.classe.studentiTotali, 'stessi iscritti attivi');
+  const individuali = [];
+  for (const s of [...studenti].sort((a, b) => a.enrollment_id - b.enrollment_id)) {
+    const r = await sessione.get(`/teachings/${f.teaching}/students/${s.enrollment_id}/progress`);
+    assert.equal(r.status, 200);
+    individuali.push(r.corpo);
+  }
+  // Valori esatti dal report individuale: R(s,c) e Cum(s,c) = punteggio ottenuto / punteggio massimo × 100.
+  const esatta = ({ punteggioOttenuto, punteggioMassimo }) => (punteggioOttenuto / punteggioMassimo) * 100;
+  const media = (valori) => valori.reduce((totale, v) => totale + v, 0) / valori.length;
+  const arrotonda2 = (v) => Math.round(v * 100) / 100;
+  const rappresentativiMateria = { attuale: [], storico: [] };
+  classe.nuclei.forEach((nucleo, i) => {
+    const rappresentativiNucleo = { attuale: [], storico: [] };
+    nucleo.criteri.forEach((criterio, j) => {
+      const valutati = individuali
+        .map((p) => { assert.equal(p.nuclei[i].criteri[j].id, criterio.id); return p.nuclei[i].criteri[j]; })
+        .filter((x) => x.risultatoCorrente.osservazioniTotali > 0);
+      assert.equal(criterio.copertura.studentiValutati, valutati.length, criterio.codice);
+      assert.equal(criterio.rappresentativo, valutati.length * 2 > classe.classe.studentiTotali, criterio.codice);
+      if (valutati.length === 0) {
+        assert.equal(criterio.risultatoCorrente.percentuale, null);
+        return;
+      }
+      const attuale = media(valutati.map((x) => esatta(x.risultatoCorrente)));
+      const storico = media(valutati.map((x) => esatta(x.cumulativo)));
+      assert.equal(criterio.risultatoCorrente.percentuale, arrotonda2(attuale), `${criterio.codice}: attuale`);
+      assert.equal(criterio.risultatoStorico.percentuale, arrotonda2(storico), `${criterio.codice}: storico`);
+      if (criterio.rappresentativo) {
+        [rappresentativiNucleo, rappresentativiMateria].forEach((k) => { k.attuale.push(attuale); k.storico.push(storico); });
+      }
+    });
+    const atteso = (valori) => (valori.length === 0 ? null : arrotonda2(media(valori)));
+    assert.deepEqual([nucleo.risultatoCorrente.percentuale, nucleo.risultatoStorico.percentuale],
+      [atteso(rappresentativiNucleo.attuale), atteso(rappresentativiNucleo.storico)], nucleo.nome);
+  });
+  assert.deepEqual([classe.complessivo.risultatoCorrente.percentuale, classe.complessivo.risultatoStorico.percentuale],
+    [arrotonda2(media(rappresentativiMateria.attuale)), arrotonda2(media(rappresentativiMateria.storico))]);
+  assert.equal(rappresentativiMateria.attuale.length, 5);
+
+  // Il report di classe non porta nessuno dei dati nominativi presenti nei report individuali.
+  const testo = JSON.stringify(classe);
+  for (const p of individuali) {
+    assert.ok(!testo.includes(p.alunno.nome) && !testo.includes(p.alunno.cognome), `${p.alunno.cognome} non deve comparire`);
+  }
+});
+
+test('Report globale della classe: nessun dato nominativo — né nomi, né cognomi, né identificativi di iscrizioni o persone', async () => {
+  const f = await contestoClasse5F();
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const p = (await sessione.get(`/teachings/${f.teaching}/class-progress`)).corpo;
+  assert.deepEqual(Object.keys(p).sort(), ['bande', 'classe', 'complessivo', 'nuclei', 'osservazioniNonConteggiate', 'regola', 'scala', 'teaching']);
+  const testo = JSON.stringify(p);
+  for (const vietato of ['F5-Nome', 'F5-Cognome', 'cognome', 'enrollment', 'studentPerson', 'student_person', 'studentId', 'alunno']) {
+    assert.ok(!testo.includes(vietato), `la risposta non deve contenere "${vietato}"`);
+  }
+  // Gli studenti compaiono solo come conteggi.
+  const chiaviStudenti = new Set();
+  const visita = (valore) => {
+    if (Array.isArray(valore)) return valore.forEach(visita);
+    if (valore && typeof valore === 'object') {
+      Object.entries(valore).forEach(([chiave, v]) => {
+        if (/studenti/i.test(chiave)) { chiaviStudenti.add(chiave); assert.equal(typeof v, 'number', chiave); }
+        visita(v);
+      });
+    }
+    return undefined;
+  };
+  visita(p);
+  assert.deepEqual([...chiaviStudenti].sort(), ['studenti', 'studentiConsolidati', 'studentiTotali', 'studentiValutati']);
+  for (const vietato of VOCI_SUPERATE) assert.ok(!testo.includes(vietato), `la risposta non deve contenere "${vietato}"`);
+});
+
+test('Report globale della classe: co-docenza — due Teaching sulla stessa classe, materia e anno hanno report separati, mai aggregati', async () => {
+  const f = await contestoClasse5F();
+  const titolare = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const coDocente = await loginESwitch('multitenant.user@example.test', 'alfa');
+  const a = (await titolare.get(`/teachings/${f.teaching}/class-progress`)).corpo;
+  const rB = await coDocente.get(`/teachings/${f.teachingCoDocenza}/class-progress`);
+  assert.equal(rB.status, 200);
+  const b = rB.corpo;
+  assert.deepEqual(b.nuclei.map((n) => n.id), a.nuclei.map((n) => n.id), 'stessa materia, stessa struttura');
+  assert.equal(b.classe.studentiTotali, a.classe.studentiTotali, 'stessa classe');
+  const o1 = (p) => criterioDelNucleo(p.nuclei[0], 'O1');
+  assert.deepEqual([o1(a).risultatoCorrente.percentuale, o1(a).osservazioniTotali], [83.33, 28], 'solo le osservazioni del titolare');
+  assert.deepEqual([o1(b).risultatoCorrente.percentuale, o1(b).osservazioniTotali], [25, 14], 'solo le osservazioni del co-docente');
+  assert.deepEqual(b.nuclei.slice(1).map((n) => n.risultatoCorrente.percentuale), [null, null, null, null], 'nessun dato dell\'altro Teaching');
+  assert.equal(b.osservazioniNonConteggiate.totale, 0, 'le esclusioni dell\'altro Teaching non vengono nemmeno lette');
+  // Nessuno dei due legge il report dell'altro.
+  assert.equal((await titolare.get(`/teachings/${f.teachingCoDocenza}/class-progress`)).status, 403);
+  assert.equal((await coDocente.get(`/teachings/${f.teaching}/class-progress`)).status, 403);
+});
+
+test('Report globale della classe: classe al 25% e nucleo al 25% -> NON SUFFICIENTE + livello critico + allineato al complessivo + difficoltà generalizzata (mai "Nella norma")', async () => {
+  const f = await contestoClasse5F();
+  const coDocente = await loginESwitch('multitenant.user@example.test', 'alfa');
+  const p = (await coDocente.get(`/teachings/${f.teachingCoDocenza}/class-progress`)).corpo;
+  const osservare = p.nuclei[0];
+  const nonSufficienteCritico = { percentuale: 25, giudizio: 'NON SUFFICIENTE', livelloGiudizio: 0, critico: true };
+  assert.deepEqual(osservare.risultatoCorrente, nonSufficienteCritico);
+  assert.deepEqual(p.complessivo.risultatoCorrente, nonSufficienteCritico);
+  assert.equal(p.complessivo.difficoltaGeneralizzata, true);
+  assert.deepEqual(osservare.confrontoConComplessivo, { esito: 'allineato', differenzaPunti: 0 });
+  for (const codice of ['O1', 'O2']) {
+    const criterio = criterioDelNucleo(osservare, codice);
+    assert.deepEqual([criterio.risultatoCorrente.critico, criterio.confrontoConNucleo.esito, criterio.confrontoConNucleo.confermato], [true, 'allineato', null],
+      `${codice}: critico e allineato al nucleo`);
+  }
+  assert.deepEqual(p.bande.filter((b) => b.critica).map((b) => b.etichetta), ['NON SUFFICIENTE'], 'banda critica = la più bassa del tenant');
+  const testo = JSON.stringify(p);
+  for (const vietato of VOCI_SUPERATE) assert.ok(!testo.includes(vietato), `la risposta non deve contenere "${vietato}"`);
+});
+
+test('Report globale della classe: autorizzazione report.read nello scope del Teaching (docente, coordinatore, amministratore, altro tenant, parametri)', async () => {
+  const f = await contestoClasse5F();
+  const percorso = (teachingId) => `/teachings/${teachingId}/class-progress`;
+  const stato = async (email, tenant, teachingId = f.teaching) => (await (await loginESwitch(email, tenant)).get(percorso(teachingId))).status;
+  assert.equal(await stato('teacher.math.a@alfa.test', 'alfa'), 200, 'docente titolare');
+  assert.equal(await stato('teacher.italian.a@alfa.test', 'alfa'), 403, 'docente senza ruolo su questo Teaching');
+  assert.equal(await stato('coordinator.a@alfa.test', 'alfa'), 200, 'coordinatore della Primaria');
+  assert.equal(await stato('tenant.admin.a@alfa.test', 'alfa'), 200, 'amministratore di istituto');
+  assert.equal(await stato('platform.admin@platform.test', 'alfa'), 200, 'amministratore di piattaforma');
+  // Teaching di un altro livello scolastico: fuori dallo scope del coordinatore, dentro quello dell'amministratore.
+  assert.equal(await stato('coordinator.a@alfa.test', 'alfa', f.teachingSecondaria), 403);
+  assert.equal(await stato('tenant.admin.a@alfa.test', 'alfa', f.teachingSecondaria), 200);
+  // Altro tenant: il Teaching di Alfa non esiste nel contesto Beta, per nessun account.
+  for (const email of ['teacher.math.b@beta.test', 'tenant.admin.b@beta.test', 'multitenant.user@example.test']) {
+    assert.equal(await stato(email, 'beta'), 404, email);
+  }
+  assert.equal((await new SessioneHttp().get(percorso(f.teaching))).status, 401, 'senza sessione');
+  const docente = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  assert.equal((await docente.get(percorso('abc'))).status, 400, 'identificativo non valido');
+  assert.equal((await docente.get(percorso(987654321))).status, 404, 'Teaching inesistente');
+});
+
+test('Report globale della classe: tenant Beta (scala 1-4, bande proprie) -> percentuale = valore/massimo, posizione sul radar minimo->massimo', async () => {
+  const sessione = await loginESwitch('teacher.math.b@beta.test', 'beta');
+  const teachingId = (await sessione.get('/teachings')).corpo[0].teaching_id;
+  const r = await sessione.get(`/teachings/${teachingId}/class-progress`);
+  assert.equal(r.status, 200);
+  const p = r.corpo;
+  assert.deepEqual([p.scala.valoreMinimo, p.scala.valoreMassimo], [1, 4]);
+  assert.deepEqual(p.bande.map((b) => [b.etichetta, b.critica]), [['ECCELLENTE', false], ['BUONO', false], ['SUFFICIENTE', false], ['INSUFFICIENTE', true]]);
+  assert.deepEqual(p.classe, { studentiTotali: 2, studentiValutati: 2 });
+  const numeri = p.nuclei.find((n) => n.nome === 'Numeri');
+  const num1 = criterioDelNucleo(numeri, 'NUM-1');
+  // Seed: 4 (100%) e 2 (50%) -> K = 75, BUONO con le soglie di Beta; il 75% della scala 1-4 è il valore 3 -> 66,67 sul radar.
+  assert.deepEqual(num1.risultatoCorrente, { percentuale: 75, giudizio: 'BUONO', livelloGiudizio: 2, critico: false });
+  assert.deepEqual(num1.distribuzioneGiudizi, [
+    { etichetta: 'ECCELLENTE', studenti: 1 }, { etichetta: 'BUONO', studenti: 0 }, { etichetta: 'SUFFICIENTE', studenti: 0 }, { etichetta: 'INSUFFICIENTE', studenti: 1 },
+  ], 'il 50% è INSUFFICIENTE in Beta (banda più bassa fino a 55)');
+  assert.deepEqual([numeri.risultatoCorrente.percentuale, numeri.radar.posizioneRadar], [75, 66.67]);
+  assert.deepEqual([p.complessivo.risultatoCorrente.giudizio, p.complessivo.difficoltaGeneralizzata], ['BUONO', false]);
+});
+
+test('Report globale della classe: classe senza studenti -> tutto non valutato, nessuno zero inventato', async () => {
+  const f = await contestoClasse5F();
+  const sessione = await loginESwitch('teacher.math.a@alfa.test', 'alfa');
+  const r = await sessione.get(`/teachings/${f.teachingClasseVuota}/class-progress`);
+  assert.equal(r.status, 200);
+  const p = r.corpo;
+  assert.deepEqual(p.classe, { studentiTotali: 0, studentiValutati: 0 });
+  assert.deepEqual(p.complessivo.risultatoCorrente, { percentuale: null, giudizio: null, livelloGiudizio: null, critico: null });
+  assert.deepEqual([p.complessivo.risultatoStorico.percentuale, p.complessivo.difficoltaGeneralizzata], [null, false]);
+  assert.ok(p.nuclei.length > 0);
+  assert.ok(p.nuclei.every((n) => n.risultatoCorrente.percentuale === null && n.radar.posizioneRadar === null && n.copertura.studentiTotali === 0));
+  assert.equal(p.osservazioniNonConteggiate.totale, 0);
+});

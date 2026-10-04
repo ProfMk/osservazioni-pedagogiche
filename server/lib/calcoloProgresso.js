@@ -325,6 +325,160 @@ function complessivoDiClasse(nuclei, bande) {
   };
 }
 
+// ===========================================================================
+// REPORT GLOBALE DELLA CLASSE: composizione delle funzioni di classe qui sopra, senza formule nuove.
+// ===========================================================================
+
+/**
+ * Riga di UNO studente per il report di classe. Per ogni criterio con almeno un'osservazione valida:
+ * risultato corrente R(s,c), cumulativo Cum(s,c) e numero di osservazioni valide, calcolati con la
+ * STESSA funzione del report individuale: la classe parte dagli stessi valori che il docente legge nel
+ * report di ciascuno studente. Un criterio senza osservazioni valide non compare (studente non valutato).
+ * @param {Map<number|string, number[]>} valoriPerCriterio - criterio -> valori VALIDI in ordine cronologico.
+ * @returns {Map<number|string, {percentualeEsatta: number, cumulativoEsatto: number, osservazioniTotali: number}>}
+ */
+function rigaStudenteDiClasse(valoriPerCriterio, scala, bande) {
+  const riga = new Map();
+  valoriPerCriterio.forEach((valori, criterio) => {
+    if (valori.length === 0) return;
+    const r = risultatoCriterioStudente(valori, scala, bande);
+    riga.set(criterio, {
+      percentualeEsatta: r.percentualeEsatta,
+      cumulativoEsatto: r.cumulativo.percentualeEsatta,
+      osservazioniTotali: r.osservazioniTotali,
+    });
+  });
+  return riga;
+}
+
+/** Lettura STORICA: solo la percentuale. Nessun giudizio, criticità o confronto deriva dallo storico. */
+function soloPercentuale(risultato) {
+  return { percentuale: risultato.percentuale, percentualeEsatta: risultato.percentualeEsatta };
+}
+
+/** Attuale − storico in punti: dato descrittivo, senza soglie, non è una valutazione. */
+function differenzaCorrenteStorico(corrente, storico) {
+  if (corrente.percentualeEsatta === null || storico.percentualeEsatta === null) return null;
+  const differenza = arrotondaPerPresentazione(corrente.percentualeEsatta - storico.percentualeEsatta);
+  return differenza === 0 ? 0 : differenza; // mai -0
+}
+
+/**
+ * PUNTO PIENO del radar di classe (H3): il nucleo è valutato e TUTTI i suoi criteri sono valutati, ciascuno
+ * con almeno 3 osservazioni valide (la finestra della media mobile). Altrimenti, se il nucleo è valutato,
+ * punto vuoto. Dice solo quanto è completo il dato, mai il livello raggiunto; la regola usa soltanto
+ * "tutti i criteri" e la finestra di 3 osservazioni (la rappresentatività è un asse distinto).
+ * @param {object} nucleo - da nucleoDiClasse.
+ */
+function puntoPienoDiClasse(nucleo) {
+  return nucleo.risultato.percentualeEsatta !== null
+    && nucleo.criteri.length > 0
+    && nucleo.criteri.every((c) => c.copertura.studentiValutati > 0 && c.osservazioniTotali >= FINESTRA_MEDIA_MOBILE);
+}
+
+/**
+ * Perché un confronto criterio/nucleo con bande diverse NON è confermato dalla classe: troppo pochi studenti
+ * confrontabili, oppure quota di studenti concordi non raggiunta. Scompone soltanto la condizione di
+ * confrontoCriterioConNucleo, senza regole nuove. Null se il confronto è confermato o non applicabile.
+ */
+function motivoNonConfermato(criterio) {
+  if (!criterio.confrontoConNucleo || criterio.confrontoConNucleo.confermato !== false) return null;
+  return criterio.confronto.confrontabili < REGOLA_CLASSE.minimoConfrontabili
+    ? 'confrontabili_insufficienti'
+    : 'quota_concordi_non_raggiunta';
+}
+
+const STATI_COPERTURA = ['rappresentativo', 'poco_osservato', 'non_osservato'];
+
+/** Quanti criteri del nucleo in ciascuno stato di copertura (qualità del dato, non un giudizio). */
+function criteriPerStatoCopertura(criteri) {
+  return Object.fromEntries(STATI_COPERTURA.map((stato) => [stato, criteri.filter((c) => c.statoCopertura === stato).length]));
+}
+
+function contaCriteriValutati(criteri) {
+  return criteri.filter((c) => c.copertura.studentiValutati > 0).length;
+}
+
+/**
+ * REPORT GLOBALE DELLA CLASSE per la materia di un Teaching: aggregato e anonimo. L'unità di analisi è lo
+ * studente: ogni studente pesa una volta per criterio, mai un pool delle osservazioni grezze.
+ *
+ * ATTUALE, l'unica lettura che determina giudizio, criticità, difficoltà generalizzata e confronti:
+ *   R(s,c) -> K(c) = media degli R(s,c) degli studenti valutati -> nucleo = media dei K dei criteri
+ *   rappresentativi -> complessivo = media dei K di TUTTI i criteri rappresentativi della materia (non dei nuclei).
+ * STORICO (H1), seconda lettura temporale: la STESSA catena applicata a Cum(s,c) al posto di R(s,c), con gli
+ *   stessi studenti valutati e gli stessi criteri rappresentativi; se ne espone solo la percentuale.
+ * RADAR (H3): posizione = trasformazione minimo->massimo del risultato ATTUALE del nucleo (solo geometria);
+ *   punto pieno/vuoto da puntoPienoDiClasse.
+ *
+ * @param {(number|string)[][]} criteriPerNucleo - per ogni nucleo, gli id dei suoi criteri attivi in ordine.
+ * @param {Map[]} righeStudenti - una per OGNI studente iscritto attivo (anche vuota), da rigaStudenteDiClasse.
+ * @param {{valoreMinimo: number, valoreMassimo: number}} scala
+ * @param {object[]} bande - da preparaBande.
+ */
+function progressoDiClasse(criteriPerNucleo, righeStudenti, scala, bande) {
+  // Stessa presenza (studente valutato o no) per ogni criterio, con il cumulativo al posto del corrente.
+  const righeStoriche = righeStudenti.map((riga) => new Map([...riga].map(
+    ([criterio, r]) => [criterio, { percentualeEsatta: r.cumulativoEsatto, osservazioniTotali: r.osservazioniTotali }]
+  )));
+  const correnti = criteriPerNucleo.map((ids) => nucleoDiClasse(ids, righeStudenti, bande));
+  const storici = criteriPerNucleo.map((ids) => nucleoDiClasse(ids, righeStoriche, bande));
+  const complessivo = complessivoDiClasse(correnti, bande);
+  const complessivoStorico = soloPercentuale(complessivoDiClasse(storici, bande));
+
+  const nuclei = correnti.map((corrente, i) => {
+    const storico = soloPercentuale(storici[i].risultato);
+    const criteri = corrente.criteri.map((c, j) => {
+      const storicoCriterio = soloPercentuale(storici[i].criteri[j].risultato);
+      return {
+        ...c,
+        storico: storicoCriterio,
+        differenzaCorrenteStorico: differenzaCorrenteStorico(c.risultato, storicoCriterio),
+        confrontoConNucleo: c.confrontoConNucleo === null
+          ? null
+          : { ...c.confrontoConNucleo, motivoNonConfermato: motivoNonConfermato(c) },
+      };
+    });
+    // Forte/debole: SOLO differenze di banda confermate dalla classe (almeno 6 confrontabili, 2/3 concordi).
+    const confermati = (esito) => criteri
+      .filter((c) => c.confrontoConNucleo && c.confrontoConNucleo.esito === esito && c.confrontoConNucleo.confermato === true)
+      .map((c) => c.id);
+    return {
+      risultato: corrente.risultato,
+      storico,
+      differenzaCorrenteStorico: differenzaCorrenteStorico(corrente.risultato, storico),
+      criteriValutati: contaCriteriValutati(criteri),
+      copertura: { ...corrente.copertura, criteriPerStato: criteriPerStatoCopertura(criteri) },
+      osservazioniTotali: corrente.osservazioniTotali,
+      // Confronto RELATIVO con il complessivo della classe: non sostituisce il livello assoluto del nucleo.
+      confrontoConComplessivo: confrontoRelativo(corrente.risultato, complessivo),
+      criteriForti: confermati('superiore'),
+      criteriDeboli: confermati('inferiore'),
+      radar: {
+        posizioneRadar: arrotondaONullo(posizioneRadarDaPercentuale(corrente.risultato.percentualeEsatta, scala)),
+        puntoPieno: puntoPienoDiClasse(corrente),
+      },
+      criteri,
+    };
+  });
+
+  const tuttiICriteri = criteriPerNucleo.flat();
+  return {
+    classe: {
+      studentiTotali: righeStudenti.length,
+      studentiValutati: righeStudenti.filter((riga) => tuttiICriteri.some((id) => riga.has(id))).length,
+    },
+    complessivo: {
+      risultato: complessivo,
+      storico: complessivoStorico,
+      differenzaCorrenteStorico: differenzaCorrenteStorico(complessivo, complessivoStorico),
+      criteriValutati: contaCriteriValutati(correnti.flatMap((n) => n.criteri)),
+      difficoltaGeneralizzata: difficoltaGeneralizzata(complessivo),
+    },
+    nuclei,
+  };
+}
+
 module.exports = {
   REGOLA_CLASSE,
   preparaBande, giudizioDi, bandeConPosizioneRadar,
@@ -332,4 +486,5 @@ module.exports = {
   confrontoRelativo, difficoltaGeneralizzata,
   risultatoCriterioStudente, aggregaCriteriStudente,
   nucleoDiClasse, statoCoperturaCriterio, confrontoCriterioConNucleo, complessivoDiClasse,
+  rigaStudenteDiClasse, puntoPienoDiClasse, progressoDiClasse,
 };
