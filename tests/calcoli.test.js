@@ -102,3 +102,213 @@ test('risultatoCorrenteMediaMobile: 0,1,2,2 -> ultime 3 = 1,2,2 -> media 1,67; c
   assert.equal(vuoto.media, null);
   assert.equal(vuoto.percentuale, null);
 });
+
+// ===========================================================================
+// REPORT PEDAGOGICI (specifica v2.7) — server/lib/calcoloProgresso.js
+// I valori attesi sono quelli dei dataset calcolati a mano nella specifica.
+// ===========================================================================
+
+const progresso = require('../server/lib/calcoloProgresso');
+
+const SCALA_ALFA = { valoreMinimo: 0, valoreMassimo: 2 };
+const SCALA_BETA = { valoreMinimo: 1, valoreMassimo: 4 };
+const P_ALFA = progresso.preparaBande(BANDE_ALFA);
+const P_BETA = progresso.preparaBande([
+  { soglia_minima: '85.00', etichetta: 'ECCELLENTE' },
+  { soglia_minima: '70.00', etichetta: 'BUONO' },
+  { soglia_minima: '55.00', etichetta: 'SUFFICIENTE' },
+  { soglia_minima: '0.00', etichetta: 'INSUFFICIENTE' },
+]);
+
+const criterioAlfa = (valori) => progresso.risultatoCriterioStudente(valori, SCALA_ALFA, P_ALFA);
+
+test('U1 criterio: 0,1,2,2 -> media mobile 1,67 (83,33% DISTINTO), cumulativo 62,5% distinto dal corrente', () => {
+  const r = criterioAlfa([0, 1, 2, 2]);
+  assert.equal(r.media, 1.67);
+  assert.equal(r.percentuale, 83.33);
+  assert.equal(r.giudizio, 'DISTINTO');
+  assert.equal(r.osservazioniConsiderate, 3);
+  assert.equal(r.osservazioniTotali, 4);
+  assert.equal(r.cumulativo.percentuale, 62.5);
+  assert.equal(r.cumulativo.giudizio, 'DISCRETO');
+  assert.deepEqual([r.cumulativo.punteggioOttenuto, r.cumulativo.punteggioMassimo], [5, 8]);
+});
+
+test('U2 criterio: con meno di 3 osservazioni usa tutte; livelli di copertura 0/1/2/3+', () => {
+  const una = criterioAlfa([1]);
+  assert.deepEqual([una.media, una.percentuale, una.giudizio, una.livelloCopertura], [1, 50, 'SUFFICIENTE', 1]);
+  const due = criterioAlfa([2, 0]);
+  assert.deepEqual([due.media, due.percentuale, due.osservazioniConsiderate, due.livelloCopertura], [1, 50, 2, 2]);
+  assert.equal(criterioAlfa([0, 1, 2]).livelloCopertura, 3);
+  assert.equal(criterioAlfa([0, 1, 2, 2, 2]).livelloCopertura, 3, '3 o più = consolidato');
+  // Lo 0 è una valutazione reale: una sola osservazione a 0 dà 0%, non "non valutato".
+  const zero = criterioAlfa([0]);
+  assert.deepEqual([zero.percentuale, zero.giudizio], [0, 'NON SUFFICIENTE']);
+});
+
+test('U3 criterio non osservato: tutto nullo, mai 0', () => {
+  const r = criterioAlfa([]);
+  assert.equal(r.media, null);
+  assert.equal(r.percentuale, null);
+  assert.equal(r.giudizio, '');
+  assert.equal(r.livelloGiudizio, null);
+  assert.equal(r.cumulativo.percentuale, null);
+  assert.equal(r.livelloCopertura, 0);
+});
+
+test('U4 nucleo parzialmente osservato: media dei soli criteri valutati, a pesi uguali; cumulativo = media dei cumulativi', () => {
+  const criteri = [[0, 1, 2, 2], [2, 0], [1], []].map(criterioAlfa);
+  const n = progresso.aggregaCriteriStudente(criteri, SCALA_ALFA, P_ALFA);
+  assert.equal(n.percentuale, 61.11);
+  assert.equal(n.giudizio, 'DISCRETO');
+  assert.deepEqual([n.criteriValutati, n.criteriTotali], [3, 4]);
+  assert.equal(n.cumulativo.percentuale, 54.17, 'media dei cumulativi (62,5 + 50 + 50) / 3, non il pool 8/14 = 57,14');
+  assert.deepEqual(n.copertura, { consolidati: 1, provvisori: 1, indicativi: 1, nonValutati: 1 });
+  assert.equal(n.puntoPieno, false);
+
+  const vuoto = progresso.aggregaCriteriStudente([[], []].map(criterioAlfa), SCALA_ALFA, P_ALFA);
+  assert.deepEqual([vuoto.percentuale, vuoto.giudizio, vuoto.posizioneRadar, vuoto.criteriValutati], [null, '', null, 0]);
+});
+
+test('U5 complessivo studente: media dei criteri valutati della materia, NON media dei nuclei', () => {
+  const numeri = [[0, 1, 2, 2], [2, 0], [1], []].map(criterioAlfa);
+  const spazio = [[2, 2, 2, 1, 0], [], [], []].map(criterioAlfa);
+  const nucleoSpazio = progresso.aggregaCriteriStudente(spazio, SCALA_ALFA, P_ALFA);
+  assert.equal(nucleoSpazio.percentuale, 50, 'finestra 2,1,0');
+  assert.equal(nucleoSpazio.cumulativo.percentuale, 70, 'studente in calo: corrente sotto il cumulativo');
+  const g = progresso.aggregaCriteriStudente([...numeri, ...spazio], SCALA_ALFA, P_ALFA);
+  assert.equal(g.percentuale, 58.33, '(83,33 + 50 + 50 + 50) / 4, non (61,11 + 50) / 2 = 55,56');
+  assert.equal(g.giudizio, 'SUFFICIENTE');
+  assert.equal(g.cumulativo.percentuale, 58.13);
+  assert.deepEqual([g.criteriValutati, g.criteriTotali], [4, 8]);
+});
+
+test('U6 scala 1-4: percentuale pedagogica (media/massimo) e posizioneRadar (min->max) sono grandezze diverse', () => {
+  const criterioBeta = (valori) => progresso.risultatoCriterioStudente(valori, SCALA_BETA, P_BETA);
+  const a = criterioBeta([2, 4, 3, 4]);
+  assert.deepEqual([a.media, a.percentuale, a.giudizio], [3.67, 91.67, 'ECCELLENTE']);
+  assert.equal(a.cumulativo.percentuale, 81.25);
+  const b = criterioBeta([1]);
+  assert.deepEqual([b.percentuale, b.giudizio], [25, 'INSUFFICIENTE'], 'il minimo della scala vale 25%, non 0%');
+  const nucleo = progresso.aggregaCriteriStudente([a, b, criterioBeta([2, 3])], SCALA_BETA, P_BETA);
+  assert.equal(nucleo.percentuale, 59.72);
+  assert.equal(nucleo.giudizio, 'SUFFICIENTE', 'il giudizio usa la percentuale pedagogica');
+  assert.equal(nucleo.posizioneRadar, 46.3);
+  assert.equal(nucleo.cumulativo.percentuale, 56.25);
+
+  assert.deepEqual([1, 2, 3, 4].map((v) => arrotonda(progresso.posizioneRadarDaMedia(v, SCALA_BETA))), [0, 33.33, 66.67, 100]);
+  const anelli = progresso.bandeConPosizioneRadar(P_BETA, SCALA_BETA);
+  assert.deepEqual(anelli.map((x) => [x.etichetta, x.posizioneRadar]), [
+    ['ECCELLENTE', 80], ['BUONO', 60], ['SUFFICIENTE', 40], ['INSUFFICIENTE', null],
+  ], 'una soglia sotto il minimo della scala non ha anello');
+  assert.deepEqual(anelli.map((x) => x.livello), [3, 2, 1, 0]);
+});
+
+function arrotonda(v) { return v === null ? null : Math.round(v * 100) / 100; }
+
+test('U7 scala 0-2: percentuale e posizioneRadar coincidono; scala con un solo valore -> posizione nulla', () => {
+  const n = progresso.aggregaCriteriStudente([[0, 1, 2, 2], [2, 0], [1]].map(criterioAlfa), SCALA_ALFA, P_ALFA);
+  assert.equal(n.posizioneRadar, n.percentuale);
+  assert.deepEqual(
+    progresso.bandeConPosizioneRadar(P_ALFA, SCALA_ALFA).map((x) => x.posizioneRadar), [90, 80, 70, 60, 50, null]
+  );
+  assert.equal(progresso.posizioneRadarDaMedia(3, { valoreMinimo: 3, valoreMassimo: 3 }), null);
+});
+
+test('U8 radar: punto pieno solo con tutti i criteri consolidati; confronto nucleo/complessivo per banda', () => {
+  const pieno = progresso.aggregaCriteriStudente([[2, 2, 2], [1, 2, 2, 2]].map(criterioAlfa), SCALA_ALFA, P_ALFA);
+  assert.equal(pieno.puntoPieno, true);
+  const conProvvisorio = progresso.aggregaCriteriStudente([[2, 2, 2], [2, 2]].map(criterioAlfa), SCALA_ALFA, P_ALFA);
+  assert.equal(conProvvisorio.puntoPieno, false);
+  const conNonValutato = progresso.aggregaCriteriStudente([[2, 2, 2], []].map(criterioAlfa), SCALA_ALFA, P_ALFA);
+  assert.equal(conNonValutato.puntoPieno, false);
+
+  assert.equal(progresso.confrontoConComplessivo(4, 2), 'punto_di_forza');
+  assert.equal(progresso.confrontoConComplessivo(1, 2), 'area_di_attenzione');
+  assert.equal(progresso.confrontoConComplessivo(2, 2), 'nella_norma');
+  assert.equal(progresso.confrontoConComplessivo(null, 2), null);
+});
+
+// --- Classe: dataset di 8 studenti della specifica (valori R in percentuale; "-" = non valutato) ---
+const T = 100 / 3; // un terzo di scala percentuale: 33,33
+const CLASSE_8 = {
+  C1: [100, 250 / 3, 100, 2 * T, 250 / 3, 100, 2 * T, 250 / 3],
+  C2: [50, T, 2 * T, T / 2, 50, 50, T, null],
+  C3: [250 / 3, 2 * T, 100, 250 / 3, 2 * T, 250 / 3, 50, 100],
+  C4: [100, null, null, null, null, null, null, null],
+};
+
+function righeDa(matrice, numeroStudenti) {
+  return Array.from({ length: numeroStudenti }, (_, s) => {
+    const riga = new Map();
+    Object.entries(matrice).forEach(([criterio, valori]) => {
+      if (valori[s] !== null && valori[s] !== undefined) riga.set(criterio, { percentualeEsatta: valori[s], osservazioniTotali: 3 });
+    });
+    return riga;
+  });
+}
+
+test('U9 classe: K(c) = media dei risultati degli studenti valutati; nucleo = media dei soli criteri rappresentativi', () => {
+  const n = progresso.nucleoDiClasse(['C1', 'C2', 'C3', 'C4'], righeDa(CLASSE_8, 8), P_ALFA);
+  const c = Object.fromEntries(n.criteri.map((x) => [x.id, x]));
+  assert.deepEqual([c.C1.risultato.percentuale, c.C1.risultato.giudizio, c.C1.copertura.studentiValutati], [85.42, 'DISTINTO', 8]);
+  assert.deepEqual([c.C2.risultato.percentuale, c.C2.risultato.giudizio, c.C2.copertura.studentiValutati], [42.86, 'NON SUFFICIENTE', 7]);
+  assert.deepEqual([c.C3.risultato.percentuale, c.C3.risultato.giudizio, c.C3.copertura.studentiValutati], [79.17, 'BUONO', 8]);
+  assert.deepEqual([c.C4.rappresentativo, c.C4.stato], [false, 'poco_osservato'], '1 studente su 8');
+  assert.equal(n.risultato.percentuale, 69.15, 'C4 (100% su un solo studente) non entra: con C4 sarebbe 76,86');
+  assert.equal(n.risultato.giudizio, 'DISCRETO');
+  assert.deepEqual([n.risultato.criteriRappresentativi, n.risultato.criteriTotali], [3, 4]);
+  assert.deepEqual(n.copertura, { studentiValutati: 8, studentiTotali: 8 });
+  assert.equal(c.C1.distribuzioneGiudizi.reduce((t, d) => t + d.studenti, 0), 8);
+
+  const complessivo = progresso.complessivoDiClasse([n], P_ALFA);
+  assert.deepEqual([complessivo.percentuale, complessivo.criteriRappresentativi, complessivo.criteriTotali], [69.15, 3, 4]);
+});
+
+test('U10 classe: un criterio valutato esattamente da metà degli iscritti NON è rappresentativo; nessuno studente = non osservato', () => {
+  const matrice = { C1: [100, 100, 100, 100], C2: [50, 50, null, null], C3: [50, 50, 50, null], C4: [null, null, null, null] };
+  const n = progresso.nucleoDiClasse(['C1', 'C2', 'C3', 'C4'], righeDa(matrice, 4), P_ALFA);
+  const c = Object.fromEntries(n.criteri.map((x) => [x.id, x]));
+  assert.deepEqual([c.C2.rappresentativo, c.C2.stato], [false, 'poco_osservato'], '2 su 4');
+  assert.equal(c.C3.rappresentativo, true, '3 su 4');
+  assert.deepEqual([c.C4.stato, c.C4.risultato.percentuale], ['non_osservato', null], 'mai 0');
+  assert.equal(n.risultato.percentuale, 75, '(100 + 50) / 2: solo C1 e C3');
+
+  const vuoto = progresso.nucleoDiClasse(['C1'], righeDa({ C1: [null, null] }, 2), P_ALFA);
+  assert.deepEqual([vuoto.risultato.percentuale, vuoto.risultato.giudizio, vuoto.copertura.studentiValutati], [null, '', 0]);
+});
+
+test('U11 classe: criteri forti e deboli (banda diversa dal nucleo E almeno 2/3 dei confrontabili concordi, pari inclusi)', () => {
+  const n = progresso.nucleoDiClasse(['C1', 'C2', 'C3', 'C4'], righeDa(CLASSE_8, 8), P_ALFA);
+  const c = Object.fromEntries(n.criteri.map((x) => [x.id, x]));
+  assert.deepEqual(c.C1.confronto, { confrontabili: 8, inferiori: 1, superiori: 7, pari: 0 });
+  assert.equal(c.C1.stato, 'forte');
+  assert.deepEqual(c.C2.confronto, { confrontabili: 7, inferiori: 7, superiori: 0, pari: 0 });
+  assert.equal(c.C2.stato, 'debole');
+  assert.deepEqual(c.C3.confronto, { confrontabili: 8, inferiori: 0, superiori: 6, pari: 2 });
+  assert.equal(c.C3.stato, 'forte', '6 su 8 (pari nel denominatore): 18 >= 16');
+  assert.deepEqual(c.C4.confronto, { confrontabili: 0, inferiori: 0, superiori: 0, pari: 0 });
+});
+
+test('U12 classe: nessun falso allarme (meno di 6 confrontabili, stessa banda, quota 2/3 non raggiunta)', () => {
+  // Stessi rapporti del dataset, ma solo 5 studenti: differenze nette, però troppo pochi confrontabili.
+  const cinque = { C1: [100, 100, 100, 100, 100], C2: [0, 0, 0, 0, 0] };
+  const pochi = progresso.nucleoDiClasse(['C1', 'C2'], righeDa(cinque, 5), P_ALFA);
+  assert.deepEqual(pochi.criteri.map((x) => x.stato), ['nella_norma', 'nella_norma']);
+  assert.equal(pochi.criteri[1].confronto.confrontabili, 5);
+
+  // Stessa banda del nucleo: differenza coerente fra tutti gli studenti, ma nessun cambio di giudizio.
+  const stessaBanda = { C1: [96, 96, 96, 96, 96, 96], C2: [92, 92, 92, 92, 92, 92] };
+  const s = progresso.nucleoDiClasse(['C1', 'C2'], righeDa(stessaBanda, 6), P_ALFA);
+  assert.deepEqual(s.criteri.map((x) => x.risultato.giudizio), ['OTTIMO', 'OTTIMO']);
+  assert.deepEqual(s.criteri.map((x) => x.stato), ['nella_norma', 'nella_norma']);
+  assert.equal(s.criteri[1].confronto.inferiori, 6);
+
+  // Banda inferiore, ma solo 3 studenti su 6 vanno peggio (un sottogruppo molto basso): quota non raggiunta.
+  const sottogruppo = { C1: [80, 80, 80, 80, 80, 80], C2: [0, 0, 0, 90, 90, 90] };
+  const q = progresso.nucleoDiClasse(['C1', 'C2'], righeDa(sottogruppo, 6), P_ALFA);
+  assert.deepEqual([q.criteri[1].risultato.percentuale, q.criteri[1].confronto.inferiori], [45, 3]);
+  assert.equal(q.criteri[1].stato, 'nella_norma', '3 su 6 < 2/3');
+  assert.equal(q.criteri[1].distribuzioneGiudizi.find((d) => d.etichetta === 'NON SUFFICIENTE').studenti, 3,
+    'la dispersione resta visibile nella distribuzione');
+});
