@@ -312,3 +312,60 @@ test('U12 classe: nessun falso allarme (meno di 6 confrontabili, stessa banda, q
   assert.equal(q.criteri[1].distribuzioneGiudizi.find((d) => d.etichetta === 'NON SUFFICIENTE').studenti, 3,
     'la dispersione resta visibile nella distribuzione');
 });
+
+// ===========================================================================
+// COERENZA DEL GIUDIZIO: una sola regola di confronto con le soglie, per tutti i report.
+// La tolleranza neutralizza solo l'errore di virgola mobile, non sposta valori realmente sotto soglia.
+// ===========================================================================
+
+const { raggiungeSoglia, TOLLERANZA_NUMERICA } = require('../server/lib/calcoloEsiti');
+const giudizioVecchioENuovo = (valore) => [calcolaGiudizio(valore, BANDE_ALFA), progresso.giudizioDi(valore, P_ALFA).giudizio];
+
+test('Giudizio: un valore pari alla soglia ma rappresentato come 69,99999999999999 è classificato nella banda della soglia', () => {
+  const quasiSettanta = 69.99999999999999;
+  assert.notEqual(quasiSettanta, 70, 'è davvero un numero diverso da 70 in virgola mobile');
+  assert.deepEqual(giudizioVecchioENuovo(quasiSettanta), ['BUONO', 'BUONO']);
+  assert.deepEqual(giudizioVecchioENuovo(70), ['BUONO', 'BUONO']);
+  assert.deepEqual(giudizioVecchioENuovo(49.99999999999999), ['SUFFICIENTE', 'SUFFICIENTE']);
+  assert.equal(raggiungeSoglia(quasiSettanta, 70), true);
+});
+
+test('Giudizio: un valore realmente inferiore alla soglia resta nella banda inferiore', () => {
+  assert.deepEqual(giudizioVecchioENuovo(69.99), ['DISCRETO', 'DISCRETO']);
+  assert.deepEqual(giudizioVecchioENuovo(69.999999), ['DISCRETO', 'DISCRETO'], 'un milionesimo sotto è una differenza reale');
+  assert.deepEqual(giudizioVecchioENuovo(49.99), ['NON SUFFICIENTE', 'NON SUFFICIENTE']);
+  assert.equal(raggiungeSoglia(70 - 1e-6, 70), false);
+  // La più piccola differenza reale tra due risultati (2 decimali) è enormemente più grande della tolleranza.
+  assert.ok(TOLLERANZA_NUMERICA < 0.01 / 1000);
+});
+
+test('Giudizio: un valore realmente superiore alla soglia resta nella banda superiore', () => {
+  assert.deepEqual(giudizioVecchioENuovo(70.01), ['BUONO', 'BUONO']);
+  assert.deepEqual(giudizioVecchioENuovo(79.99), ['BUONO', 'BUONO'], 'appena sotto 80 resta BUONO, non diventa DISTINTO');
+  assert.deepEqual(giudizioVecchioENuovo(80), ['DISTINTO', 'DISTINTO']);
+  assert.deepEqual(giudizioVecchioENuovo(100), ['OTTIMO', 'OTTIMO']);
+  assert.deepEqual(giudizioVecchioENuovo(0), ['NON SUFFICIENTE', 'NON SUFFICIENTE']);
+  assert.deepEqual(giudizioVecchioENuovo(null), ['', '']);
+});
+
+test('Giudizio: il percorso del report attività e il motore dei report pedagogici danno lo stesso giudizio sul caso limite', () => {
+  // Report attività: media semplice dei criteri 2/2, 28/30 e 6/36 = 70% esatto, ma 69,99999999999999 in virgola mobile.
+  const esiti = [[2, 2], [28, 30], [6, 36]].map(([punteggioOttenuto, punteggioMassimo]) => ({ punteggioOttenuto, punteggioMassimo }));
+  const media = mediaSemplicePercentuali(esiti);
+  assert.equal(media.percentualeEsatta, 69.99999999999999);
+  assert.equal(media.percentuale, 70);
+  const delReportAttivita = calcolaGiudizio(media.percentualeEsatta, BANDE_ALFA);
+  const delMotore = progresso.giudizioDi(media.percentualeEsatta, P_ALFA).giudizio;
+  assert.equal(delReportAttivita, 'BUONO', 'coerente con la percentuale mostrata (70%)');
+  assert.equal(delReportAttivita, delMotore);
+
+  // Coerenza su tutta la gamma: stesse bande -> stesso giudizio, a passi di un centesimo e attorno a ogni soglia.
+  for (let centesimi = 0; centesimi <= 10000; centesimi += 1) {
+    const [vecchio, nuovo] = giudizioVecchioENuovo(centesimi / 100);
+    assert.equal(vecchio, nuovo, `divergenza a ${centesimi / 100}`);
+  }
+  BANDE_ALFA.forEach((banda) => [-1e-6, -1e-12, 0, 1e-12, 1e-6].forEach((scarto) => {
+    const [vecchio, nuovo] = giudizioVecchioENuovo(banda.soglia_minima + scarto);
+    assert.equal(vecchio, nuovo, `divergenza attorno alla soglia ${banda.soglia_minima}`);
+  }));
+});

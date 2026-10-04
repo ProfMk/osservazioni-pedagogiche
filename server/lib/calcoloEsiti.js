@@ -42,9 +42,27 @@ function calcolaEsito(punteggi, valoreMassimo) {
 function calcolaGiudizio(percentualeEsatta, bande) {
   if (percentualeEsatta === null || percentualeEsatta === undefined) return '';
   for (const banda of bande) {
-    if (percentualeEsatta >= Number(banda.soglia_minima)) return banda.etichetta;
+    if (raggiungeSoglia(percentualeEsatta, Number(banda.soglia_minima))) return banda.etichetta;
   }
   return '';
+}
+
+/**
+ * Tolleranza usata SOLO per neutralizzare gli errori di virgola mobile nel
+ * confronto con una soglia: una media di medie con i terzi può dare
+ * 69,99999999999999 dove il valore matematico è 70. È molti ordini di
+ * grandezza più piccola di qualunque differenza reale tra due risultati
+ * (percentuali a 2 decimali), quindi non sposta mai un valore davvero sotto
+ * soglia. Non modifica soglie, scale o percentuali.
+ */
+const TOLLERANZA_NUMERICA = 1e-9;
+
+/**
+ * UNICA regola di confronto con una soglia di giudizio (inclusiva), per
+ * tutti i report: stessa soglia configurata -> stesso giudizio ovunque.
+ */
+function raggiungeSoglia(percentualeEsatta, sogliaMinima) {
+  return percentualeEsatta + TOLLERANZA_NUMERICA >= sogliaMinima;
 }
 
 /**
@@ -94,5 +112,6 @@ function risultatoCorrenteMediaMobile(valoriCronologici, valoreMassimo, finestra
 
 module.exports = {
   arrotondaPerPresentazione, calcolaEsito, calcolaGiudizio, mediaSemplicePercentuali,
+  TOLLERANZA_NUMERICA, raggiungeSoglia,
   FINESTRA_MEDIA_MOBILE, risultatoCorrenteMediaMobile,
 };

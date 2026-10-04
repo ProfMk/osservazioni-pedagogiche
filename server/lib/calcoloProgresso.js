@@ -18,11 +18,8 @@
 
 const {
   arrotondaPerPresentazione, calcolaEsito, risultatoCorrenteMediaMobile, FINESTRA_MEDIA_MOBILE,
+  TOLLERANZA_NUMERICA: TOLLERANZA, raggiungeSoglia,
 } = require('./calcoloEsiti');
-
-// Tolleranza per i confronti tra valori esatti ottenuti con divisioni (terzi, medie di medie):
-// evita che 69,99999999999999 venga trattato come diverso da 70.
-const TOLLERANZA = 1e-9;
 
 // Parametri della regola di classe (specifica v2.7, approvati): restituiti anche dall'API.
 const REGOLA_CLASSE = Object.freeze({
@@ -59,7 +56,7 @@ function preparaBande(bandeDb) {
 function giudizioDi(percentualeEsatta, bande) {
   if (percentualeEsatta === null || percentualeEsatta === undefined) return { giudizio: '', livelloGiudizio: null };
   for (const banda of bande) {
-    if (percentualeEsatta + TOLLERANZA >= banda.sogliaMinima) return { giudizio: banda.etichetta, livelloGiudizio: banda.livello };
+    if (raggiungeSoglia(percentualeEsatta, banda.sogliaMinima)) return { giudizio: banda.etichetta, livelloGiudizio: banda.livello };
   }
   return { giudizio: '', livelloGiudizio: null };
 }

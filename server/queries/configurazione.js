@@ -68,7 +68,9 @@ async function getScalaApplicabile(client, { tenantId, schoolLevelId }) {
     [scala.id]
   );
   const valoreMassimo = valori.reduce((massimo, v) => Math.max(massimo, v.valore), -Infinity);
-  return { ...scala, valori, valoreMassimo };
+  // Il minimo NON è assunto pari a 0: è il più piccolo valore configurato (es. scala 1-4 -> 1).
+  const valoreMinimo = valori.reduce((minimo, v) => Math.min(minimo, v.valore), Infinity);
+  return { ...scala, valori, valoreMinimo, valoreMassimo };
 }
 
 /** Soglie di giudizio applicabili: stesso pattern override/default della scala (sez. 26). */

@@ -16,6 +16,7 @@ const { pool, transazione } = require('../db');
 const { richiedePermesso } = require('../lib/autorizzazione');
 const { registraAudit } = require('../lib/audit');
 const dominio = require('../queries/dominio');
+const progresso = require('../queries/progresso');
 const { getSchoolLevels } = require('../queries/configurazione');
 const { creaRoleAssignment } = require('../queries/rbac');
 const { datiNonValidi } = require('../lib/erroreApplicativo');
@@ -86,12 +87,13 @@ router.get('/teachings/:teachingId/students', asincrono(async (req, res) => {
 router.get('/teachings/:teachingId/students/:enrollmentId/progress', asincrono(async (req, res) => {
   const teachingId = Number(req.params.teachingId);
   const enrollmentId = Number(req.params.enrollmentId);
+  if (!Number.isInteger(teachingId)) throw datiNonValidi('Identificativo Teaching non valido.');
   if (!Number.isInteger(enrollmentId)) throw datiNonValidi('Identificativo iscrizione non valido.');
   await richiedePermesso(pool, {
     accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
     ...(await scopeDiTeaching(teachingId, req.tenantId)),
   });
-  res.json(await dominio.getProgressoStudenteDiTeaching(pool, { teachingId, enrollmentId, tenantId: req.tenantId }));
+  res.json(await progresso.getProgressoStudenteDiTeaching(pool, { teachingId, enrollmentId, tenantId: req.tenantId }));
 }));
 
 // GET /api/teachings/:teachingId/assessments — Assessment del Teaching (pagina "Valutazioni", sola lettura in V1).
