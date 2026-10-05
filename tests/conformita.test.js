@@ -39,15 +39,16 @@ test('C2: il client non fissa lingua, locale o direzione', () => {
   for (const file of FILE_JS) {
     const sorgente = senzaCommenti(leggi(file));
     assert.ok(!/['"](it|it-IT|en|en-US|ar)['"]/.test(sorgente), `${file} contiene un codice di lingua fisso`);
-    assert.ok(!/['"](ltr|rtl)['"]/.test(sorgente), `${file} decide la direzione`);
+    // i18n.js è l'unico punto che legge la direzione ricevuta dal server (I18n.rtl()).
+    if (file !== 'public/js/i18n.js') assert.ok(!/['"](ltr|rtl)['"]/.test(sorgente), `${file} decide la direzione`);
   }
   const html = leggi('public/index.html');
   assert.ok(!/<html[^>]*\b(lang|dir)=/.test(html), 'lang/dir li imposta il client dal catalogo del server');
 });
 
-test('Regola B: il client non calcola né arrotonda i valori ricevuti', () => {
+test('Regola B: il client non calcola né arrotonda i valori ricevuti (la sola geometria grafica è in geometria.js, C4)', () => {
   const calcolo = /\bMath\.|\.toFixed\(|\.toPrecision\(|parseFloat\(|Number\.EPSILON/;
-  for (const file of FILE_JS) {
+  for (const file of FILE_JS.filter((f) => f !== 'public/js/geometria.js')) {
     senzaCommenti(leggi(file)).split('\n').forEach((riga, i) => {
       assert.ok(!calcolo.test(riga), `${file}:${i + 1} esegue un calcolo numerico: ${riga.trim()}`);
     });
@@ -98,6 +99,21 @@ test('§17: ogni identificatore emesso dal motore e dalle query (stati, motivi, 
     ...Object.values(ESCLUSIONE), 'GENERALIZED_DIFFICULTY', 'GENERALIZED_DIFFICULTY_DETAIL',
   ];
   assert.deepEqual(emessi.filter((c) => !(c in CATALOGO)), []);
+});
+
+test('C4: geometria.js è solo presentazionale (nessuna banda, certezza, media, percentuale, confronto)', () => {
+  const sorgente = senzaCommenti(leggi('public/js/geometria.js'));
+  assert.ok(!/banda|bande|certezz|media|percentual|confront|giudizio|I18n/i.test(sorgente));
+});
+
+test('V2.1: nessun colore di banda scritto nel client (arrivano dal server, E1); nessun andamento', () => {
+  const PALETTE = require('../server/lib/pubblicazione').PALETTE_BANDE;
+  for (const file of ['public/css/app.css', ...FILE_JS]) {
+    const sorgente = leggi(file).toLowerCase();
+    PALETTE.forEach((colore) => assert.ok(!sorgente.includes(colore), `${file} contiene il colore di banda ${colore}`));
+    assert.ok(!/COLUMN_TREND|TREND_|andamento/i.test(senzaCommenti(leggi(file))), `${file} cita l'andamento`);
+  }
+  assert.ok(!('COLUMN_TREND' in CATALOGO));
 });
 
 test('V1 rimossa: nessun radar, nessuna Dashboard, nessun percorso duplicato', () => {

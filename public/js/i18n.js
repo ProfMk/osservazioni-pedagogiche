@@ -77,6 +77,8 @@
     data: data,
     lingua: function () { return stato.lingua; },
     direzione: function () { return stato.direzione; },
+    /** Vero se la lingua della sessione (decisa dal server) si scrive da destra a sinistra. */
+    rtl: function () { return stato.direzione === 'rtl'; },
     locale: function () { return stato.locale; },
     MARCATORE_MANCANTE: MARCATORE_MANCANTE,
   };

@@ -10,8 +10,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test:unit": "node --test tests/calcoli.test.js tests/regolaB.test.js tests/conformita.test.js",
-    "test:integration": "node --test tests/integration.test.js tests/lingua.test.js tests/seedEsteso.test.js tests/v21.test.js",
-    "test": "node --test tests/calcoli.test.js tests/regolaB.test.js tests/conformita.test.js tests/integration.test.js tests/lingua.test.js tests/seedEsteso.test.js tests/v21.test.js",
+    "test:integration": "node --test tests/integration.test.js tests/lingua.test.js tests/seedEsteso.test.js tests/v21.test.js tests/geometria.test.js",
+    "test": "node --test tests/calcoli.test.js tests/regolaB.test.js tests/conformita.test.js tests/integration.test.js tests/lingua.test.js tests/seedEsteso.test.js tests/v21.test.js tests/geometria.test.js",
     "test:e2e": "node --test tests/e2e.test.js",
     "test:all": "npm test && npm run test:e2e"
   },
