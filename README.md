@@ -1,4 +1,4 @@
-# Osservazioni pedagogiche — multi-tenant, Visual Grammar V2
+# Osservazioni pedagogiche — multi-tenant, Visual Grammar V2.1
 
 Sistema di osservazioni pedagogiche strutturate, multi-tenant e
 multiutente: più istituti (tenant), più ruoli (docente, coordinatore,
@@ -13,15 +13,33 @@ sessione, senza tenant, senza RBAC): quel modello è superato. La logica di
 calcolo pedagogico (percentuali, giudizi, "Report classe" come fotografia
 di una singola attività) è stata portata sul nuovo dominio.
 
-## Visual Grammar V2
+## Visual Grammar V2.1 (revisione 2)
 
-La presentazione dei dati segue la **Visual Grammar V2** (prevale sulla V1):
+La presentazione dei dati segue la **Visual Grammar V2.1, revisione 2**, che prevale sulla
+V2 per la rappresentazione (§12 e §16) lasciando invariata la semantica (Regola B,
+aggregazioni, certezza, criticità, esclusioni, n/N):
 
 - **Percorso unico** `Insegnamenti → materia → classe → {Quadro classe, Studenti,
-  Attività, Valutazioni}`; dentro le viste, gerarchia L0 → L1 → L2 → L3 in cui la riga
-  scelta diventa l'intestazione del livello successivo. Niente Dashboard, niente radar.
-- **Riga V2** con ordine fisso: nome · asse · banda · criticità · confronto · andamento
-  (colonna riservata, andamento fuori ambito) · certezza · n/N.
+  Attività, Valutazioni}`; dentro le viste, gerarchia L0 → L1 → L2 → L3 con lo **stesso
+  disco** a ogni livello. Niente Dashboard, niente radar, niente andamento.
+- **Disco**: settore = categoria (nucleo, poi criterio), tutti della stessa ampiezza;
+  raggio del riempimento = valore (0% bordo interno, 100% bordo esterno); 1 elemento =
+  cerchio, 2 = semicerchi, 3–6 = spicchi, oltre 6 solo carte e tabella.
+- **Colore = banda**, assegnato dal server (`bande[].colore`), sempre insieme a numero ed
+  etichetta. **Valore osservato ≠ non osservato**: ogni valore della scala 0…n è
+  un'osservazione reale con la sua banda e il suo colore (`scala.valori[].bandaId`, stessa
+  formula del motore: valore ÷ massimo × 100 con la Regola B); null = nessuna
+  osservazione, grigio neutro tratteggiato, mai un colore di banda.
+- **Certezza** = righe sopra il colore (●●● / ●●○); **criticità** = fascia interna della
+  zona critica, bordo pieno (in banda critica) o tratteggiato con ⚠ (da verificare).
+- **Riferimenti**: ⌒ arco scuro con terminali = classe; ◇ = storico dell'alunno.
+  ▲ ▼ = nel profilo confrontano il nucleo con il complessivo dello stesso alunno.
+- **Valutazione del docente** (■): usa il colore della banda solo se il giudizio coincide
+  con l'etichetta di una banda (maiuscole e spazi ignorati); altrimenti nessun colore.
+- **Navigazione a pila**: «← livello superiore», briciole, `history.pushState` (il tasto
+  Indietro del browser torna al livello precedente; l'indirizzo riapre lo stesso livello).
+- **Accessibilità**: ogni disco ha «Mostra come tabella» (equivalente, stampabile, per
+  screen reader); i settori si aprono anche da tastiera.
 - **Il server decide tutto il significato**: valori in centesimi interi (Regola B,
   `kc = floor((x + ε) × 100)`), bande, certezza, criticità (⚠ banda critica / da
   verificare), confronti confermati, esclusioni con motivo, posizioni sull'asse. Il
@@ -33,7 +51,7 @@ La presentazione dei dati segue la **Visual Grammar V2** (prevale sulla V1):
   mancante è segnalato (`⟨?⟩`), mai sostituito da un'altra lingua. Contenuti pedagogici
   multilingue con ritorno alla lingua d'origine e attributo `lang`.
 - **Errori come codici** `{ errore: { codice: 'ERR_*', parametri } }`, tradotti dal client.
-- **RTL**: solo proprietà CSS logiche; l'asse si specchia da sé.
+- **RTL**: solo proprietà CSS logiche; il disco si specchia (settori nel verso di lettura).
 
 Il catalogo `it.json` è un **catalogo di prova** (testi provvisori, non definitivi).
 
@@ -105,14 +123,17 @@ public/
   index.html                       Guscio senza testi
   css/app.css                      Stile (solo proprietà logiche)
   js/i18n.js                       Catalogo, plurali, formattazione Intl
-  js/grammatica.js                 Componenti della grammatica visuale (riga, asse, segni)
+  js/geometria.js                  Sola geometria grafica del disco (seno/coseno), nessuna semantica
+  js/grammatica.js                 Componenti della grammatica visuale (disco, carta, tabella, segni)
   js/app.js                        Percorso unico e viste V2
 tests/
   calcoli.test.js, regolaB.test.js Test puri del motore (nessun database)
   conformita.test.js               Controlli statici del client (proprietà logiche, testi, nessun calcolo)
   integration.test.js              Sessione, CSRF, tenant/RBAC, audit, integrità DB, viste V2
   lingua.test.js                   Lingua C2/P3, catalogo, errori come codici, contenuti multilingue
-  e2e.test.js                      Browser: percorso, viste, RTL, bianco/nero, accessibilità (axe-core)
+  v21.test.js                      Campi E1–E4 del payload V2.1 (colori, bande dei valori, complessivo, valutazioni)
+  geometria.test.js                Geometria del disco (settori uguali, raggio = valore, RTL)
+  e2e.test.js                      Browser sul seed esteso: viste V2.1, colori, navigazione, RTL, B/N, axe-core
   support/pglite.js                Database di prova in memoria (PGlite) per i test, nessuna installazione richiesta
 ```
 
@@ -266,11 +287,16 @@ PLATFORM_ADMIN → GET/POST /api/platform/tenants (qualunque tenant)
 | `GET /api/admin/traduzioni/completezza` | `tenant.manage_config` | Completezza delle traduzioni per lingua e campo |
 | `PUT /api/admin/traduzioni` | `tenant.manage_config` | Traduzione di un contenuto pedagogico (con audit) |
 
+Campi aggiunti dalla V2.1 (revisione 2), derivati senza calcoli nuovi e senza migrazioni:
+`bande[].colore` e `bande[].inchiostro` (E1, in tutti i report), `scala.valori[].bandaId`
+(E2: profilo, griglia, esito attività), `studenti[].complessivo` nella matrice (E3),
+`valutazioni[].bandaId` (E4: profilo, valutazioni).
+
 Tutti gli errori hanno la forma `{ "errore": { "codice": "ERR_*", "parametri": {…} } }`.
 
 ## Cosa NON è ancora incluso
 
-Rinviato dalla Visual Grammar V2: andamento (TREND_*, la colonna è riservata),
+Rinviato dalla Visual Grammar V2/V2.1: andamento (TREND_*: nessuna colonna e nessun indicatore finché non è definito),
 quadro multi-materia, gruppi, forma definitiva del catalogo e testi definitivi
 (il catalogo `it.json` è di prova), guida redazionale.
 
