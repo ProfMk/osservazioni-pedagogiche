@@ -93,10 +93,11 @@ function scalaPubblica(scala, tr, bande) {
 }
 
 /**
- * E4 (decisione C2): banda a cui corrisponde il giudizio di una valutazione del docente.
- * Il giudizio è testo libero: corrisponde a una banda solo se coincide con la sua etichetta
- * (nella lingua d'origine o nella traduzione della sessione), ignorando maiuscole e spazi
- * superflui. Nessuna corrispondenza: null (nessun colore). Nessuna interpretazione del testo.
+ * E4 (decisione C2): REGOLA DI COMPATIBILITÀ con il testo libero del giudizio, non una
+ * chiave. La banda resta identificata dal suo id; l'etichetta serve solo a riconoscere un
+ * giudizio scritto uguale all'etichetta CONFIGURATA dall'istituto (mai la traduzione di
+ * presentazione: il risultato non dipende dalla lingua della sessione), ignorando
+ * maiuscole e spazi superflui. Nessuna corrispondenza: null (nessun colore).
  */
 function normalizzaEtichetta(testo) {
   return String(testo).trim().replace(/\s+/g, ' ').toLowerCase();
@@ -105,9 +106,8 @@ function normalizzaEtichetta(testo) {
 function bandaDelGiudizio(giudizio, bande) {
   if (giudizio === null || giudizio === undefined) return null;
   const cercato = normalizzaEtichetta(typeof giudizio === 'object' ? giudizio.testo : giudizio);
-  const trovata = bande.find((b) => [b.etichettaOrigine, b.etichetta && typeof b.etichetta === 'object' ? b.etichetta.testo : b.etichetta]
-    .filter((e) => e !== null && e !== undefined)
-    .some((e) => normalizzaEtichetta(e) === cercato));
+  const trovata = bande.find((b) => b.etichettaOrigine !== null && b.etichettaOrigine !== undefined
+    && normalizzaEtichetta(b.etichettaOrigine) === cercato);
   return trovata ? trovata.id : null;
 }
 

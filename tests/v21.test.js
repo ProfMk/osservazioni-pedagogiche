@@ -161,3 +161,9 @@ test('E4: nessuna somiglianza parziale (es. "SUFFICIENTE" non abbina "NON SUFFIC
   assert.equal(bandaDelGiudizio('sufficiente.', bande), null);
   assert.equal(bandaDelGiudizio(null, bande), null);
 });
+
+test('E4: compatibilità con l\'etichetta configurata, non con la traduzione di presentazione (indipendente dalla lingua della sessione)', () => {
+  const bande = [{ id: 7, etichetta: { testo: 'جيد', lingua: 'ar-XB' }, etichettaOrigine: 'BUONO' }];
+  assert.equal(bandaDelGiudizio('buono', bande), 7);
+  assert.equal(bandaDelGiudizio('جيد', bande), null, 'la traduzione non diventa una chiave');
+});
