@@ -273,7 +273,7 @@ async function caricaAttivita(client, { activityId, tenantId, lingua }) {
     criteri,
     alunni,
     scala,
-    scalaPub: scalaPubblica(scala, tr),
+    scalaPub: scalaPubblica(scala, tr, bande),
     bande,
     osservazioni,
     attivita: {

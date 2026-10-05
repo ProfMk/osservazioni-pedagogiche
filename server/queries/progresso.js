@@ -19,7 +19,7 @@ const { getScalaApplicabile, getBandeGiudizio } = require('./configurazione');
 const { verificaTeachingNelTenant } = require('./dominio');
 const { FINESTRA_MEDIA_MOBILE } = require('../lib/calcoloEsiti');
 const motore = require('../lib/calcoloProgresso');
-const { pubblico, bandePubbliche, scalaPubblica, traduttoreDi } = require('../lib/pubblicazione');
+const { pubblico, bandePubbliche, scalaPubblica, traduttoreDi, bandaDelGiudizio } = require('../lib/pubblicazione');
 
 const ATTIVITA_ATTIVA = 'attiva';
 const NUCLEO_ATTIVO = 'attiva';
@@ -42,7 +42,9 @@ async function caricaContestoTeaching(client, { teachingId, tenantId, tr }) {
   );
   const scala = await getScalaApplicabile(client, { tenantId, schoolLevelId: teaching.school_level_id });
   const bandeDb = await getBandeGiudizio(client, { tenantId, schoolLevelId: teaching.school_level_id });
-  const bande = motore.preparaBande(bandeDb.map((b) => ({ ...b, etichetta: tr.testo('judgment_bands.etichetta', b.id, b.etichetta) })));
+  const origine = new Map(bandeDb.map((b) => [String(b.id), b.etichetta]));
+  const bande = motore.preparaBande(bandeDb.map((b) => ({ ...b, etichetta: tr.testo('judgment_bands.etichetta', b.id, b.etichetta) })))
+    .map((b) => ({ ...b, etichettaOrigine: origine.get(String(b.id)) }));
   return {
     teaching,
     scala,
@@ -206,7 +208,7 @@ async function caricaClasse(client, { teachingId, tenantId, lingua }) {
   const tr = await traduttoreDi(client, lingua);
   const contesto = await caricaContestoTeaching(client, { teachingId, tenantId, tr });
   const { teaching, scala, bande } = contesto;
-  const scalaPub = scalaPubblica(scala, tr);
+  const scalaPub = scalaPubblica(scala, tr, bande);
   const struttura = await caricaStruttura(client, { subjectId: teaching.subject_id, tenantId, tr });
   const iscrizioni = await caricaIscrizioni(client, teaching, tenantId);
   const osservazioni = await caricaOsservazioni(client, { teachingId, tenantId });
@@ -244,7 +246,7 @@ function riferimentoClasse(risultato) {
 }
 
 /** Valutazioni docente (strato TEACHER_ASSESSMENT) di un Teaching, con autore e periodo. */
-async function caricaValutazioni(client, { teachingId, tenantId, tr, enrollmentId = null }) {
+async function caricaValutazioni(client, { teachingId, tenantId, tr, bande, enrollmentId = null }) {
   const { rows } = await client.query(
     `SELECT ass.id, ass.enrollment_id, ass.criterion_id, ass.giudizio, ass.lingua_contenuto, ass.note,
             to_char(ass.updated_at, 'YYYY-MM-DD') AS aggiornata_il,
@@ -279,6 +281,8 @@ async function caricaValutazioni(client, { teachingId, tenantId, tr, enrollmentI
     },
     // Timbro (■): contenuto d'autore, nella lingua in cui è stato registrato; mai precompilato.
     giudizio: tr.autore(r.giudizio, r.lingua_contenuto),
+    // E4: banda la cui etichetta coincide con il giudizio (null se nessuna).
+    bandaId: bandaDelGiudizio(r.giudizio, bande),
     nota: tr.autore(r.note || null, r.lingua_contenuto),
     autore: { nome: r.autore_nome, cognome: r.autore_cognome },
     aggiornataIl: r.aggiornata_il,
@@ -330,7 +334,7 @@ async function getProgressoStudenteDiTeaching(client, { teachingId, enrollmentId
   const { tr, scalaPub, contesto } = dati;
   const classePerNucleo = new Map(dati.nucleiClasse.map((n) => [n.nucleo.id, n]));
 
-  const valutazioni = (await caricaValutazioni(client, { teachingId, tenantId, tr, enrollmentId }))
+  const valutazioni = (await caricaValutazioni(client, { teachingId, tenantId, tr, bande: contesto.bande, enrollmentId }))
     .map((v) => ({ ...v, evidenza: evidenzaValutazione(v, dati) }));
 
   return {
@@ -452,6 +456,8 @@ async function getMatriceStudenti(client, { teachingId, tenantId, lingua }) {
         cognome: iscrizione.cognome,
         nome: iscrizione.nome,
         inZonaCritica: celle.some((c) => c.criticita === motore.CRITICITA.BANDA),
+        // E3: complessivo dell'alunno già calcolato dal motore (centro del mini-disco).
+        complessivo: pubblico(calcolo.complessivo),
         celle,
       };
     }),
@@ -461,7 +467,7 @@ async function getMatriceStudenti(client, { teachingId, tenantId, lingua }) {
 /** VALUTAZIONI (VIEW_ASSESSMENT): timbro, periodo, autore, sintesi del periodo come evidenza. */
 async function getValutazioniDiTeaching(client, { teachingId, tenantId, lingua }) {
   const dati = await caricaClasse(client, { teachingId, tenantId, lingua });
-  const valutazioni = await caricaValutazioni(client, { teachingId, tenantId, tr: dati.tr });
+  const valutazioni = await caricaValutazioni(client, { teachingId, tenantId, tr: dati.tr, bande: dati.contesto.bande });
   return {
     ...testataReport(dati.contesto),
     valutazioni: valutazioni.map((v) => ({ ...v, evidenza: evidenzaValutazione(v, dati) })),
