@@ -14,6 +14,7 @@
  * Database disponibili, ricreati da zero a ogni esecuzione:
  *   pglite://completo         schema V1 + ruoli/permessi + audit + lingua/contenuti V2 + seed multi-tenant
  *   pglite://senza-migration  solo schema base (test di regressione sulla migration)
+ *   pglite://esteso           come "completo" + seed/seed_esteso.sql (scenari ampi per le viste V2)
  *
  * Limite: una sola sessione per database, quindi nessuna concorrenza reale.
  */
@@ -27,6 +28,7 @@ const RADICE = path.resolve(__dirname, '..', '..');
 
 const URL_COMPLETO = 'pglite://completo';
 const URL_SENZA_MIGRATION = 'pglite://senza-migration';
+const URL_ESTESO = 'pglite://esteso';
 
 const SCRIPT_PER_DATABASE = {
   [URL_COMPLETO]: [
@@ -37,6 +39,14 @@ const SCRIPT_PER_DATABASE = {
     'seed/seed_multitenant.sql',
   ],
   [URL_SENZA_MIGRATION]: ['migrations/000_schema_base.sql'],
+  [URL_ESTESO]: [
+    'migrations/000_schema_base.sql',
+    'migrations/001_ruoli_permessi_sistema.sql',
+    'migrations/002_audit_append_only.sql',
+    'migrations/003_lingua_contenuti_v2.sql',
+    'seed/seed_multitenant.sql',
+    'seed/seed_esteso.sql',
+  ],
 };
 
 // Parser di tipo registrati dal codice applicativo (server/db.js converte i bigint in numeri).
@@ -111,15 +121,15 @@ const pgDiProva = {
  * Installa il modulo `pg` di prova e imposta le variabili d'ambiente dei test.
  * Va chiamata PRIMA di richiedere server/db.js.
  */
-function installa() {
+function installa({ url = URL_COMPLETO } = {}) {
   const caricaOriginale = Module._load;
   Module._load = function carica(richiesta, ...resto) {
     if (richiesta === 'pg') return pgDiProva;
     return caricaOriginale.call(this, richiesta, ...resto);
   };
-  process.env.DATABASE_URL = URL_COMPLETO;
+  process.env.DATABASE_URL = url;
   if (!process.env.PGTEST_URL_SENZA_MIGRATION) process.env.PGTEST_URL_SENZA_MIGRATION = URL_SENZA_MIGRATION;
   if (!process.env.SESSION_SECRET) process.env.SESSION_SECRET = 'segreto-di-test-non-usare-in-produzione';
 }
 
-module.exports = { installa, URL_COMPLETO, URL_SENZA_MIGRATION };
+module.exports = { installa, URL_COMPLETO, URL_SENZA_MIGRATION, URL_ESTESO };

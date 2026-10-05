@@ -161,6 +161,16 @@ su un database di produzione reale**):
 psql "$DATABASE_URL" -f seed/seed_multitenant.sql
 ```
 
+Per provare le viste V2 con più dati (sempre e solo in sviluppo), **dopo** il seed di
+base si può applicare il seed esteso: 36 alunni in più in Alfa 2A/2B, 23 attività,
+circa mille osservazioni con profili diversi, un criterio critico in 2A, difficoltà
+generalizzata in 2B, un'iscrizione disattivata, valutazioni del primo quadrimestre.
+È idempotente (una seconda esecuzione non fa nulla):
+
+```bash
+psql "$DATABASE_URL" -f seed/seed_esteso.sql
+```
+
 ### Reset del database
 
 Non esistono migration "down": per ripartire da zero, ricreare il database
