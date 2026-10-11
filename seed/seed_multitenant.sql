@@ -21,9 +21,17 @@
 -- ---------------------------------------------------------------------
 -- TENANT
 -- ---------------------------------------------------------------------
-INSERT INTO tenants (slug, nome) VALUES
-  ('alfa', 'Istituto Comprensivo Alfa'),
-  ('beta', 'Istituto Comprensivo Beta');
+-- Configurazione linguistica (V2, C2/B-1): una sola lingua abilitata per tenant, caso
+-- particolare ammesso di C2. Tenant e lingue nella stessa transazione: la FK
+-- "lingua predefinita abilitata" è differita al COMMIT.
+BEGIN;
+INSERT INTO tenants (slug, nome, lingua_predefinita, lingua_contenuti, regione) VALUES
+  ('alfa', 'Istituto Comprensivo Alfa', 'it', 'it', 'IT'),
+  ('beta', 'Istituto Comprensivo Beta', 'it', 'it', 'IT');
+INSERT INTO tenant_languages (tenant_id, lingua) VALUES
+  ((SELECT id FROM tenants WHERE slug = 'alfa'), 'it'),
+  ((SELECT id FROM tenants WHERE slug = 'beta'), 'it');
+COMMIT;
 
 -- ---------------------------------------------------------------------
 -- PERSONE (identità globale di chi ha un Account: tenant_id NULL) E ACCOUNT
@@ -203,25 +211,25 @@ INSERT INTO teachings (tenant_id, school_year_id, class_id, subject_id, account_
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica'),
    (SELECT id FROM accounts WHERE email='multitenant.user@example.test'));
 
-INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita) VALUES
+INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita, lingua_contenuto) VALUES
   ((SELECT id FROM tenants WHERE slug='alfa'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2026/2027'),
    (SELECT t.id FROM teachings t WHERE t.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND t.class_id=(SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2A') AND t.subject_id=(SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica') AND t.account_id=(SELECT id FROM accounts WHERE email='teacher.math.a@alfa.test')),
    (SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2A'),
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica'),
    (SELECT p.id FROM pedagogical_units p JOIN subjects s ON s.id=p.subject_id WHERE s.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND s.nome='Matematica' AND p.nome='Numeri'),
-   'Numeri entro il cento', '2026-10-06'),
+   'Numeri entro il cento', '2026-10-06', 'it'),
   ((SELECT id FROM tenants WHERE slug='alfa'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2026/2027'),
    (SELECT t.id FROM teachings t WHERE t.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND t.class_id=(SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2B') AND t.subject_id=(SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica') AND t.account_id=(SELECT id FROM accounts WHERE email='teacher.math.a@alfa.test')),
    (SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2B'),
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica'),
    (SELECT p.id FROM pedagogical_units p JOIN subjects s ON s.id=p.subject_id WHERE s.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND s.nome='Matematica' AND p.nome='Numeri'),
-   'Numeri entro il cento', '2026-10-07'),
+   'Numeri entro il cento', '2026-10-07', 'it'),
   ((SELECT id FROM tenants WHERE slug='alfa'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2026/2027'),
    (SELECT t.id FROM teachings t WHERE t.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND t.class_id=(SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2A') AND t.subject_id=(SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Italiano') AND t.account_id=(SELECT id FROM accounts WHERE email='teacher.italian.a@alfa.test')),
    (SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2A'),
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Italiano'),
    (SELECT p.id FROM pedagogical_units p JOIN subjects s ON s.id=p.subject_id WHERE s.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND s.nome='Italiano' AND p.nome='Lettura e comprensione'),
-   'Lettura silenziosa', '2026-10-08');
+   'Lettura silenziosa', '2026-10-08', 'it');
 
 -- Observation: 2A Mathematics, 2B Mathematics, 2A Italian, con valori differenti (sez. 58).
 INSERT INTO observations (tenant_id, school_year_id, activity_id, enrollment_id, class_id, criterion_id, pedagogical_unit_id, scale_id, valore, recorded_by_account_id, data_osservazione) VALUES
@@ -262,14 +270,14 @@ INSERT INTO assessment_periods (tenant_id, school_year_id, nome, data_inizio, da
   ((SELECT id FROM tenants WHERE slug='alfa'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2026/2027'),
    'Primo quadrimestre', '2026-09-01', '2027-01-31');
 
-INSERT INTO assessments (tenant_id, school_year_id, teaching_id, class_id, subject_id, enrollment_id, assessment_period_id, giudizio, recorded_by_account_id) VALUES
+INSERT INTO assessments (tenant_id, school_year_id, teaching_id, class_id, subject_id, enrollment_id, assessment_period_id, giudizio, recorded_by_account_id, lingua_contenuto) VALUES
   ((SELECT id FROM tenants WHERE slug='alfa'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2026/2027'),
    (SELECT t.id FROM teachings t WHERE t.tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND t.class_id=(SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2A') AND t.subject_id=(SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica') AND t.account_id=(SELECT id FROM accounts WHERE email='teacher.math.a@alfa.test')),
    (SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='2A'),
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Matematica'),
    (SELECT id FROM enrollments WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND student_person_id=(SELECT id FROM people WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='A-Student-01')),
    (SELECT id FROM assessment_periods WHERE tenant_id=(SELECT id FROM tenants WHERE slug='alfa') AND nome='Primo quadrimestre'),
-   'DISTINTO', (SELECT id FROM accounts WHERE email='teacher.math.a@alfa.test'));
+   'DISTINTO', (SELECT id FROM accounts WHERE email='teacher.math.a@alfa.test'), 'it');
 
 
 -- =======================================================================
@@ -345,13 +353,13 @@ INSERT INTO teachings (tenant_id, school_year_id, class_id, subject_id, account_
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND nome='Matematica e Logica'),
    (SELECT id FROM accounts WHERE email='teacher.math.b@beta.test'));
 
-INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita) VALUES
+INSERT INTO activities (tenant_id, school_year_id, teaching_id, class_id, subject_id, pedagogical_unit_id, nome, data_attivita, lingua_contenuto) VALUES
   ((SELECT id FROM tenants WHERE slug='beta'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND nome='2026/2027'),
    (SELECT t.id FROM teachings t WHERE t.tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND t.account_id=(SELECT id FROM accounts WHERE email='teacher.math.b@beta.test')),
    (SELECT id FROM classes WHERE tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND nome='2A'),
    (SELECT id FROM subjects WHERE tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND nome='Matematica e Logica'),
    (SELECT p.id FROM pedagogical_units p JOIN subjects s ON s.id=p.subject_id WHERE s.tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND s.nome='Matematica e Logica' AND p.nome='Numeri'),
-   'Conteggio fino a 20', '2026-10-06');
+   'Conteggio fino a 20', '2026-10-06', 'it');
 
 INSERT INTO observations (tenant_id, school_year_id, activity_id, enrollment_id, class_id, criterion_id, pedagogical_unit_id, scale_id, valore, recorded_by_account_id, data_osservazione) VALUES
   ((SELECT id FROM tenants WHERE slug='beta'), (SELECT id FROM school_years WHERE tenant_id=(SELECT id FROM tenants WHERE slug='beta') AND nome='2026/2027'),

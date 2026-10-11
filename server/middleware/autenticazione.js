@@ -25,7 +25,7 @@ async function autenticazione(req, res, next) {
     const token = leggiTokenDalCookie(req);
     const sessione = await trovaSessioneValida(pool, token);
     if (!sessione) {
-      throw nonAutenticato("Sessione mancante, scaduta o revocata. Effettuare di nuovo l'accesso.");
+      throw nonAutenticato('ERR_SESSION_REQUIRED');
     }
     req.sessione = sessione;
     req.accountId = sessione.account_id;

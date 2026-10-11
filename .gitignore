@@ -11,3 +11,9 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Strumenti locali di prova (connessione al DB, seed)
+check-db.js
+run-migration.js
+run-seed-v2.js
+seed_v2_serio_multitenant.sql
