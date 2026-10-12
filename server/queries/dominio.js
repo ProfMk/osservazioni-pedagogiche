@@ -10,7 +10,7 @@
  * lingua registrata; date di calendario come dati 'YYYY-MM-DD' (V2 §17).
  */
 
-const { nonTrovato, datiNonValidi } = require('../lib/erroreApplicativo');
+const { nonTrovato, datiNonValidi, conflitto } = require('../lib/erroreApplicativo');
 const { getCriteria, getScalaApplicabile, getBandeGiudizio } = require('./configurazione');
 const { calcolaEsito, mediaSemplicePercentuali } = require('../lib/calcoloEsiti');
 const motore = require('../lib/calcoloProgresso');
@@ -76,6 +76,19 @@ async function verificaTeachingNelTenant(client, teachingId, tenantId) {
   return rows[0];
 }
 
+/**
+ * Decisione 4 (chiusura V1.1 §5): ogni scrittura su un dato pedagogico richiede che l'anno
+ * scolastico bersaglio sia 'attivo'; la lettura resta permessa su tutti gli anni. FOR SHARE:
+ * l'anno non può essere chiuso da una transazione concorrente mentre questa scrittura è in corso.
+ */
+async function verificaAnnoScolasticoAttivo(client, schoolYearId, tenantId) {
+  const { rows } = await client.query(
+    'SELECT stato FROM school_years WHERE id = $1 AND tenant_id = $2 FOR SHARE',
+    [schoolYearId, tenantId]
+  );
+  if (rows.length === 0 || rows[0].stato !== 'attivo') throw conflitto('ERR_SCHOOL_YEAR_CLOSED');
+}
+
 /** Nuclei (unità pedagogiche) della materia di un Teaching: uniche opzioni per creare un'Activity. */
 async function getPedagogicalUnitsDiTeaching(client, teachingId, tenantId, lingua) {
   const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
@@ -109,10 +122,11 @@ async function getActivitiesDiTeaching(client, teachingId, tenantId, lingua) {
 /**
  * Crea un'Activity su un Teaching. pedagogicalUnitId deve appartenere alla materia del
  * Teaching (il database lo garantisce comunque con FK composte). Il nome è contenuto
- * d'autore registrato nella lingua della sessione (B).
+ * d'autore registrato nella lingua della sessione (B). Anno del Teaching chiuso -> 409.
  */
 async function creaActivity(client, { teachingId, tenantId, nome, dataAttivita, pedagogicalUnitId, linguaContenuto }) {
   const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
+  await verificaAnnoScolasticoAttivo(client, teaching.school_year_id, tenantId);
   if (!nome || !nome.trim()) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_NOME' });
   if (!dataAttivita) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_DATA_ATTIVITA' });
 
@@ -331,9 +345,12 @@ async function getGrigliaActivity(client, { activityId, tenantId, lingua }) {
  * Salva (o elimina) l'osservazione di un criterio per un alunno in un'attività.
  * valore === null -> elimina la riga se esiste. Il valore deve esistere nella scala
  * applicabile: lo garantisce la FK (scale_id, valore) -> observation_scale_values.
+ * Anno scolastico dell'attività chiuso -> 409, anche per la cancellazione.
  */
 async function salvaObservation(client, { activityId, enrollmentId, criterionId, valore, tenantId, accountId, dataOsservazione }) {
   const activityInfo = await verificaActivityNelTenant(client, activityId, tenantId);
+  // Anche il ramo di cancellazione (valore null) è una scrittura.
+  await verificaAnnoScolasticoAttivo(client, activityInfo.school_year_id, tenantId);
   await verificaEnrollmentCoerente(client, activityInfo, enrollmentId);
   await verificaCriterionDiActivity(client, activityInfo, criterionId);
 
