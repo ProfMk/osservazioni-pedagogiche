@@ -36,8 +36,8 @@ l'unione e la prima modifica di schema su Neon dopo la 003.
   ramo `[inferenza]`.
 - **Stato prima della 004** (`v2-visual-grammar`, query di sola lettura): 30
   tabelle, 1 trigger, `teachings` presente (000), `languages` presente (003).
-- **Backup:** ramo `backup-prima-004` con genitore `v2-visual-grammar`, creato
-  secondo le istruzioni `[da confermare dal proprietario]`.
+- **Backup:** ramo `backup-prima-migration004` con genitore `v2-visual-grammar`, creato
+  secondo le istruzioni `[confermato]`.
 - **Applicazione:** `migrations/004_immutabilita_strutturale.sql` eseguita per
   intero dall'SQL Editor di Neon, su `v2-visual-grammar`, senza errori.
 - **Verifica dopo la 004** (`pg_trigger`, trigger non interni):
