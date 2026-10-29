@@ -28,18 +28,21 @@ router.use('/', autenticazione, richiedeCsrf, contestoTenant, require('./dominio
 
 // Gestore errori centrale: ErroreApplicativo -> stato HTTP + { codice, parametri };
 // per qualunque altro errore, diagnosi in console (mai al client, sez. 68) e ERR_INTERNAL.
+// Esportato anche come gestoreErrori per i test della traduzione dei codici PostgreSQL.
 // eslint-disable-next-line no-unused-vars
-router.use((errore, req, res, next) => {
+function gestoreErrori(errore, req, res, next) {
   if (errore instanceof ErroreApplicativo) {
     return res.status(errore.stato).json({ errore: { codice: errore.codice, parametri: errore.parametri } });
   }
 
   // Traduzione dei codici PostgreSQL noti in codici semantici (mai frasi, V2 §17).
+  // 23001 = restrict_violation (riferimento strutturale immutabile, trigger della 004: si crea un record nuovo).
   // 23503 = foreign_key_violation (combinazione incoerente: cross-tenant, cross-anno, cross-classe, cross-materia).
   // 23505 = unique_violation (conflitto, es. due richieste concorrenti sulla stessa cella).
   // 23514 = check_violation.
   // 42501 = insufficient_privilege (app_role ha rifiutato un'operazione: mai atteso da codice corretto).
   const traduzioni = {
+    23001: { stato: 409, codice: 'ERR_IMMUTABLE_REFERENCE' },
     23503: { stato: 400, codice: 'ERR_REFERENCES_INCONSISTENT' },
     23505: { stato: 409, codice: 'ERR_CONFLICT' },
     23514: { stato: 400, codice: 'ERR_VALUE_NOT_ALLOWED' },
@@ -62,6 +65,9 @@ router.use((errore, req, res, next) => {
   }));
 
   res.status(nota ? nota.stato : 500).json({ errore: { codice: nota ? nota.codice : 'ERR_INTERNAL', parametri: {} } });
-});
+}
+
+router.use(gestoreErrori);
 
 module.exports = router;
+module.exports.gestoreErrori = gestoreErrori;
