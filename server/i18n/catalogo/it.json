@@ -311,6 +311,13 @@
     "STATUS_SCHOOL_LEVEL_ATTIVO": "attivo",
     "STATUS_SCHOOL_LEVEL_DISATTIVATO": "disattivato",
     "STATUS_CLASS_ATTIVA": "attiva",
-    "STATUS_CLASS_DISATTIVATA": "disattivata"
+    "STATUS_CLASS_DISATTIVATA": "disattivata",
+    "UI_TODO_NO_ACTIVE_YEAR": "Nessun anno scolastico è attivo: i docenti non possono ancora lavorare.",
+    "UI_TODO_YEAR_WITHOUT_PERIODS": "L'anno {anno} non ha periodi di valutazione.",
+    "UI_TODO_NO_LEVELS": "Non c'è ancora nessun livello scolastico.",
+    "UI_TODO_LEVEL_WITHOUT_CLASSES": "Il livello {livello} non ha classi.",
+    "UI_TODO_CLASS_WITHOUT_STUDENTS": "La classe {classe} ({livello}) non ha alunni iscritti nell'anno {anno}.",
+    "UI_TODO_CLASS_WITHOUT_TEACHINGS": "La classe {classe} ({livello}) non ha insegnamenti nell'anno {anno}.",
+    "UI_TODO_ACCOUNT_TEMPORARY_PASSWORD": "{persona} ({email}) non ha ancora cambiato la password temporanea."
   }
 }

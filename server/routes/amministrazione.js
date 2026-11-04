@@ -20,6 +20,7 @@ const { asincrono } = require('../lib/asincrono');
 const { idDiPercorso } = require('../lib/validazione');
 const calendario = require('../queries/calendario');
 const struttura = require('../queries/struttura');
+const { quadroIstituto } = require('../queries/quadro');
 
 const router = express.Router();
 
@@ -38,6 +39,16 @@ const scritturaConfigurazione = (fn, stato = 200) => asincrono(async (req, res) 
   if (risultato === undefined) res.status(204).end();
   else res.status(stato).json(risultato);
 });
+
+// --- Quadro dell'istituto ----------------------------------------------------------------
+
+// GET /api/admin/overview?anno=<id> -> { anno, daFare: [{ codice, parametri, collegamento }], riepilogo: [...] }
+// Senza ?anno: l'anno di lavoro predefinito (deciso dal server).
+router.get('/overview', asincrono(async (req, res) => {
+  await permessoConfigurazione(pool, req);
+  const anno = req.query.anno === undefined || req.query.anno === '' ? undefined : idDiPercorso(req.query.anno, 'UI_RESOURCE_SCHOOL_YEAR');
+  res.json(await quadroIstituto(pool, { tenantId: req.tenantId, annoId: anno, tr: await traduttoreDi(pool, req.lingua) }));
+}));
 
 // --- Calendario: anni scolastici ------------------------------------------------------
 

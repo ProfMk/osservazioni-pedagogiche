@@ -248,3 +248,139 @@ test('Livelli e classi: isolamento — un TENANT_ADMIN non legge né modifica qu
     await ripulisci();
   }
 });
+
+// ===========================================================================
+// QUADRO DELL'ISTITUTO
+// ===========================================================================
+
+const { login } = require('./support/http');
+
+/** Scuola vuota creata dal PLATFORM_ADMIN; il suo amministratore entra e cambia la password temporanea. */
+async function scuolaVuota(slug) {
+  const { sessione: piattaforma } = await login(srv.base, 'platform.admin@platform.test');
+  const creata = await piattaforma.post('/platform/tenants', {
+    slug, nome: `Istituto ${slug}`, amministratore: { nome: 'Quadro', cognome: 'Admin', email: `admin@${slug}.test` },
+  });
+  assert.equal(creata.status, 201);
+  const { sessione } = await login(srv.base, `admin@${slug}.test`, creata.corpo.amministratore.passwordTemporanea);
+  assert.equal((await sessione.post('/auth/password', {
+    passwordAttuale: creata.corpo.amministratore.passwordTemporanea, passwordNuova: 'una frase lunga e nuova',
+  })).status, 200);
+  return { admin: sessione, tenantId: creata.corpo.id, accountId: creata.corpo.amministratore.account.id };
+}
+
+const codici = (quadro) => quadro.daFare.map((v) => v.codice);
+
+test('Quadro: in una scuola vuota ogni «cosa da fare» compare quando deve e sparisce quando è sistemata; riepilogo per livello', async () => {
+  const { admin, tenantId, accountId } = await scuolaVuota('quadro');
+  const quadro = async (anno) => {
+    const r = await admin.get(`/admin/overview${anno ? `?anno=${anno}` : ''}`);
+    assert.equal(r.status, 200);
+    return r.corpo;
+  };
+
+  let q = await quadro();
+  assert.equal(q.anno, null);
+  assert.deepEqual(q.daFare, [
+    { codice: 'UI_TODO_NO_ACTIVE_YEAR', parametri: {}, collegamento: { sezione: 'calendario' } },
+    { codice: 'UI_TODO_NO_LEVELS', parametri: {}, collegamento: { sezione: 'livelli' } },
+  ]);
+  assert.deepEqual(q.riepilogo, []);
+
+  // Anno in preparazione: diventa l'anno di lavoro; manca ancora un anno attivo, e i periodi.
+  const anno = (await admin.post('/admin/school-years', { nome: '2026/2027', dataInizio: '2026-09-01', dataFine: '2027-06-30' })).corpo;
+  q = await quadro();
+  assert.deepEqual([q.anno.id, q.anno.stato], [anno.id, 'in_preparazione']);
+  assert.deepEqual(q.daFare.slice(0, 2), [
+    { codice: 'UI_TODO_NO_ACTIVE_YEAR', parametri: {}, collegamento: { sezione: 'calendario' } },
+    { codice: 'UI_TODO_YEAR_WITHOUT_PERIODS', parametri: { anno: '2026/2027' }, collegamento: { sezione: 'calendario', annoId: anno.id } },
+  ]);
+  await admin.post(`/admin/school-years/${anno.id}/activate`);
+  assert.ok(!codici(await quadro()).includes('UI_TODO_NO_ACTIVE_YEAR'), 'anno attivato: sparisce');
+  await admin.post(`/admin/school-years/${anno.id}/periods`, { nome: 'Primo quadrimestre', dataInizio: '2026-09-01', dataFine: '2027-01-31' });
+  assert.deepEqual(codici(await quadro()), ['UI_TODO_NO_LEVELS'], 'periodo aggiunto: sparisce');
+
+  // Livello senza classi, poi una classe senza alunni né insegnamenti.
+  const livello = (await admin.post('/admin/school-levels', { nome: 'Primaria' })).corpo;
+  q = await quadro();
+  assert.deepEqual(q.daFare, [{
+    codice: 'UI_TODO_LEVEL_WITHOUT_CLASSES', parametri: { livello: { testo: 'Primaria', lingua: 'it' } }, collegamento: { sezione: 'classi', livelloId: livello.id },
+  }]);
+  const classe = (await admin.post(`/admin/school-levels/${livello.id}/classes`, { nome: '1A' })).corpo;
+  q = await quadro();
+  const parametriClasse = { classe: '1A', livello: { testo: 'Primaria', lingua: 'it' }, anno: '2026/2027' };
+  assert.deepEqual(q.daFare, [
+    { codice: 'UI_TODO_CLASS_WITHOUT_STUDENTS', parametri: parametriClasse, collegamento: null },
+    { codice: 'UI_TODO_CLASS_WITHOUT_TEACHINGS', parametri: parametriClasse, collegamento: null },
+  ]);
+  assert.deepEqual(q.riepilogo, [{ livello: { id: livello.id, nome: { testo: 'Primaria', lingua: 'it' }, stato: 'attivo' }, classi: 1, alunni: 0, docenti: 0, insegnamenti: 0 }]);
+
+  // Un alunno iscritto e un insegnamento (con SQL: le sezioni Persone e Insegnamenti sono dei passi futuri).
+  const persona = (await uno("INSERT INTO people (tenant_id, nome, cognome) VALUES ($1, 'Ada', 'Alunna') RETURNING id", [tenantId])).id;
+  await pool.query('INSERT INTO enrollments (tenant_id, school_year_id, class_id, student_person_id) VALUES ($1, $2, $3, $4)', [tenantId, anno.id, classe.id, persona]);
+  assert.deepEqual(codici(await quadro()), ['UI_TODO_CLASS_WITHOUT_TEACHINGS'], 'alunno iscritto: sparisce');
+  const materia = (await uno("INSERT INTO subjects (tenant_id, school_level_id, school_year_id, nome) VALUES ($1, $2, $3, 'Matematica') RETURNING id", [tenantId, livello.id, anno.id])).id;
+  await pool.query('INSERT INTO teachings (tenant_id, school_year_id, class_id, subject_id, account_id) VALUES ($1, $2, $3, $4, $5)', [tenantId, anno.id, classe.id, materia, accountId]);
+  q = await quadro();
+  assert.deepEqual(q.daFare, [], 'tutto sistemato');
+  assert.deepEqual(q.riepilogo.map(({ classi, alunni, docenti, insegnamenti }) => [classi, alunni, docenti, insegnamenti]), [[1, 1, 1, 1]]);
+
+  // Un account del tenant con la password temporanea ancora da cambiare.
+  const p2 = (await uno("INSERT INTO people (nome, cognome) VALUES ('Tea', 'Temporanea') RETURNING id")).id;
+  const a2 = (await uno("INSERT INTO accounts (email, person_id, deve_cambiare_password) VALUES ('tea@quadro.test', $1, true) RETURNING id", [p2])).id;
+  await pool.query('INSERT INTO memberships (account_id, tenant_id) VALUES ($1, $2)', [a2, tenantId]);
+  assert.deepEqual((await quadro()).daFare, [{
+    codice: 'UI_TODO_ACCOUNT_TEMPORARY_PASSWORD', parametri: { persona: 'Tea Temporanea', email: 'tea@quadro.test' }, collegamento: null,
+  }]);
+  await pool.query('UPDATE accounts SET deve_cambiare_password = false WHERE id = $1', [a2]);
+  assert.deepEqual((await quadro()).daFare, [], 'password cambiata: sparisce');
+
+  // Disattivare la classe la toglie dalle cose da fare; disattivare il livello fa ricomparire «nessun livello».
+  await pool.query('DELETE FROM teachings WHERE class_id = $1', [classe.id]);
+  assert.deepEqual(codici(await quadro()), ['UI_TODO_CLASS_WITHOUT_TEACHINGS']);
+  await admin.post(`/admin/classes/${classe.id}/deactivate`);
+  assert.deepEqual(codici(await quadro()), ['UI_TODO_LEVEL_WITHOUT_CLASSES']);
+  await admin.post(`/admin/school-levels/${livello.id}/deactivate`);
+  q = await quadro();
+  assert.deepEqual(codici(q), ['UI_TODO_NO_LEVELS']);
+  assert.equal(q.riepilogo[0].livello.stato, 'disattivato', 'il livello disattivato resta nel riepilogo');
+
+  // Il quadro di un anno scelto: un anno passato chiuso, senza periodi né alunni.
+  await pool.query("INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, '2025/2026', '2025-09-01', '2026-06-30', 'chiuso')", [tenantId]);
+  const passato = (await uno("SELECT id FROM school_years WHERE tenant_id = $1 AND nome = '2025/2026'", [tenantId])).id;
+  await admin.post(`/admin/school-levels/${livello.id}/reactivate`);
+  await admin.post(`/admin/classes/${classe.id}/reactivate`);
+  q = await quadro(passato);
+  assert.equal(q.anno.nome, '2025/2026');
+  assert.deepEqual(codici(q), ['UI_TODO_YEAR_WITHOUT_PERIODS', 'UI_TODO_CLASS_WITHOUT_STUDENTS', 'UI_TODO_CLASS_WITHOUT_TEACHINGS']);
+  assert.equal((await quadro()).anno.id, anno.id, 'senza ?anno: l\'anno attivo');
+});
+
+test('Quadro: isolamento (anno di un\'altra scuola -> 404) e permessi (docente e coordinatore -> 403)', async () => {
+  const admin = await loginESwitch(srv.base, ADMIN_ALFA, 'alfa');
+  const q = (await admin.get('/admin/overview')).corpo;
+  assert.equal(q.anno.nome, '2026/2027');
+  assert.deepEqual(q.riepilogo.map((r) => r.livello.nome.testo), ['Primaria', 'Secondaria di primo grado']);
+  const annoBeta = (await uno("SELECT id FROM school_years WHERE tenant_id = (SELECT id FROM tenants WHERE slug = 'beta')")).id;
+  const NON_TROVATO = [404, { codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_SCHOOL_YEAR' } }];
+  assert.deepEqual(erroreDi(await admin.get(`/admin/overview?anno=${annoBeta}`)), NON_TROVATO);
+  assert.deepEqual(erroreDi(await admin.get('/admin/overview?anno=abc')), NON_TROVATO);
+  for (const email of ['teacher.math.a@alfa.test', 'coordinator.a@alfa.test']) {
+    const s = await loginESwitch(srv.base, email, 'alfa');
+    assert.deepEqual(erroreDi(await s.get('/admin/overview')), [403, { codice: 'ERR_PERMISSION_MISSING', parametri: { permesso: 'PERMISSION_TENANT_MANAGE_CONFIG' } }]);
+  }
+});
+
+test('Catalogo: ogni «cosa da fare» del quadro e ogni stato di anni, livelli e classi ha un testo', () => {
+  const catalogo = require('../server/i18n/catalogo/it.json').testi;
+  const { TODO } = require('../server/queries/quadro');
+  const { chiaveStato } = require('../server/queries/calendario');
+  const { chiaveStatoLivello, chiaveStatoClasse } = require('../server/queries/struttura');
+  const attese = [
+    ...Object.values(TODO),
+    ...['attivo', 'in_preparazione', 'chiuso'].map(chiaveStato),
+    ...['attivo', 'disattivato'].map(chiaveStatoLivello),
+    ...['attiva', 'disattivata'].map(chiaveStatoClasse),
+  ];
+  assert.deepEqual(attese.filter((c) => !(c in catalogo)), []);
+});

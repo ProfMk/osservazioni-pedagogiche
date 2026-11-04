@@ -12,8 +12,8 @@ Push solo su questo ramo.
 | 1 | fatto | `f849e04` | Migration 006 e test |
 | 2 | fatto | `aa7b5a4` | Regola dell'anno |
 | 3 | fatto | `783cf4f` | Server, calendario |
-| 4 | fatto | (questo commit) | Server, livelli e classi |
-| 5 | da fare | | Server, quadro |
+| 4 | fatto | `990b424` | Server, livelli e classi |
+| 5 | fatto | (questo commit) | Server, quadro |
 | 6 | da fare | | Client, cornice dell'amministrazione e quadro |
 | 7 | da fare | | Client, calendario |
 | 8 | da fare | | Client, livelli e classi |
@@ -21,6 +21,8 @@ Push solo su questo ramo.
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 5: `npm test` → **206/206** (+3 in `tests/strutturaIstituto.test.js`). Righe
+  `[errore]`: le stesse 5 del passo 3.
 - Passo 4: `npm test` → **203/203** (+7 in `tests/strutturaIstituto.test.js`). Righe
   `[errore]`: le stesse 5 del passo 3.
 - Passo 3: `npm test` → **196/196** (+8 in `tests/anniScolastici.test.js`). Righe
@@ -99,6 +101,20 @@ Push solo su questo ramo.
     `ERR_IMMUTABLE_REFERENCE` (test esistente in `immutabilita.test.js`);
   - le eliminazioni con dati collegati sono verificate prima del DELETE; in più
     un 23503 residuo sul DELETE diventa 409 con lo stesso codice (mai 400 o 500).
+
+- **Quadro (passo 5):** `GET /api/admin/overview?anno=<id>`:
+  - codici delle cose da fare `UI_TODO_*` (identificatori di catalogo), nell'ordine
+    in cui si sistemano; `collegamento` = `{ sezione, annoId?, livelloId? }` solo
+    per calendario, livelli e classi; `null` per alunni, insegnamenti e password
+    (sezioni dei passi B e D);
+  - «nessun livello» conta solo i livelli **attivi**; le classi e i livelli
+    disattivati non producono cose da fare; i livelli disattivati restano nel
+    riepilogo, con il loro stato;
+  - «password temporanea»: account con membership attiva nel tenant, account
+    attivo, `deve_cambiare_password`; una voce per persona (nome ed email);
+  - senza alcun anno: `anno = null` e le voci legate all'anno non compaiono;
+  - riepilogo per livello: classi attive, alunni distinti con iscrizione attiva
+    nell'anno, docenti distinti e insegnamenti attivi nell'anno.
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne
