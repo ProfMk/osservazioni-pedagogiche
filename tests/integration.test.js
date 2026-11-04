@@ -116,7 +116,7 @@ test('Login: credenziali corrette creano una sessione con cookie HttpOnly e csrf
   assert.equal(risposta.status, 200);
   assert.equal(risposta.corpo.account.email, 'teacher.math.a@alfa.test');
   assert.ok(risposta.corpo.csrfToken, 'la risposta di login deve includere un csrfToken');
-  assert.equal(risposta.corpo.activeTenantId, null, 'nessun tenant attivo subito dopo il login (sez. 8)');
+  assert.equal(risposta.corpo.activeTenantId, (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0].id, 'una sola scuola: tenant attivo impostato dal login (iterazione 1, passo 6)');
 });
 
 test('Login: password errata e account inesistente danno lo stesso 401 generico', async () => {

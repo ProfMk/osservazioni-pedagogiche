@@ -15,7 +15,7 @@ const {
   verificaPassword, hashPassword, validaPasswordNuova, LUNGHEZZA_MINIMA, LUNGHEZZA_MASSIMA,
 } = require('../lib/password');
 const {
-  creaSessione, revocaAltreSessioni, ruotaToken, MINUTI_IDLE_TIMEOUT, ORE_ABSOLUTE_TIMEOUT,
+  creaSessione, impostaTenantAttivo, revocaAltreSessioni, ruotaToken, MINUTI_IDLE_TIMEOUT, ORE_ABSOLUTE_TIMEOUT,
 } = require('../lib/sessioni');
 const { generaTokenCsrf } = require('../lib/csrf');
 const {
@@ -25,7 +25,7 @@ const {
 const { registraAudit } = require('../lib/audit');
 const { isPlatformAdmin, permessiNelTenant } = require('../lib/autorizzazione');
 const { getTutteITenant } = require('../queries/tenant');
-const { getRoleAssignmentsDiAccount } = require('../queries/rbac');
+const { getRoleAssignmentsDiAccount, getRuoliPerTenant } = require('../queries/rbac');
 const { nonAutenticato, vietato, datiNonValidi } = require('../lib/erroreApplicativo');
 
 /** true se la password temporanea dell'account è scaduta (scaduta = credenziali non valide). */
@@ -57,9 +57,13 @@ function cancellaCookieSessione(res) {
 
 /** Costruisce la vista "me": account, membership, tenant attivo, permessi effettivi, csrfToken. */
 async function costruisciVistaMe(client, { account, sessione }) {
-  const memberships = await getMembershipsDiAccount(client, account.id);
+  const ruoliPerTenant = await getRuoliPerTenant(client, account.id);
+  // Ogni scuola porta i ruoli dell'utente in quella scuola (codici ROLE_* nel catalogo).
+  const conRuoli = (t) => ({ ...t, ruoli: ruoliPerTenant.get(t.tenant_id !== undefined ? t.tenant_id : t.id) || [] });
+  const memberships = (await getMembershipsDiAccount(client, account.id)).map(conRuoli);
   const admin = await isPlatformAdmin(client, account.id);
-  const tenants = admin ? await getTutteITenant(client) : [];
+  // PLATFORM_ADMIN: può attivare solo un tenant attivo (switch-tenant), quindi solo quelli.
+  const tenants = admin ? (await getTutteITenant(client)).filter((t) => t.stato === 'attivo').map(conRuoli) : [];
   const permessi = sessione.active_tenant_id
     ? await permessiNelTenant(client, account.id, sessione.active_tenant_id)
     : [];
@@ -119,6 +123,17 @@ router.post('/login', asincrono(async (req, res) => {
     const { token, sessione } = await creaSessione(client, {
       accountId: account.id, userAgent: req.header('User-Agent'), ip: req.ip,
     });
+    // Selezione automatica dell'istituto (passo 6): un account che non è PLATFORM_ADMIN e ha
+    // esattamente una Membership attiva in un tenant attivo entra direttamente in quella scuola.
+    // Vale anche con il cambio password obbligatorio (in quella fase switch-tenant è bloccato).
+    // Con più scuole, nessuna o per un PLATFORM_ADMIN il tenant attivo resta da scegliere (sez. 8).
+    if (!(await isPlatformAdmin(client, account.id))) {
+      const disponibili = await getMembershipsDiAccount(client, account.id);
+      if (disponibili.length === 1) {
+        await impostaTenantAttivo(client, sessione.id, disponibili[0].tenant_id);
+        sessione.active_tenant_id = disponibili[0].tenant_id;
+      }
+    }
     const vista = await costruisciVistaMe(client, { account, sessione });
     return { token, vista };
   });

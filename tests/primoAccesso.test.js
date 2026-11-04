@@ -220,8 +220,8 @@ test('Primo accesso: login riuscito con deveCambiarePassword; ogni altra API -> 
   assert.deepEqual(erroreDi(await sessione.put('/me/lingua', { lingua: 'it' })), CAMBIO_RICHIESTO);
   assert.deepEqual(erroreDi(await sessione.post('/role-assignments', {})), CAMBIO_RICHIESTO);
   assert.deepEqual(erroreDi(await sessione.get('/admin/traduzioni/completezza')), CAMBIO_RICHIESTO);
-  const { rows } = await pool.query("SELECT 1 FROM sessions WHERE account_id = $1 AND active_tenant_id IS NOT NULL", [account.id]);
-  assert.equal(rows.length, 0, 'lo switch bloccato non ha impostato il tenant');
+  const { rows } = await pool.query('SELECT active_tenant_id FROM sessions WHERE account_id = $1', [account.id]);
+  assert.deepEqual(rows.map((r) => r.active_tenant_id), [account.tenantId], 'una sola scuola: tenant attivo impostato dal login (passo 6)');
 
   // Consentito: logout.
   assert.equal((await sessione.post('/auth/logout')).status, 204);

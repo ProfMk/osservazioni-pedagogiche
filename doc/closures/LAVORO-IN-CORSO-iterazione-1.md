@@ -21,17 +21,31 @@
 | 2 | Server: login, middleware del cambio obbligatorio, `POST /api/auth/password`, password mai nei log | completato | `008602f` |
 | 3 | Server: creazione scuola + primo amministratore, reimpostazione | completato | `cdcdb2d` |
 | 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | completato | `f501978` |
-| 5 | E2E del primo accesso; README (005, nuovo file di test) | completato | (questo commit) |
+| 5 | E2E del primo accesso; README (005, nuovo file di test) | completato | `8fe125b` |
+| 6a | Passo 6, server: selezione automatica dell'istituto al login, ruoli per scuola in `/me` | completato | (questo commit) |
+| 6b | Passo 6, client: vista «Scegli l'istituto», intestazione senza `<select>`, «Cambia istituto» | da fare | |
+| 6c | Passo 6, E2E: punti che usavano `#tenant`, casi nuovi | da fare | |
 
-**Passo in corso:** nessuno: passi completati, resta il resoconto.
+**Passo in corso:** 6b (prompt «passo 6: scelta dell'istituto dopo l'accesso», partenza `8fe125b`).
 
 ## Ultimo esito di `npm test`
 
-173/173 (145 esistenti + 28 di `tests/primoAccesso.test.js`). E2E: `npm run test:e2e`
-**non eseguibile** nell'ambiente (Chromium 1194 non scaricabile); con il preload
-del Chromium preinstallato 15/15 (14 esistenti + 1 nuovo). Righe `[errore]`:
-le 3 preesistenti, più una attesa del test «Email con maiuscole» (passa a
-`gestoreErrori` un 23505 reale per provare la traduzione in 409).
+181/181 (173 + 8 di `tests/sceltaIstituto.test.js`).
+
+**Asserzioni esistenti modificate nel passo 6** (solo quelle che davano per
+scontato `activeTenantId` NULL dopo il login di un account con una sola scuola):
+- `tests/integration.test.js`, «Login: credenziali corrette…»: prima
+  `activeTenantId === null`; dopo `activeTenantId ===` id di Alfa.
+- `tests/lingua.test.js`, «C2: login -> lingua di piattaforma…» (docente di sola
+  Alfa): prima `[lingua, lingueAbilitate] = ['it', []]` («prima del tenant:
+  P3»); dopo `[lingua, codici delle lingueAbilitate] = ['it', ['ar-XB', 'it']]`.
+  La verifica di P3 al login passa al test nuovo con `multitenant.user`.
+- `tests/primoAccesso.test.js`, «Primo accesso…»: prima nessuna sessione con
+  `active_tenant_id`; dopo la sessione ha il tenant della sua unica scuola.
+
+**Prova a contrario (passo 6a):** senza la selezione automatica falliscono 3
+degli 8 test nuovi (una sola scuola, una sola scuola con cambio obbligatorio,
+membership mista).
 
 **Prova a contrario (passo 2):** tolto `richiedePasswordAggiornata` da
 `routes/index.js` e da `switch-tenant`, il test «Primo accesso: … ogni altra API
@@ -146,3 +160,14 @@ le 3 preesistenti, più una attesa del test «Email con maiuscole» (passa a
   lingua + regione).
 - `[DECISIONE PROPOSTA]` «Nuova password temporanea» chiede conferma con
   `window.confirm` (testo `UI_RESET_CONFIRM` dal catalogo): revoca le sessioni.
+- `[DECISIONE PROPOSTA]` (6a) Selezione automatica nel login, nella stessa
+  transazione della sessione: conta le Membership attive in tenant attivi
+  (stessa query di `getMembershipsDiAccount`); una sola → tenant attivo. Una
+  Membership sospesa o in un tenant sospeso non conta (con una attiva e una
+  sospesa si entra in quella attiva).
+- `[DECISIONE PROPOSTA]` (6a) `/me`: ogni voce di `memberships` e di
+  `tenantsDisponibiliPerSwitch` ha `ruoli: [codici]` (RoleAssignment attivi in
+  quel tenant, qualunque scope, senza doppioni, nell'ordine dei ruoli di
+  sistema). Per il PLATFORM_ADMIN `tenantsDisponibiliPerSwitch` comprende ora
+  solo i tenant **attivi** (gli unici che `switch-tenant` accetta), con
+  `ruoli` di norma vuoto.

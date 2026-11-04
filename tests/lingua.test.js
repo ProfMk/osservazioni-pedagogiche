@@ -87,7 +87,7 @@ test('Errori: ogni codice ERR_* emesso dal server e ogni identificatore usato co
 test('C2: login -> lingua di piattaforma; cambio tenant -> predefinita del tenant; preferenza abilitata -> lingua della sessione', async () => {
   await abilitaRtlDiProva('alfa');
   const { sessione, risposta } = await login(srv.base, 'teacher.math.a@alfa.test');
-  assert.deepEqual([risposta.corpo.lingua.codice, risposta.corpo.lingua.lingueAbilitate], ['it', []], 'prima del tenant: P3');
+  assert.deepEqual([risposta.corpo.lingua.codice, risposta.corpo.lingua.lingueAbilitate.map((l) => l.codice)], ['it', ['ar-XB', 'it']], 'una sola scuola: tenant attivo dal login (passo 6), predefinita del tenant');
 
   const alfa = await idTenant('alfa');
   const dopoSwitch = await sessione.post('/auth/switch-tenant', { tenantId: alfa });
