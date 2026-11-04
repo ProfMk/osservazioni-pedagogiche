@@ -318,6 +318,23 @@
     "UI_TODO_LEVEL_WITHOUT_CLASSES": "Il livello {livello} non ha classi.",
     "UI_TODO_CLASS_WITHOUT_STUDENTS": "La classe {classe} ({livello}) non ha alunni iscritti nell'anno {anno}.",
     "UI_TODO_CLASS_WITHOUT_TEACHINGS": "La classe {classe} ({livello}) non ha insegnamenti nell'anno {anno}.",
-    "UI_TODO_ACCOUNT_TEMPORARY_PASSWORD": "{persona} ({email}) non ha ancora cambiato la password temporanea."
+    "UI_TODO_ACCOUNT_TEMPORARY_PASSWORD": "{persona} ({email}) non ha ancora cambiato la password temporanea.",
+    "UI_ADMIN_SECTIONS": "Sezioni dell'amministrazione",
+    "UI_ADMIN_SECTION_OVERVIEW": "Quadro dell'istituto",
+    "UI_ADMIN_SECTION_SCHOOLS": "Scuole",
+    "UI_WORKING_YEAR": "Anno su cui si lavora:",
+    "UI_NO_SCHOOL_YEARS": "Non c'è ancora nessun anno scolastico.",
+    "UI_SAVED": "Modifica salvata.",
+    "UI_CANCEL": "Annulla",
+    "UI_ADMIN_TODO": "Cose da fare",
+    "UI_TODO_NONE": "Non manca nulla.",
+    "UI_ADMIN_SUMMARY_BY_LEVEL": "Riepilogo per livello",
+    "UI_ADMIN_SUMMARY_EMPTY": "Nessun livello scolastico.",
+    "UI_ADMIN_SUMMARY_CAPTION": "Anno {anno}",
+    "COLUMN_LEVEL": "Livello",
+    "COLUMN_CLASSES": "Classi",
+    "COLUMN_STUDENTS_ENROLLED": "Alunni iscritti",
+    "COLUMN_TEACHERS": "Docenti",
+    "COLUMN_TEACHINGS": "Insegnamenti"
   }
 }

@@ -13,14 +13,17 @@ Push solo su questo ramo.
 | 2 | fatto | `aa7b5a4` | Regola dell'anno |
 | 3 | fatto | `783cf4f` | Server, calendario |
 | 4 | fatto | `990b424` | Server, livelli e classi |
-| 5 | fatto | (questo commit) | Server, quadro |
-| 6 | da fare | | Client, cornice dell'amministrazione e quadro |
+| 5 | fatto | `3d5d121` | Server, quadro |
+| 6 | fatto | (questo commit) | Client, cornice dell'amministrazione e quadro |
 | 7 | da fare | | Client, calendario |
 | 8 | da fare | | Client, livelli e classi |
 | 9 | da fare | | E2E |
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 6: `npm test` → **206/206**. E2E esistenti **19/19** con l'accorgimento
+  (vedi sotto). `npx playwright-core install chromium` provato una volta:
+  `Failed to download Chromium 141.0.7390.37 (playwright build v1194)`.
 - Passo 5: `npm test` → **206/206** (+3 in `tests/strutturaIstituto.test.js`). Righe
   `[errore]`: le stesse 5 del passo 3.
 - Passo 4: `npm test` → **203/203** (+7 in `tests/strutturaIstituto.test.js`). Righe
@@ -34,6 +37,14 @@ Push solo su questo ramo.
 - Passo 1: `npm test` → **185/185** (181 + 4 di `tests/anniScolastici.test.js`).
   Righe `[errore]`: le stesse 4 della baseline (casi negativi attesi: `/finto`
   ×2, `/api/admin/traduzioni` 23503, `/api/platform/tenants` 23505).
+
+## E2E nel cloud: accorgimento
+Come nell'iterazione 1: un file **fuori dal repository**
+(`/tmp/claude-0/…/scratchpad/preload-chromium.js`) caricato con
+`NODE_OPTIONS="--require …"`, che aggiunge solo
+`executablePath: '/opt/pw-browsers/chromium'` (rev. 1243) a `chromium.launch()`.
+Comando: `NODE_OPTIONS="--require <preload>" npm run test:e2e`. Il proprietario
+li riesegue in locale con il comando ufficiale.
 
 ## Decisioni prese (oltre a quelle del prompt)
 - **006:** il DEFAULT di `school_years.stato` resta `'attivo'`: i seed e i dati
@@ -115,6 +126,28 @@ Push solo su questo ramo.
   - senza alcun anno: `anno = null` e le voci legate all'anno non compaiono;
   - riepilogo per livello: classi attive, alunni distinti con iscrizione attiva
     nell'anno, docenti distinti e insegnamenti attivi nell'anno.
+
+- **Cornice del client (passo 6):**
+  - rotta `#/amministrazione[/<sezione>[/<livelloId>]][?anno=<id>]`: sezione,
+    livello e **anno di lavoro restano nella rotta** (decisione 16), mai in una
+    preferenza; senza sezione: il Quadro per chi amministra l'istituto, le Scuole
+    per il PLATFORM_ADMIN senza istituto attivo (l'URL resta `#/amministrazione`,
+    come chiedono gli E2E esistenti);
+  - menu delle sezioni (`nav` con `aria-current="page"`) solo con le sezioni
+    realizzate e visibili all'utente; con una sola sezione non compare;
+  - «Scuole» del PLATFORM_ADMIN è una sezione del menu (prima era in testa alla
+    pagina unica); dopo la creazione di una scuola le credenziali si mostrano lì;
+  - **anno su cui si lavora**: un collegamento per anno con il suo stato
+    (`aria-current`), nessun `<select>`; compare solo nelle sezioni legate
+    all'anno (Quadro, Calendario); l'anno predefinito arriva dal server;
+  - **quadro**: «Cose da fare» come elenco di testi del catalogo, ognuno
+    collegamento alla sezione in cui si sistema **solo se quella sezione esiste
+    già**; «Riepilogo per livello» come tabella semplice (R-4: nessun numero
+    grande, nessun riquadro);
+  - **completezza delle traduzioni**: resta nella pagina iniziale, in coda al
+    quadro, finché la sezione «Lingue e traduzioni» non sarà realizzata. Così
+    resta raggiungibile dove l'E2E esistente dell'iterazione 1 la cerca (h3 nella
+    prima vista dell'amministrazione).
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne
