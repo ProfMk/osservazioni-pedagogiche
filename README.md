@@ -95,6 +95,8 @@ migrations/
   004_immutabilita_strutturale.sql Trigger di immutabilità dei riferimenti strutturali
   005_account_primo_accesso.sql    Obbligo di cambio password, scadenza della password temporanea,
                                    unicità dell'email senza maiuscole
+  006_anni_in_preparazione.sql     Stato «in_preparazione» degli anni scolastici; al più un anno attivo
+                                   e uno in preparazione per tenant
 seed/
   seed_multitenant.sql             Due tenant di esempio, utenti, classi, Teaching, Activity, Observation
 server/
@@ -113,14 +115,18 @@ server/
     contenuti.js                   Traduzioni dei contenuti pedagogici, completezza, audit
     erroreApplicativo.js           Errore applicativo: stato HTTP + codice ERR_* + parametri
     asincrono.js                   Wrapper per le route async
+    validazione.js                 Validazione dei moduli dell'amministrazione (campi, date, 409 per FK)
   middleware/
     autenticazione.js              Legge il cookie di sessione
     csrf.js                        Verifica il token CSRF sulle mutazioni
     contestoTenant.js               Risolve/verifica il tenant attivo della sessione
   queries/
     account.js, tenant.js, rbac.js, configurazione.js, dominio.js, progresso.js
+    calendario.js, struttura.js, quadro.js   Amministrazione dell'istituto: anni e periodi,
+                                   livelli e classi, quadro (cose da fare, riepilogo per livello)
   routes/
     auth.js, tenant.js, dominio.js, i18n.js, index.js (pipeline e gestore errori)
+    amministrazione.js             /api/admin: calendario, livelli, classi, quadro (iterazione 2A)
   i18n/catalogo/it.json            Catalogo di sistema di prova
 public/
   index.html                       Guscio senza testi
@@ -138,8 +144,11 @@ tests/
   geometria.test.js                Geometria del disco (settori uguali, raggio = valore, RTL)
   primoAccesso.test.js             Migration 005, nuova scuola e primo amministratore, password temporanea,
                                    cambio obbligatorio, reimpostazione, nessuna password in audit e log
+  sceltaIstituto.test.js           Selezione automatica dell'istituto, ruoli per scuola
+  anniScolastici.test.js           Migration 006, regola dell'anno (docenti / configurazione), calendario
+  strutturaIstituto.test.js        Livelli, classi e quadro dell'istituto
   e2e.test.js                      Browser sul seed esteso: viste V2.1, colori, navigazione, RTL, B/N, axe-core,
-                                   creazione di una scuola e primo accesso
+                                   creazione di una scuola e primo accesso, amministrazione dell'istituto
   support/pglite.js                Database di prova in memoria (PGlite) per i test, nessuna installazione richiesta
 ```
 
@@ -177,6 +186,7 @@ psql "$DATABASE_URL" -f migrations/002_audit_append_only.sql
 psql "$DATABASE_URL" -f migrations/003_lingua_contenuti_v2.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_immutabilita_strutturale.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/005_account_primo_accesso.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_anni_in_preparazione.sql
 ```
 
 La 003 non modifica i privilegi di `audit_log` stabiliti dalla 002 e concede
@@ -191,6 +201,14 @@ esistenti non sono toccati), `accounts.password_temporanea_scade_il` e l'indice
 univoco `uq_accounts_email_lower` su `lower(email)`. Se trova email doppie a
 meno delle maiuscole si ferma senza applicare nulla e indica la query per
 elencarle. È rieseguibile.
+
+La 006 estende il CHECK di `school_years.stato` a `'in_preparazione'` (il
+vincolo della 000 si cerca in `pg_constraint`) e crea due indici univoci
+parziali: al più un anno `attivo` (`uq_school_years_un_attivo`) e al più uno
+`in_preparazione` (`uq_school_years_una_preparazione`) per tenant. Se un tenant
+ha già più di un anno attivo si ferma senza applicare nulla e indica la query
+per elencarli. Il DEFAULT resta `'attivo'`; un anno creato dall'interfaccia
+nasce in preparazione. È rieseguibile.
 
 Poi, per un ambiente di sviluppo/collaudo con dati di esempio realistici
 (due tenant, più utenti, classi, Teaching, Activity, Observation — **mai
@@ -249,7 +267,7 @@ npx playwright-core install chromium
 
 I test di integrazione usano PGlite: un database Postgres reale (WASM),
 ricreato da zero a ogni esecuzione con l'intera catena
-`migrations/000 → 001 → 002 → 003 → 004 → 005 → seed/seed_multitenant.sql`. Nessuna
+`migrations/000 → 001 → 002 → 003 → 004 → 005 → 006 → seed/seed_multitenant.sql`. Nessuna
 installazione di PostgreSQL è necessaria per eseguire la suite. Non
 richiedono nemmeno una `DATABASE_URL` o un `SESSION_SECRET` propri: li
 imposta `tests/support/pglite.js`.
@@ -318,6 +336,31 @@ Campi aggiunti dalla V2.1 (revisione 2), derivati senza calcoli nuovi e senza mi
 (E2: profilo, griglia, esito attività), `studenti[].complessivo` nella matrice (E3),
 `valutazioni[].bandaId` (E4: profilo, valutazioni).
 
+### API dell'amministrazione dell'istituto (iterazione 2A)
+
+Tutte sotto `/api/admin`, con tenant attivo; ogni scrittura in una transazione
+con il suo audit. Una risorsa di un'altra scuola risponde 404.
+
+| Metodo e percorso | Permesso | Contenuto |
+|---|---|---|
+| `GET /api/admin/overview?anno=<id>` | `tenant.manage_config` | Quadro: cose da fare (`UI_TODO_*`, parametri, collegamento) e riepilogo per livello |
+| `GET /api/admin/school-years` | `tenant.manage_config` | Anni con le azioni ammesse, anno di lavoro predefinito, passaggio proposto |
+| `POST /api/admin/school-years` | `tenant.manage_config` | Nuovo anno (nasce `in_preparazione`) |
+| `POST /api/admin/school-years/:id/activate`, `/close`, `/reopen`, `/switch-to` | `tenant.manage_config` | Transizioni; `switch-to` = «passa al nuovo anno» (atomico) |
+| `DELETE /api/admin/school-years/:id` | `tenant.manage_config` | Solo un anno in preparazione senza dati collegati |
+| `GET`, `POST /api/admin/school-years/:id/periods` | `tenant.manage_config` | Periodi di valutazione dell'anno |
+| `PUT`, `DELETE /api/admin/periods/:id` | `tenant.manage_config` | Modifica ed eliminazione (solo senza giudizi) |
+| `GET`, `POST /api/admin/school-levels` | `tenant.manage_config` | Livelli (anche disattivati) |
+| `PUT`, `DELETE /api/admin/school-levels/:id`; `POST …/deactivate`, `…/reactivate` | `tenant.manage_config` | Rinomina e riordina, stato, eliminazione (solo senza dati) |
+| `GET`, `POST /api/admin/school-levels/:id/classes` | `class.manage` | Classi del livello |
+| `PUT`, `DELETE /api/admin/classes/:id`; `POST …/deactivate`, `…/reactivate` | `class.manage` | Rinomina, stato, eliminazione (solo senza dati) |
+
+Regola dell'anno: le scritture dei docenti (attività, osservazioni) solo su un
+anno `attivo` (`in_preparazione` → 409 `ERR_SCHOOL_YEAR_IN_PREPARATION`, `chiuso`
+→ 409 `ERR_SCHOOL_YEAR_CLOSED`); quelle di configurazione (periodi) su `attivo` e
+`in_preparazione`. Gli insegnamenti degli anni in preparazione non compaiono nel
+percorso degli insegnamenti, per nessun ruolo.
+
 Tutti gli errori hanno la forma `{ "errore": { "codice": "ERR_*", "parametri": {…} } }`.
 
 ## Cosa NON è ancora incluso
@@ -328,8 +371,9 @@ quadro multi-materia, gruppi, forma definitiva del catalogo e testi definitivi
 
 Dalla V1:
 
-- Interfaccia di amministrazione per configurare materie/unità/criteri/scale
-  (oggi solo lettura via query, popolabili via seed/SQL diretto).
+- Interfaccia di amministrazione per persone, insegnamenti, materie/unità/criteri
+  e scale (iterazione 2, passi B–D; il passo A ha calendario, livelli, classi e
+  quadro dell'istituto).
 - Endpoint self-service di cambio password (la funzione di libreria
   `revocaTutteLeSessioni` esiste ed è testata, ma non c'è ancora una rotta
   HTTP che la usi).

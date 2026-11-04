@@ -22,10 +22,11 @@ non è stato toccato.
 | 6 | fatto | `9855774` | Client, cornice dell'amministrazione e quadro |
 | 7 | fatto | `4feb47a` | Client, calendario |
 | 8 | fatto | `e60a2a0` | Client, livelli e classi |
-| 9 | fatto | (questo commit) | E2E |
-| 10 | da fare | | README |
+| 9 | fatto | `c8b4227` | E2E |
+| 10 | fatto | (questo commit) | README |
 
 ## Ultimo esito dei test
+- Passo 10 (solo README e questo file): `npm test` → **206/206**.
 - Passo 9: `npm test` → **206/206**; E2E con l'accorgimento → **22/22** (19 + 3
   nuovi), 40,8 s, nessuna riga `[errore]` negli E2E.
 - Passo 8: `npm test` → **206/206**.
@@ -204,3 +205,45 @@ nell'anno attivo del seed).
 
 ## Asserzioni esistenti modificate
 Nessuna.
+
+## Aperto
+- **Riapertura dell'anno precedente quando il nuovo è già attivo** (decisione 10):
+  oggi `reopen` risponde 409 `ERR_SCHOOL_YEAR_ACTIVE_EXISTS`; per riaprire il
+  2025/2026 a settembre bisogna chiudere il 2026/2027, cioè fermare le scritture
+  dei docenti sull'anno in corso. Da decidere: due anni attivi per finestre
+  brevi, una «correzione» limitata dell'anno chiuso, o altro.
+- Nome e date di un anno non si modificano dall'interfaccia (solo eliminazione e
+  ricreazione di un anno in preparazione senza dati).
+- Nome di periodi e livelli scritto nella lingua dei contenuti del tenant: se la
+  sessione è in un'altra lingua, la modifica dal modulo sovrascrive il testo di
+  origine con quello digitato (che il modulo propone già tradotto). Da rivedere
+  con la sezione «Lingue e traduzioni».
+- «Lingue e traduzioni» come sezione del menu: per ora la completezza resta in
+  coda al quadro.
+- Le cose da fare su alunni, insegnamenti e password temporanee non hanno
+  collegamento: arriverà con i passi B (Persone) e D (Insegnamenti).
+- Le letture di un insegnamento di un anno in preparazione rispondono 404, le
+  scritture 409: un id noto rivela quindi l'esistenza al docente titolare. Accettato
+  per avere il 409 richiesto; da riconsiderare se servisse il contrario.
+- Indici per gli `EXISTS` del quadro e delle eliminazioni (stessa nota del
+  CHECKPOINT 011 sugli indici di `teachings(class_id)`, `enrollments(class_id)`).
+- Ambiente E2E del cloud: invariato rispetto al CHECKPOINT 015.
+
+## Come applicare la 006 su Neon (NON eseguito)
+1. Ramo di backup del ramo Neon di destinazione.
+2. Controllo preventivo (deve restituire zero righe):
+   ```sql
+   SELECT tenant_id, array_agg(id ORDER BY data_inizio) AS anni
+   FROM school_years WHERE stato = 'attivo' GROUP BY tenant_id HAVING count(*) > 1;
+   ```
+3. Applicazione, con il ruolo proprietario delle tabelle:
+   `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_anni_in_preparazione.sql`
+   (oppure il contenuto del file nell'SQL Editor).
+4. Verifica:
+   ```sql
+   SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+   WHERE conrelid = 'school_years'::regclass AND contype = 'c';
+   -- atteso: ck_school_years_stato con 'attivo', 'in_preparazione', 'chiuso' (e il CHECK sulle date)
+   SELECT indexname FROM pg_indexes WHERE tablename = 'school_years' AND indexname LIKE 'uq_school_years_%';
+   -- attesi: uq_school_years_un_attivo, uq_school_years_una_preparazione
+   ```
