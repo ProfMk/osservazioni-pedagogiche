@@ -169,10 +169,15 @@ psql "$DATABASE_URL" -f migrations/000_schema_base.sql
 psql "$DATABASE_URL" -f migrations/001_ruoli_permessi_sistema.sql
 psql "$DATABASE_URL" -f migrations/002_audit_append_only.sql
 psql "$DATABASE_URL" -f migrations/003_lingua_contenuti_v2.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_immutabilita_strutturale.sql
 ```
 
 La 003 non modifica i privilegi di `audit_log` stabiliti dalla 002 e concede
 esplicitamente a `app_role` i privilegi sulle nuove tabelle.
+
+La 004 aggiunge i trigger di immutabilità (decisione 2 della chiusura V1.1):
+va eseguita con il ruolo proprietario delle tabelle, è rieseguibile e, a
+fine esecuzione, `pg_trigger` deve contenere 26 trigger `trg_%immutabil%`.
 
 Poi, per un ambiente di sviluppo/collaudo con dati di esempio realistici
 (due tenant, più utenti, classi, Teaching, Activity, Observation — **mai
@@ -221,9 +226,17 @@ npm run test:e2e       # nel browser (richiede Chromium per playwright-core)
 npm run test:all       # tutto
 ```
 
+**Prima esecuzione degli E2E su un computer nuovo:** installare una volta il
+browser di Playwright, altrimenti tutti i casi E2E falliscono subito con
+`Executable doesn't exist`:
+
+```bash
+npx playwright-core install chromium
+```
+
 I test di integrazione usano PGlite: un database Postgres reale (WASM),
 ricreato da zero a ogni esecuzione con l'intera catena
-`migrations/000 → 001 → 002 → 003 → seed/seed_multitenant.sql`. Nessuna
+`migrations/000 → 001 → 002 → 003 → 004 → seed/seed_multitenant.sql`. Nessuna
 installazione di PostgreSQL è necessaria per eseguire la suite. Non
 richiedono nemmeno una `DATABASE_URL` o un `SESSION_SECRET` propri: li
 imposta `tests/support/pglite.js`.
