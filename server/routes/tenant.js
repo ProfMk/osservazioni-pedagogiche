@@ -37,12 +37,14 @@ router.post('/tenants', asincrono(async (req, res) => {
   const corpo = req.body || {};
   const risultato = await transazione(async (client) => {
     await richiedePermesso(client, { accountId: req.accountId, permesso: 'platform.manage_tenants' });
-    const amministratore = corpo.amministratore !== undefined ? validaAmministratore(corpo.amministratore) : null;
+    // Prima i campi della scuola, poi quelli dell'amministratore (stesso ordine del modulo):
+    // un errore sui secondi annulla anche il tenant appena inserito (stessa transazione).
     const tenant = await creaTenant(client, corpo);
     await registraAudit(client, {
       tenantId: tenant.id, actorAccountId: req.accountId, azione: 'tenant.create', risorsa: 'tenant', risorsaId: tenant.id, dopo: tenant,
     });
-    if (!amministratore) return tenant;
+    if (corpo.amministratore === undefined) return tenant;
+    const amministratore = validaAmministratore(corpo.amministratore);
     const esito = await creaPrimoAmministratore(client, { actorAccountId: req.accountId, tenantId: tenant.id, amministratore });
     return { ...tenant, amministratore: esito };
   });

@@ -93,6 +93,29 @@ h3 { font-size: 1rem; margin-block: 1.25rem .5rem; }
 button.azione { background: var(--istituzionale); color: #fff; border: 0; border-radius: 5px; padding-block: .45rem; padding-inline: 1rem; cursor: pointer; }
 button.azione:disabled { opacity: .6; cursor: default; }
 
+/* --- Moduli con aiuto ed errore per campo; credenziali mostrate una volta ------------ */
+.campo { display: flex; flex-direction: column; gap: .2rem; }
+.modulo-scuola .campi { align-items: start; }
+.campi.colonna { flex-direction: column; align-items: stretch; }
+.modulo-password .campi.colonna { display: flex; gap: .75rem; }
+.modulo-password { max-inline-size: 420px; }
+.modulo-accesso.modulo-password .campo input { padding: .45rem .55rem; border: 1px solid var(--linea); border-radius: 4px; }
+.aiuto { color: var(--inchiostro-tenue); font-size: .82rem; max-inline-size: 22rem; }
+.errore-campo { color: var(--attenzione); font-size: .85rem; font-weight: 600; max-inline-size: 22rem; }
+.errore-campo:not([hidden])::before { content: "⚠ "; }
+[aria-invalid="true"] { border-color: var(--attenzione) !important; border-width: 2px !important; }
+.conferma { border: 1px solid var(--istituzionale); border-inline-start-width: 4px; background: var(--foglio); padding: .5rem .75rem; margin-block-end: 1rem; }
+fieldset.gruppo { border: 1px solid var(--linea); border-radius: 6px; margin-block: .75rem; padding-block: .25rem .75rem; padding-inline: .75rem; }
+fieldset.gruppo legend { font-weight: 600; padding-inline: .3rem; }
+.riquadro-credenziali { background: var(--foglio); border: 2px solid var(--istituzionale); border-radius: 6px; padding-block: .5rem 1rem; padding-inline: 1rem; margin-block-end: 1rem; }
+.riquadro-credenziali h3:focus { outline: 3px solid var(--fuoco); outline-offset: 2px; }
+.riga-password { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.password-temporanea { font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; font-size: 1.15rem; letter-spacing: .08em; background: var(--carta); border: 1px dashed var(--linea); border-radius: 4px; padding-block: .25rem; padding-inline: .5rem; user-select: all; }
+.avvertenza { color: var(--attenzione); }
+.esito-copia { font-size: .85rem; color: var(--inchiostro-tenue); }
+.elenco-scuole > li { margin-block-end: .5rem; }
+.amministratori { padding-inline-start: 1.1rem; margin-block: .2rem; font-size: .92rem; }
+
 /* --- Livelli: ritorno, sezioni ------------------------------------------------------- */
 .indietro { display: inline-flex; gap: .25rem; align-items: center; font-weight: 600; color: var(--istituzionale); text-decoration: none; margin-block-end: .4rem; }
 .indietro:hover { text-decoration: underline; }

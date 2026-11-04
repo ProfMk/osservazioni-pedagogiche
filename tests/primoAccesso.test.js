@@ -209,6 +209,7 @@ test('Primo accesso: login riuscito con deveCambiarePassword; ogni altra API -> 
   const me = await sessione.get('/auth/me');
   assert.equal(me.status, 200);
   assert.equal(me.corpo.deveCambiarePassword, true);
+  assert.deepEqual(me.corpo.regolePassword, { minimo: 12, massimo: 128 }, 'regole per il client');
   assert.equal((await sessione.get('/i18n')).status, 200);
 
   // Tutto il resto è bloccato, prima ancora del permesso o del tenant attivo.
@@ -565,6 +566,8 @@ test('Dati dell\'amministratore non validi -> 400 con il campo; nessuna scuola c
   for (const [amministratore, atteso] of casi) {
     assert.deepEqual(erroreDi(await creaScuola(sessione, 'theta', amministratore)), [400, atteso], JSON.stringify(amministratore));
   }
+  // Stesso ordine del modulo: prima i campi della scuola, poi quelli dell'amministratore.
+  assert.deepEqual(erroreDi(await creaScuola(sessione, 'Non Valido', { nome: '' })), [400, { codice: 'ERR_TENANT_SLUG_INVALID', parametri: {} }]);
   assert.deepEqual(erroreDi(await sessione.post('/platform/tenants', { slug: 'x'.repeat(61), nome: 'Lungo' })),
     [400, { codice: 'ERR_FIELD_TOO_LONG', parametri: { campo: 'UI_FIELD_SLUG', massimo: 60 } }]);
   assert.deepEqual(await conteggi(), prima);

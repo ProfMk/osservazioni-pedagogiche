@@ -69,12 +69,19 @@
     return new Intl.DateTimeFormat(stato.locale, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(giorno + 'T00:00:00Z'));
   }
 
+  /** Istante ISO 8601 ricevuto dal server (es. una scadenza): data e ora per lingua + regione, nel fuso del browser. */
+  function dataOra(istante) {
+    if (!istante) return '';
+    return new Intl.DateTimeFormat(stato.locale, { dateStyle: 'long', timeStyle: 'short' }).format(new Date(istante));
+  }
+
   return {
     imposta: imposta,
     testo: testo,
     esiste: esiste,
     numero: numero,
     data: data,
+    dataOra: dataOra,
     lingua: function () { return stato.lingua; },
     direzione: function () { return stato.direzione; },
     /** Vero se la lingua della sessione (decisa dal server) si scrive da destra a sinistra. */

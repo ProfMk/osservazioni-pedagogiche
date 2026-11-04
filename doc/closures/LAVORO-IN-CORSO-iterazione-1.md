@@ -19,15 +19,17 @@
 |---|---|---|---|
 | 1 | Migration 005 (+ test della migration) | completato | `4a20cf6` |
 | 2 | Server: login, middleware del cambio obbligatorio, `POST /api/auth/password`, password mai nei log | completato | `008602f` |
-| 3 | Server: creazione scuola + primo amministratore, reimpostazione | completato | (questo commit) |
-| 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | da fare | |
+| 3 | Server: creazione scuola + primo amministratore, reimpostazione | completato | `cdcdb2d` |
+| 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | completato | (questo commit) |
 | 5 | E2E del primo accesso | da fare | |
 
-**Passo in corso:** 4.
+**Passo in corso:** 5.
 
 ## Ultimo esito di `npm test`
 
-173/173 (145 esistenti + 28 di `tests/primoAccesso.test.js`). Righe `[errore]`:
+173/173 (145 esistenti + 28 di `tests/primoAccesso.test.js`). E2E (con il
+preload del Chromium preinstallato): 14/14 esistenti + 1 nuovo, non ancora
+committato (passo 5). Righe `[errore]`:
 le 3 preesistenti, più una attesa del test «Email con maiuscole» (passa a
 `gestoreErrori` un 23505 reale per provare la traduzione in 409).
 
@@ -113,3 +115,34 @@ le 3 preesistenti, più una attesa del test «Email con maiuscole» (passa a
   `UI_FIELD_ADMIN_SURNAME`, `UI_FIELD_SLUG`, `UI_FIELD_NOME`.
 - `[DECISIONE PROPOSTA]` Formato email volutamente minimo
   (`^[^\s@]+@[^\s@]+\.[^\s@]+$`, ≤ 255).
+- `[DECISIONE PROPOSTA]` Ordine dei controlli in `POST /api/platform/tenants`:
+  prima i campi della scuola (dentro `creaTenant`), poi quelli
+  dell'amministratore, come nel modulo; un errore sui secondi annulla anche il
+  tenant appena inserito.
+- `[DECISIONE PROPOSTA]` `/me` espone `regolePassword: { minimo, massimo }`: il
+  client le usa per l'aiuto e per `minlength`/`maxlength`, senza fissare 12 nel
+  codice.
+- `[DECISIONE PROPOSTA]` Client, cambio obbligatorio: schermata fuori dalle
+  rotte (nessuna chiamata API bloccata), intestazione ridotta a nome ed «Esci».
+  Dopo il cambio si riparte da `avviaApp` con il messaggio
+  `UI_PASSWORD_CHANGED`. Se una vista riceve `ERR_PASSWORD_CHANGE_REQUIRED`
+  (password reimpostata altrove), il client rilegge `/me` e torna alla
+  schermata di cambio.
+- `[DECISIONE PROPOSTA]` Client, «Cambia password» volontario: pulsante
+  nell'intestazione e rotta `#/password`; il campo si chiama «Password attuale»
+  (nella schermata obbligatoria «Password temporanea»). Conferma della nuova
+  password solo nel client (`ERR_PASSWORD_CONFIRMATION_MISMATCH`, codice del
+  solo catalogo).
+- `[DECISIONE PROPOSTA]` Moduli con `novalidate`: i messaggi vengono tutti dal
+  catalogo (niente fumetti del browser). Ogni campo ha `label for`, aiuto ed
+  errore collegati con `aria-describedby`; l'errore del server va sul campo
+  indicato dal codice o dal parametro `campo`, con `aria-invalid` e fuoco; il
+  resto nell'area d'errore generale.
+- `[DECISIONE PROPOSTA]` Password temporanea mostrata solo in memoria fino al
+  successivo disegno della vista (niente storage, indirizzo, storia); «Copia»
+  con `navigator.clipboard`, altrimenti selezione del testo e messaggio
+  `UI_COPY_FAILED`; «Fatto» chiude il riquadro; il fuoco va al titolo del
+  riquadro. Scadenza mostrata con il nuovo `I18n.dataOra` (data e ora per
+  lingua + regione).
+- `[DECISIONE PROPOSTA]` «Nuova password temporanea» chiede conferma con
+  `window.confirm` (testo `UI_RESET_CONFIRM` dal catalogo): revoca le sessioni.

@@ -11,7 +11,9 @@ const { pool, transazione } = require('../db');
 const { autenticazione, NOME_COOKIE } = require('../middleware/autenticazione');
 const { richiedeCsrf } = require('../middleware/csrf');
 const { richiedePasswordAggiornata } = require('../middleware/cambioPassword');
-const { verificaPassword, hashPassword, validaPasswordNuova } = require('../lib/password');
+const {
+  verificaPassword, hashPassword, validaPasswordNuova, LUNGHEZZA_MINIMA, LUNGHEZZA_MASSIMA,
+} = require('../lib/password');
 const {
   creaSessione, revocaAltreSessioni, ruotaToken, MINUTI_IDLE_TIMEOUT, ORE_ABSOLUTE_TIMEOUT,
 } = require('../lib/sessioni');
@@ -75,6 +77,8 @@ async function costruisciVistaMe(client, { account, sessione }) {
     account: { id: account.id, email: account.email, nome: account.nome, cognome: account.cognome },
     // Password temporanea ancora da cambiare: finché è true, le altre API rispondono 403 ERR_PASSWORD_CHANGE_REQUIRED.
     deveCambiarePassword: account.deve_cambiare_password === true,
+    // Regole della password scelta dall'utente (il client le usa per l'aiuto e per minlength/maxlength).
+    regolePassword: { minimo: LUNGHEZZA_MINIMA, massimo: LUNGHEZZA_MASSIMA },
     isPlatformAdmin: admin,
     memberships,
     tenantsDisponibiliPerSwitch: admin ? tenants : memberships,
