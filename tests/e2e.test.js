@@ -12,6 +12,8 @@
  * andamento; specchio RTL; marcatore di testo mancante; accessibilità (axe-core).
  * Iterazione 1: creazione di una scuola, password temporanea mostrata una volta, primo
  * accesso con cambio obbligatorio.
+ * Iterazione 2A: amministrazione dell'istituto (quadro, calendario, livelli e classi),
+ * «passa al nuovo anno» con conferma, RTL della cornice.
  *
  * Richiede Chromium installato per playwright-core: `npm run test:e2e`.
  */
@@ -668,6 +670,221 @@ test('Passo 6: PLATFORM_ADMIN — prima vista l\'Amministrazione; entra in una s
   assert.equal(await pagina.textContent('#istituto-attivo bdi'), 'Istituto Comprensivo Beta');
   assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
   assert.equal(await pagina.isVisible('#cambia-istituto'), true);
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+// --- Iterazione 2, passo A: amministrazione dell'istituto ---------------------------------
+
+const { login } = require('./support/http');
+
+/** Testo del catalogo con i parametri (stessa sostituzione di i18n.js, solo per i confronti). */
+const testoCatalogo = (chiave, parametri = {}) => CATALOGO[chiave].replace(/\{(\w+)\}/g, (_, nome) => parametri[nome]);
+
+/** Scuola vuota creata dal PLATFORM_ADMIN via API; il suo amministratore ha già cambiato la temporanea. */
+async function scuolaVuotaE2e(slug) {
+  const { sessione } = await login(srv.base, 'platform.admin@platform.test');
+  const creata = await sessione.post('/platform/tenants', {
+    slug, nome: `Istituto ${slug}`, amministratore: { nome: 'Zoe', cognome: 'Zeta', email: `admin@${slug}.test` },
+  });
+  assert.equal(creata.status, 201);
+  const { sessione: admin } = await login(srv.base, `admin@${slug}.test`, creata.corpo.amministratore.passwordTemporanea);
+  assert.equal((await admin.post('/auth/password', {
+    passwordAttuale: creata.corpo.amministratore.passwordTemporanea, passwordNuova: 'Sviluppo!2026',
+  })).status, 200);
+  return { email: `admin@${slug}.test`, tenantId: creata.corpo.id };
+}
+
+/** Esegue un'azione che ridisegna la vista e attende la vista nuova con la conferma. */
+async function conRidisegno(pagina, azione) {
+  await pagina.evaluate(() => { document.querySelector('#contenuto').firstElementChild.dataset.primaDellAzione = '1'; });
+  await azione();
+  await pagina.waitForFunction(() => !document.querySelector('[data-prima-dell-azione]') && document.querySelector('#contenuto .conferma'));
+  await stabile(pagina);
+}
+
+async function vociDaFare(pagina) {
+  return pagina.$$eval('#contenuto .cose-da-fare li', (n) => n.map((x) => x.textContent.trim()));
+}
+
+const moduloDi = (pagina, id) => pagina.locator(`form[aria-labelledby="${id}-titolo"]`);
+const sezioneMenu = (pagina, chiave) => pagina.locator('.menu-amministrazione').getByRole('link', { name: CATALOGO[chiave], exact: true });
+
+test('Iterazione 2A: un TENANT_ADMIN prepara una scuola vuota — quadro, anno in preparazione poi attivo, due periodi, un livello con due classi; il quadro si aggiorna', async () => {
+  const { email } = await scuolaVuotaE2e('zeta');
+  const pagina = await nuovaPagina();
+  pagina.on('dialog', (d) => d.accept());
+  await entraCome(pagina, email);
+  await pagina.click('#amministrazione');
+  await pagina.waitForSelector('.cose-da-fare');
+  await stabile(pagina);
+
+  // 1. Il quadro elenca le cose da fare, ognuna con il collegamento dove si sistema.
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_ADMINISTRATION);
+  assert.deepEqual(await vociDaFare(pagina), [CATALOGO.UI_TODO_NO_ACTIVE_YEAR, CATALOGO.UI_TODO_NO_LEVELS]);
+  assert.equal(await pagina.$$eval('.cose-da-fare li a', (n) => n.length), 2);
+  assert.equal(await pagina.getAttribute('.menu-amministrazione [aria-current="page"]', 'href'), '#/amministrazione/quadro');
+  assert.ok((await pagina.innerText('.anno-di-lavoro')).includes(CATALOGO.UI_NO_SCHOOL_YEARS));
+  await senzaTestiMancanti(pagina, 'quadro della scuola vuota');
+  await nessunaViolazione(pagina, 'quadro della scuola vuota');
+
+  // 2. Il collegamento porta al calendario; il nuovo anno nasce in preparazione, poi si attiva (con conferma).
+  await pagina.click(`.cose-da-fare a:has-text("${CATALOGO.UI_TODO_NO_ACTIVE_YEAR}")`);
+  await pagina.waitForSelector('form[aria-labelledby="nuovo-anno-titolo"]');
+  await stabile(pagina);
+  assert.ok(pagina.url().includes('#/amministrazione/calendario'));
+  // Errore sul campo: nome mancante (dal server).
+  await moduloDi(pagina, 'nuovo-anno').getByLabel(CATALOGO.UI_DATE_START, { exact: true }).fill('2026-09-01');
+  await moduloDi(pagina, 'nuovo-anno').getByLabel(CATALOGO.UI_DATE_END, { exact: true }).fill('2027-06-30');
+  await moduloDi(pagina, 'nuovo-anno').locator('button[type=submit]').click();
+  await pagina.waitForSelector('#nuovo-anno-nome-errore:not([hidden])');
+  assert.equal(await pagina.textContent('#nuovo-anno-nome-errore'), testoCatalogo('ERR_REQUIRED_FIELD', { campo: CATALOGO.UI_FIELD_NOME }));
+  assert.deepEqual(await pagina.evaluate(() => [document.activeElement.id, document.activeElement.getAttribute('aria-invalid')]), ['nuovo-anno-nome', 'true']);
+  await nessunaViolazione(pagina, 'nuovo anno con errore');
+  assert.deepEqual(pagina.errori.map((e) => e.replace(srv.origine, '')), ['400 /api/admin/school-years'], 'il solo errore atteso');
+  pagina.errori.length = 0;
+  await conRidisegno(pagina, async () => {
+    await moduloDi(pagina, 'nuovo-anno').getByLabel(CATALOGO.UI_SCHOOL_YEAR_NAME, { exact: true }).fill('2026/2027');
+    await pagina.press('#nuovo-anno-nome', 'Enter');
+  });
+  assert.deepEqual(await pagina.$$eval('.elenco-anni .etichetta-stato', (n) => n.map((x) => x.textContent)), [CATALOGO.STATUS_SCHOOL_YEAR_IN_PREPARAZIONE]);
+  assert.ok((await pagina.innerText('.anno-di-lavoro')).includes('2026/2027'), 'diventa l\'anno su cui si lavora');
+  await conRidisegno(pagina, () => pagina.getByRole('button', { name: testoCatalogo('UI_YEAR_ACTIVATE_FOR', { anno: '2026/2027' }) }).click());
+  assert.deepEqual(await pagina.$$eval('.elenco-anni .etichetta-stato', (n) => n.map((x) => x.textContent)), [CATALOGO.STATUS_SCHOOL_YEAR_ATTIVO]);
+
+  // 3. Due periodi dell'anno di lavoro (anche sovrapposti).
+  for (const [nome, inizio, fine] of [['Primo quadrimestre', '2026-09-01', '2027-01-31'], ['Secondo quadrimestre', '2027-01-15', '2027-06-30']]) {
+    await conRidisegno(pagina, async () => {
+      const modulo = moduloDi(pagina, 'nuovo-periodo');
+      await modulo.getByLabel(CATALOGO.UI_PERIOD_NAME, { exact: true }).fill(nome);
+      await modulo.getByLabel(CATALOGO.UI_DATE_START, { exact: true }).fill(inizio);
+      await modulo.getByLabel(CATALOGO.UI_DATE_END, { exact: true }).fill(fine);
+      await modulo.locator('button[type=submit]').click();
+    });
+  }
+  assert.deepEqual(await pagina.$$eval('.elenco-periodi .titolo', (n) => n.map((x) => x.textContent)), ['Primo quadrimestre', 'Secondo quadrimestre']);
+  await senzaTestiMancanti(pagina, 'calendario');
+  await nessunaViolazione(pagina, 'calendario');
+
+  // 4. Un livello con due classi.
+  await sezioneMenu(pagina, 'UI_ADMIN_SECTION_LEVELS').click();
+  await pagina.waitForSelector('form[aria-labelledby="nuovo-livello-titolo"]');
+  await stabile(pagina);
+  assert.equal(await pagina.$('.anno-di-lavoro'), null, 'livelli e classi non seguono l\'anno');
+  await conRidisegno(pagina, async () => {
+    await moduloDi(pagina, 'nuovo-livello').getByLabel(CATALOGO.UI_LEVEL_NAME, { exact: true }).fill('Primaria');
+    await pagina.press('#nuovo-livello-nome', 'Enter');
+  });
+  await nessunaViolazione(pagina, 'livelli');
+  await pagina.getByRole('link', { name: testoCatalogo('UI_LEVEL_OPEN_CLASSES_FOR', { livello: 'Primaria' }) }).click();
+  await pagina.waitForSelector('form[aria-labelledby="nuova-classe-titolo"]');
+  await stabile(pagina);
+  for (const nome of ['1A', '1B']) {
+    await conRidisegno(pagina, async () => {
+      await moduloDi(pagina, 'nuova-classe').getByLabel(CATALOGO.UI_CLASS_NAME, { exact: true }).fill(nome);
+      await pagina.press('#nuova-classe-nome', 'Enter');
+    });
+  }
+  assert.deepEqual(await pagina.$$eval('.elenco-classi .titolo', (n) => n.map((x) => x.textContent)), ['1A', '1B']);
+  assert.equal(await pagina.getAttribute('.menu-amministrazione [aria-current="page"]', 'href'), '#/amministrazione/livelli', 'le classi stanno nella sezione dei livelli');
+  assert.equal(await pagina.$('.elenco-classi button:has-text("sposta")'), null);
+  await senzaTestiMancanti(pagina, 'classi');
+  await nessunaViolazione(pagina, 'classi');
+
+  // 5. Il quadro si aggiorna: restano le classi senza alunni e senza insegnamenti (sezioni dei passi futuri: senza collegamento).
+  await sezioneMenu(pagina, 'UI_ADMIN_SECTION_OVERVIEW').click();
+  await pagina.waitForSelector('.cose-da-fare');
+  await stabile(pagina);
+  const parametri = (classe) => ({ classe, livello: 'Primaria', anno: '2026/2027' });
+  assert.deepEqual(await vociDaFare(pagina), [
+    testoCatalogo('UI_TODO_CLASS_WITHOUT_STUDENTS', parametri('1A')), testoCatalogo('UI_TODO_CLASS_WITHOUT_STUDENTS', parametri('1B')),
+    testoCatalogo('UI_TODO_CLASS_WITHOUT_TEACHINGS', parametri('1A')), testoCatalogo('UI_TODO_CLASS_WITHOUT_TEACHINGS', parametri('1B')),
+  ]);
+  assert.equal(await pagina.$$eval('.cose-da-fare li a', (n) => n.length), 0);
+  assert.deepEqual(await pagina.$$eval('.riepilogo-livelli tbody tr', (n) => n.map((r) => [...r.children].map((c) => c.textContent))), [['Primaria', '2', '0', '0', '0']]);
+  await senzaTestiMancanti(pagina, 'quadro aggiornato');
+  await nessunaViolazione(pagina, 'quadro aggiornato');
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Iterazione 2A: «passa al nuovo anno» chiede conferma (annullata: nulla cambia; confermata: chiude l\'attivo e attiva il nuovo)', async () => {
+  const { email } = await scuolaVuotaE2e('passaggio');
+  const pagina = await nuovaPagina();
+  const dialoghi = [];
+  let risposta = 'annulla';
+  pagina.on('dialog', (d) => { dialoghi.push(d.message()); return risposta === 'conferma' ? d.accept() : d.dismiss(); });
+  await entraCome(pagina, email);
+  await vaiA(pagina, '#/amministrazione/calendario');
+  for (const [nome, inizio, fine] of [['2026/2027', '2026-09-01', '2027-06-30'], ['2027/2028', '2027-09-01', '2028-06-30']]) {
+    await conRidisegno(pagina, async () => {
+      const modulo = moduloDi(pagina, 'nuovo-anno');
+      await modulo.getByLabel(CATALOGO.UI_SCHOOL_YEAR_NAME, { exact: true }).fill(nome);
+      await modulo.getByLabel(CATALOGO.UI_DATE_START, { exact: true }).fill(inizio);
+      await modulo.getByLabel(CATALOGO.UI_DATE_END, { exact: true }).fill(fine);
+      await modulo.locator('button[type=submit]').click();
+    });
+    if (nome === '2026/2027') {
+      risposta = 'conferma';
+      await conRidisegno(pagina, () => pagina.getByRole('button', { name: testoCatalogo('UI_YEAR_ACTIVATE_FOR', { anno: '2026/2027' }) }).click());
+      risposta = 'annulla';
+    }
+  }
+  const stati = () => pagina.$$eval('.elenco-anni li', (n) => n.map((li) => [li.querySelector('.titolo').textContent, li.querySelector('.etichetta-stato').textContent]));
+  assert.deepEqual(await stati(), [['2027/2028', CATALOGO.STATUS_SCHOOL_YEAR_IN_PREPARAZIONE], ['2026/2027', CATALOGO.STATUS_SCHOOL_YEAR_ATTIVO]]);
+  assert.ok((await pagina.innerText('.passaggio')).includes(testoCatalogo('UI_YEAR_SWITCH_TEXT', { da: '2026/2027', a: '2027/2028' })));
+  await nessunaViolazione(pagina, 'calendario con il passaggio');
+
+  // Annullata: nessuna richiesta, nulla cambia.
+  const passaggi = [];
+  pagina.on('request', (r) => { if (r.url().endsWith('/switch-to')) passaggi.push(r.method()); });
+  const conferme = dialoghi.length;
+  await pagina.click('.passaggio button');
+  assert.equal(dialoghi.length, conferme + 1, 'una richiesta di conferma');
+  assert.deepEqual(passaggi, [], 'annullata: nessuna richiesta al server');
+  assert.equal(dialoghi.at(-1), testoCatalogo('UI_YEAR_SWITCH_CONFIRM', { da: '2026/2027', a: '2027/2028' }));
+  assert.deepEqual(await stati(), [['2027/2028', CATALOGO.STATUS_SCHOOL_YEAR_IN_PREPARAZIONE], ['2026/2027', CATALOGO.STATUS_SCHOOL_YEAR_ATTIVO]]);
+
+  // Confermata: un'unica operazione.
+  risposta = 'conferma';
+  await conRidisegno(pagina, () => pagina.click('.passaggio button'));
+  assert.deepEqual(passaggi, ['POST'], 'confermata: una sola richiesta');
+  assert.deepEqual(await stati(), [['2027/2028', CATALOGO.STATUS_SCHOOL_YEAR_ATTIVO], ['2026/2027', CATALOGO.STATUS_SCHOOL_YEAR_CHIUSO]]);
+  assert.equal(await pagina.$('.passaggio'), null, 'nessun passaggio da proporre');
+  assert.ok((await pagina.innerText('.anno-di-lavoro [aria-current="true"]')).includes('2027/2028'), 'l\'anno attivo diventa l\'anno di lavoro');
+  await senzaTestiMancanti(pagina, 'calendario dopo il passaggio');
+  await nessunaViolazione(pagina, 'calendario dopo il passaggio');
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Iterazione 2A: RTL — la cornice dell\'amministrazione (menu, anno di lavoro, percorso) si specchia, senza testi mancanti', async () => {
+  const { email, tenantId } = await scuolaVuotaE2e('specchio');
+  await pool.query("INSERT INTO languages (codice, direzione) VALUES ('ar-XB', 'rtl') ON CONFLICT DO NOTHING");
+  await pool.query("INSERT INTO tenant_languages (tenant_id, lingua) VALUES ($1, 'ar-XB') ON CONFLICT DO NOTHING", [tenantId]);
+  for (const [chiave, valore] of Object.entries(CATALOGO)) {
+    await pool.query("INSERT INTO catalog_overrides (tenant_id, lingua, chiave, valore) VALUES ($1, 'ar-XB', $2, $3)", [tenantId, chiave, JSON.stringify(valore)]);
+  }
+  await pool.query("INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, '2026/2027', '2026-09-01', '2027-06-30', 'attivo'), ($1, '2027/2028', '2027-09-01', '2028-06-30', 'in_preparazione')", [tenantId]);
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, email);
+  await vaiA(pagina, '#/amministrazione/calendario');
+  const posizioni = () => pagina.evaluate(() => ({
+    menu: [...document.querySelectorAll('.menu-amministrazione .voce-menu')].map((x) => x.getBoundingClientRect().x),
+    anni: [...document.querySelectorAll('.anno-di-lavoro .scelta-anno')].map((x) => x.getBoundingClientRect().x),
+    percorso: [...document.querySelectorAll('nav.percorso > *:not(.separatore)')].map((x) => x.getBoundingClientRect().x),
+  }));
+  const ltr = await posizioni();
+  assert.ok(ltr.menu[0] < ltr.menu.at(-1) && ltr.anni[0] < ltr.anni.at(-1) && ltr.percorso[0] < ltr.percorso.at(-1), 'LTR: da sinistra a destra');
+  await cambiaLingua(pagina, 'ar-XB', 'rtl');
+  await senzaTestiMancanti(pagina, 'amministrazione RTL');
+  const rtl = await posizioni();
+  assert.ok(rtl.menu[0] > rtl.menu.at(-1), 'RTL: la prima sezione all\'inizio della riga di lettura (a destra)');
+  assert.ok(rtl.anni[0] > rtl.anni.at(-1), 'RTL: anni specchiati');
+  assert.ok(rtl.percorso[0] > rtl.percorso.at(-1), 'RTL: percorso specchiato');
+  assert.equal(await pagina.$eval('.menu-amministrazione', (n) => getComputedStyle(n).direction), 'rtl');
+  await nessunaViolazione(pagina, 'amministrazione RTL');
+  await cambiaLingua(pagina, 'it', 'ltr');
   assert.deepEqual(pagina.errori, []);
   await pagina.context().close();
 });

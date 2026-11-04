@@ -4,6 +4,11 @@
 `iterazione-2-passo-A` non era sceglibile), creato da `main` a `7bf0ca7`.
 Push solo su questo ramo.
 
+**Verifica di partenza:** nel clone il riferimento locale `main` era fermo a
+`cad4af8` (non aggiornato); `origin/main` e GitHub (`git ls-remote`) sono a
+**`7bf0ca7`**, che è anche la base del ramo (`git merge-base`). Il `main` locale
+non è stato toccato.
+
 **Baseline a `7bf0ca7`:** `npm ci`, poi `npm test` → **181/181**.
 
 ## Passi
@@ -16,11 +21,13 @@ Push solo su questo ramo.
 | 5 | fatto | `3d5d121` | Server, quadro |
 | 6 | fatto | `9855774` | Client, cornice dell'amministrazione e quadro |
 | 7 | fatto | `4feb47a` | Client, calendario |
-| 8 | fatto | (questo commit) | Client, livelli e classi |
-| 9 | da fare | | E2E |
+| 8 | fatto | `e60a2a0` | Client, livelli e classi |
+| 9 | fatto | (questo commit) | E2E |
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 9: `npm test` → **206/206**; E2E con l'accorgimento → **22/22** (19 + 3
+  nuovi), 40,8 s, nessuna riga `[errore]` negli E2E.
 - Passo 8: `npm test` → **206/206**.
 - Passo 7: `npm test` → **206/206**.
 - Passo 6: `npm test` → **206/206**. E2E esistenti **19/19** con l'accorgimento
@@ -174,6 +181,13 @@ li riesegue in locale con il comando ufficiale.
   - classi: nuova, rinomina sul posto, disattiva (con conferma), riattiva,
     elimina (con conferma); in un livello disattivato niente modulo e una nota;
   - **nessuna azione «sposta in un altro livello»** (decisione 14).
+
+- **E2E (passo 9):** tre test nuovi in coda a `tests/e2e.test.js`, ognuno su
+  una scuola vuota creata via API dal PLATFORM_ADMIN (`zeta`, `passaggio`,
+  `specchio`): il percorso completo con errore sul campo, axe-core su ogni vista;
+  «passa al nuovo anno» annullato (nessuna richiesta) e poi confermato (una sola
+  richiesta); RTL della cornice (menu, anni, percorso). Nessun test esistente
+  toccato, salvo il commento d'intestazione del file.
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne
