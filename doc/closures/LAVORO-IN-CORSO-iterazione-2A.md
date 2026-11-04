@@ -14,13 +14,14 @@ Push solo su questo ramo.
 | 3 | fatto | `783cf4f` | Server, calendario |
 | 4 | fatto | `990b424` | Server, livelli e classi |
 | 5 | fatto | `3d5d121` | Server, quadro |
-| 6 | fatto | (questo commit) | Client, cornice dell'amministrazione e quadro |
-| 7 | da fare | | Client, calendario |
+| 6 | fatto | `9855774` | Client, cornice dell'amministrazione e quadro |
+| 7 | fatto | (questo commit) | Client, calendario |
 | 8 | da fare | | Client, livelli e classi |
 | 9 | da fare | | E2E |
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 7: `npm test` → **206/206**.
 - Passo 6: `npm test` → **206/206**. E2E esistenti **19/19** con l'accorgimento
   (vedi sotto). `npx playwright-core install chromium` provato una volta:
   `Failed to download Chromium 141.0.7390.37 (playwright build v1194)`.
@@ -148,6 +149,18 @@ li riesegue in locale con il comando ufficiale.
     quadro, finché la sezione «Lingue e traduzioni» non sarà realizzata. Così
     resta raggiungibile dove l'E2E esistente dell'iterazione 1 la cerca (h3 nella
     prima vista dell'amministrazione).
+
+- **Calendario nel client (passo 7):**
+  - i pulsanti di ogni anno sono quelli ricevuti dal server (`azioni`); ogni
+    transizione chiede conferma (`window.confirm`, come la reimpostazione della
+    password), con un testo che nomina l'anno e le conseguenze;
+  - «Passa al nuovo anno» compare come riquadro in testa agli anni quando
+    esistono un anno attivo e uno in preparazione (`passaggio` dal server);
+  - i periodi mostrati sono quelli dell'**anno di lavoro**; su un anno chiuso
+    si leggono soltanto (nota, nessun pulsante, nessun modulo);
+  - la modifica di un periodo avviene sul posto (il modulo sostituisce la riga,
+    «Annulla» ridisegna); dopo ogni scrittura riuscita la vista si ridisegna dal
+    server con «Modifica salvata.».
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne

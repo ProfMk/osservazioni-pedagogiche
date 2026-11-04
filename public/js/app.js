@@ -1209,6 +1209,7 @@
    */
   var SEZIONI_ADMIN = [
     { id: 'quadro', chiave: 'UI_ADMIN_SECTION_OVERVIEW', istituto: true, anno: true },
+    { id: 'calendario', chiave: 'UI_ADMIN_SECTION_CALENDAR', istituto: true, anno: true },
     { id: 'scuole', chiave: 'UI_ADMIN_SECTION_SCHOOLS', piattaforma: true },
   ];
 
@@ -1421,6 +1422,124 @@
       ]));
     }
     return { nodi: nodi.concat(await sezioneCompletezza()) };
+  };
+
+  // --- Calendario: anni (con le loro azioni) e periodi dell'anno di lavoro ------------------
+
+  /** Azioni sugli anni, nell'ordine in cui compaiono; il server dice quali sono ammesse. */
+  var AZIONI_ANNO = [
+    { id: 'attiva', percorso: 'activate', metodo: 'POST', chiave: 'UI_YEAR_ACTIVATE', per: 'UI_YEAR_ACTIVATE_FOR', conferma: 'UI_YEAR_ACTIVATE_CONFIRM' },
+    { id: 'chiudi', percorso: 'close', metodo: 'POST', chiave: 'UI_YEAR_CLOSE', per: 'UI_YEAR_CLOSE_FOR', conferma: 'UI_YEAR_CLOSE_CONFIRM' },
+    { id: 'riapri', percorso: 'reopen', metodo: 'POST', chiave: 'UI_YEAR_REOPEN', per: 'UI_YEAR_REOPEN_FOR', conferma: 'UI_YEAR_REOPEN_CONFIRM' },
+    { id: 'elimina', percorso: '', metodo: 'DELETE', chiave: 'UI_DELETE', per: 'UI_YEAR_DELETE_FOR', conferma: 'UI_YEAR_DELETE_CONFIRM' },
+  ];
+
+  function rigaAnno(a) {
+    var azioni = AZIONI_ANNO.filter(function (z) { return a.azioni.indexOf(z.id) >= 0; }).map(function (z) {
+      return pulsanteAzione(z.chiave, {
+        per: z.per, conferma: z.conferma, parametri: { anno: a.nome },
+        esegui: function () { return api('/admin/school-years/' + a.id + (z.percorso ? '/' + z.percorso : ''), corpoJson(z.metodo)); },
+      });
+    });
+    return el('li', { classe: 'voce-admin' }, [
+      el('span', { classe: 'titolo' }, [el('bdi', {}, [a.nome])]),
+      ' ', t('span', chiaveStatoAnno(a.stato), null, { classe: 'etichetta-stato stato-' + a.stato }),
+      ' ', t('span', 'UI_DATES_RANGE', { inizio: I18n.data(a.dataInizio), fine: I18n.data(a.dataFine) }, { classe: 'sottotitolo' }),
+      azioni.length ? el('span', { classe: 'azioni' }, azioni) : null,
+    ]);
+  }
+
+  function bloccoPassaggio(p) {
+    var parametri = { da: p.daAnno.nome, a: p.aAnno.nome };
+    return el('section', { classe: 'passaggio', 'aria-labelledby': 'titolo-passaggio' }, [
+      t('h4', 'UI_YEAR_SWITCH', null, { id: 'titolo-passaggio' }),
+      t('p', 'UI_YEAR_SWITCH_TEXT', parametri),
+      pulsanteAzione('UI_YEAR_SWITCH', {
+        classe: 'azione', conferma: 'UI_YEAR_SWITCH_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/school-years/' + p.aAnno.id + '/switch-to', corpoJson('POST')); },
+      }),
+    ]);
+  }
+
+  function moduloNuovoAnno() {
+    var nome = inputTesto(20);
+    var inizio = inputData();
+    var fine = inputData();
+    return moduloAdmin({
+      id: 'nuovo-anno', titolo: 'UI_NEW_SCHOOL_YEAR', nota: 'UI_NEW_SCHOOL_YEAR_NOTE', invio: 'UI_CREATE',
+      campi: [
+        { nome: 'nome', etichetta: 'UI_SCHOOL_YEAR_NAME', input: nome, campo: 'UI_FIELD_NOME', aiuto: { chiave: 'UI_SCHOOL_YEAR_NAME_HINT' } },
+        { nome: 'inizio', etichetta: 'UI_DATE_START', input: inizio, campo: 'UI_FIELD_DATA_INIZIO' },
+        { nome: 'fine', etichetta: 'UI_DATE_END', input: fine, campo: 'UI_FIELD_DATA_FINE' },
+      ],
+      invia: function () { return api('/admin/school-years', corpoJson('POST', { nome: nome.value, dataInizio: inizio.value, dataFine: fine.value })); },
+    });
+  }
+
+  /** Modulo di un periodo: nuovo (periodo assente) o modifica sul posto. */
+  function moduloPeriodo(anno, periodo, annulla) {
+    var nome = inputTesto(50, periodo ? periodo.nome.testo : null);
+    var inizio = inputData(periodo ? periodo.dataInizio : null);
+    var fine = inputData(periodo ? periodo.dataFine : null);
+    return moduloAdmin({
+      id: periodo ? 'periodo-' + periodo.id : 'nuovo-periodo',
+      titolo: periodo ? 'UI_EDIT_PERIOD' : 'UI_NEW_PERIOD', parametri: { nome: periodo ? periodo.nome : null, anno: anno.nome },
+      nota: periodo ? null : 'UI_PERIOD_NOTE', invio: periodo ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
+      campi: [
+        { nome: 'nome', etichetta: 'UI_PERIOD_NAME', input: nome, campo: 'UI_FIELD_NOME' },
+        { nome: 'inizio', etichetta: 'UI_DATE_START', input: inizio, campo: 'UI_FIELD_DATA_INIZIO' },
+        { nome: 'fine', etichetta: 'UI_DATE_END', input: fine, campo: 'UI_FIELD_DATA_FINE' },
+      ],
+      invia: function () {
+        var corpo = { nome: nome.value, dataInizio: inizio.value, dataFine: fine.value };
+        return periodo ? api('/admin/periods/' + periodo.id, corpoJson('PUT', corpo)) : api('/admin/school-years/' + anno.id + '/periods', corpoJson('POST', corpo));
+      },
+    });
+  }
+
+  function rigaPeriodo(anno, p, modificabile) {
+    var riga = el('li', { classe: 'voce-admin' });
+    var parametri = { nome: p.nome };
+    var azioni = [];
+    if (modificabile) {
+      azioni.push(t('button', 'UI_EDIT', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_EDIT_FOR', parametri),
+        onclick: function () {
+          riga.replaceChildren(moduloPeriodo(anno, p, function () { disegna(stato.rotta); }));
+          riga.querySelector('input').focus();
+        },
+      }));
+      if (p.eliminabile) {
+        azioni.push(pulsanteAzione('UI_DELETE', {
+          per: 'UI_DELETE_FOR', conferma: 'UI_PERIOD_DELETE_CONFIRM', parametri: parametri,
+          esegui: function () { return api('/admin/periods/' + p.id, corpoJson('DELETE')); },
+        }));
+      }
+    }
+    riga.append(
+      contenuto('span', p.nome, { classe: 'titolo' }),
+      ' ', t('span', 'UI_DATES_RANGE', { inizio: I18n.data(p.dataInizio), fine: I18n.data(p.dataFine) }, { classe: 'sottotitolo' }),
+      azioni.length ? el('span', { classe: 'azioni' }, azioni) : ''
+    );
+    return riga;
+  }
+
+  SEZIONI_VISTE.calendario = async function (r, contesto) {
+    var dati = contesto.datiAnni;
+    var nodi = [t('h3', 'UI_SCHOOL_YEARS')];
+    if (dati.passaggio) nodi.push(bloccoPassaggio(dati.passaggio));
+    nodi.push(dati.anni.length ? el('ul', { classe: 'elenco-admin elenco-anni' }, dati.anni.map(rigaAnno)) : t('p', 'UI_NO_SCHOOL_YEARS', null, { classe: 'stato' }));
+    nodi.push(moduloNuovoAnno());
+    if (contesto.anno) {
+      var periodi = await api('/admin/school-years/' + contesto.anno.id + '/periods');
+      nodi.push(t('h3', 'UI_ASSESSMENT_PERIODS_OF', { anno: contesto.anno.nome }));
+      if (!periodi.modificabile) nodi.push(t('p', 'UI_PERIODS_READ_ONLY', { anno: contesto.anno.nome }, { classe: 'nota' }));
+      nodi.push(periodi.periodi.length
+        ? el('ul', { classe: 'elenco-admin elenco-periodi' }, periodi.periodi.map(function (p) { return rigaPeriodo(contesto.anno, p, periodi.modificabile); }))
+        : t('p', 'UI_NO_PERIODS', null, { classe: 'stato' }));
+      if (periodi.modificabile) nodi.push(moduloPeriodo(contesto.anno, null, null));
+    }
+    return { nodi: nodi };
   };
 
   // --- Scuole (PLATFORM_ADMIN): entrare in una scuola, crearla, reimpostare una password ----
