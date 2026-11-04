@@ -19,6 +19,7 @@ const { traduttoreDi } = require('../lib/pubblicazione');
 const { asincrono } = require('../lib/asincrono');
 const { idDiPercorso } = require('../lib/validazione');
 const calendario = require('../queries/calendario');
+const struttura = require('../queries/struttura');
 
 const router = express.Router();
 
@@ -83,5 +84,92 @@ router.put('/periods/:periodoId', scritturaConfigurazione(async (client, req) =>
 router.delete('/periods/:periodoId', scritturaConfigurazione((client, req) => calendario.eliminaPeriodo(
   client, ctxDi(req), idDiPercorso(req.params.periodoId, 'UI_RESOURCE_ASSESSMENT_PERIOD')
 )));
+
+// --- Livelli scolastici (tenant.manage_config) ------------------------------------------
+
+const idLivello = (req) => idDiPercorso(req.params.livelloId, 'UI_RESOURCE_SCHOOL_LEVEL');
+const conTraduttore = (fn) => async (client, req) => fn(client, req, await traduttoreDi(client, req.lingua));
+
+// GET /api/admin/school-levels -> [{ id, nome: { testo, lingua }, ordine, stato, classiAttive, azioni }]
+router.get('/school-levels', asincrono(async (req, res) => {
+  await permessoConfigurazione(pool, req);
+  res.json(await struttura.elencoLivelli(pool, ctxDi(req), await traduttoreDi(pool, req.lingua)));
+}));
+
+// POST /api/admin/school-levels  body: { nome, ordine? } -> 201
+router.post('/school-levels', scritturaConfigurazione(conTraduttore((client, req, tr) => struttura.creaLivello(client, ctxDi(req), req.body || {}, tr)), 201));
+
+// PUT /api/admin/school-levels/:livelloId  body: { nome?, ordine? } (rinomina, riordina)
+router.put('/school-levels/:livelloId', scritturaConfigurazione(conTraduttore((client, req, tr) => struttura.modificaLivello(
+  client, ctxDi(req), idLivello(req), req.body || {}, tr
+))));
+
+// POST /api/admin/school-levels/:livelloId/deactivate | reactivate ; DELETE /api/admin/school-levels/:livelloId -> 204
+router.post('/school-levels/:livelloId/deactivate', scritturaConfigurazione(conTraduttore((client, req, tr) => struttura.disattivaLivello(client, ctxDi(req), idLivello(req), tr))));
+router.post('/school-levels/:livelloId/reactivate', scritturaConfigurazione(conTraduttore((client, req, tr) => struttura.riattivaLivello(client, ctxDi(req), idLivello(req), tr))));
+router.delete('/school-levels/:livelloId', scritturaConfigurazione((client, req) => struttura.eliminaLivello(client, ctxDi(req), idLivello(req))));
+
+// --- Classi (class.manage, nell'ambito del livello e della classe) ----------------------
+
+const permessoClassi = (client, req, livelloId, classeId = null) => richiedePermesso(client, {
+  accountId: req.accountId, permesso: 'class.manage', tenantId: req.tenantId, schoolLevelId: livelloId, classId: classeId,
+});
+
+/** Livello del tenant (404), poi il permesso sulle classi di quel livello (403). */
+async function livelloPerClassi(client, req) {
+  const livello = await struttura.livelloDelTenant(client, ctxDi(req), idLivello(req));
+  await permessoClassi(client, req, livello.id);
+  return livello;
+}
+
+/** Classe del tenant (404, bloccata per la scrittura), poi il permesso (403); con il suo livello. */
+async function classePerScrittura(client, req) {
+  const classe = await struttura.classeDelTenant(client, ctxDi(req), idDiPercorso(req.params.classeId, 'UI_RESOURCE_CLASS'), { blocca: true });
+  await permessoClassi(client, req, classe.school_level_id, classe.id);
+  const livello = await struttura.livelloDelTenant(client, ctxDi(req), classe.school_level_id);
+  return { classe, livello };
+}
+
+const scritturaClassi = (fn, stato = 200) => asincrono(async (req, res) => {
+  const risultato = await transazione((client) => fn(client, req));
+  if (risultato === undefined) res.status(204).end();
+  else res.status(stato).json(risultato);
+});
+
+// GET /api/admin/school-levels/:livelloId/classes -> { livello, classi: [{ id, nome, stato, azioni }] }
+router.get('/school-levels/:livelloId/classes', asincrono(async (req, res) => {
+  const livello = await livelloPerClassi(pool, req);
+  const tr = await traduttoreDi(pool, req.lingua);
+  res.json({
+    livello: { id: livello.id, nome: tr.testo('school_levels.nome', livello.id, livello.nome), stato: livello.stato },
+    classi: await struttura.elencoClassi(pool, ctxDi(req), livello),
+  });
+}));
+
+// POST /api/admin/school-levels/:livelloId/classes  body: { nome } -> 201
+router.post('/school-levels/:livelloId/classes', scritturaClassi(async (client, req) => {
+  const livello = await livelloPerClassi(client, req);
+  return struttura.creaClasse(client, ctxDi(req), livello, req.body || {});
+}, 201));
+
+// PUT /api/admin/classes/:classeId  body: { nome } (solo il nome: nessuno spostamento di livello)
+router.put('/classes/:classeId', scritturaClassi(async (client, req) => {
+  const { classe, livello } = await classePerScrittura(client, req);
+  return struttura.rinominaClasse(client, ctxDi(req), classe, livello, req.body || {});
+}));
+
+// POST /api/admin/classes/:classeId/deactivate | reactivate ; DELETE /api/admin/classes/:classeId -> 204
+router.post('/classes/:classeId/deactivate', scritturaClassi(async (client, req) => {
+  const { classe, livello } = await classePerScrittura(client, req);
+  return struttura.disattivaClasse(client, ctxDi(req), classe, livello);
+}));
+router.post('/classes/:classeId/reactivate', scritturaClassi(async (client, req) => {
+  const { classe, livello } = await classePerScrittura(client, req);
+  return struttura.riattivaClasse(client, ctxDi(req), classe, livello);
+}));
+router.delete('/classes/:classeId', scritturaClassi(async (client, req) => {
+  const { classe } = await classePerScrittura(client, req);
+  return struttura.eliminaClasse(client, ctxDi(req), classe);
+}));
 
 module.exports = router;

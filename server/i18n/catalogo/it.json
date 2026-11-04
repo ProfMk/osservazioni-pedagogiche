@@ -301,6 +301,16 @@
     "UI_FIELD_ORDINE": "ordine",
     "STATUS_SCHOOL_YEAR_ATTIVO": "attivo",
     "STATUS_SCHOOL_YEAR_IN_PREPARAZIONE": "in preparazione",
-    "STATUS_SCHOOL_YEAR_CHIUSO": "chiuso"
+    "STATUS_SCHOOL_YEAR_CHIUSO": "chiuso",
+    "ERR_SCHOOL_LEVEL_NAME_TAKEN": "Esiste già un livello «{nome}».",
+    "ERR_SCHOOL_LEVEL_IN_USE": "Il livello «{nome}» ha già dati collegati (classi, materie, regole di valutazione o ruoli) e non si può eliminare: puoi disattivarlo.",
+    "ERR_SCHOOL_LEVEL_DEACTIVATED": "Il livello «{livello}» è disattivato: riattivalo prima di aggiungere o riattivare classi.",
+    "ERR_CLASS_NAME_TAKEN": "In questo livello esiste già una classe «{nome}».",
+    "ERR_CLASS_IN_USE": "La classe «{nome}» ha già alunni, insegnamenti o ruoli collegati e non si può eliminare: puoi disattivarla.",
+    "ERR_STATE_UNCHANGED": "È già {stato}.",
+    "STATUS_SCHOOL_LEVEL_ATTIVO": "attivo",
+    "STATUS_SCHOOL_LEVEL_DISATTIVATO": "disattivato",
+    "STATUS_CLASS_ATTIVA": "attiva",
+    "STATUS_CLASS_DISATTIVATA": "disattivata"
   }
 }

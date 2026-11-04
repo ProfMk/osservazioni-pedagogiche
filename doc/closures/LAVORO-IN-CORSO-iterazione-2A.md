@@ -11,8 +11,8 @@ Push solo su questo ramo.
 |---|---|---|---|
 | 1 | fatto | `f849e04` | Migration 006 e test |
 | 2 | fatto | `aa7b5a4` | Regola dell'anno |
-| 3 | fatto | (questo commit) | Server, calendario |
-| 4 | da fare | | Server, livelli e classi |
+| 3 | fatto | `783cf4f` | Server, calendario |
+| 4 | fatto | (questo commit) | Server, livelli e classi |
 | 5 | da fare | | Server, quadro |
 | 6 | da fare | | Client, cornice dell'amministrazione e quadro |
 | 7 | da fare | | Client, calendario |
@@ -21,6 +21,8 @@ Push solo su questo ramo.
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 4: `npm test` → **203/203** (+7 in `tests/strutturaIstituto.test.js`). Righe
+  `[errore]`: le stesse 5 del passo 3.
 - Passo 3: `npm test` → **196/196** (+8 in `tests/anniScolastici.test.js`). Righe
   `[errore]`: le 4 della baseline + 1 **attesa**: `POST /api/admin/school-years/:id/switch-to`
   con `P0001 guasto di prova` (trigger di prova che simula un guasto a metà di
@@ -77,6 +79,26 @@ Push solo su questo ramo.
   - periodi: eliminando un periodo si eliminano anche le sue traduzioni
     (`content_translations`), che non sono «dati collegati» ma parte del nome;
   - errori sul campo: ogni errore di validazione porta `campo` (UI_FIELD_*).
+
+- **Livelli e classi (passo 4):**
+  - livelli con `tenant.manage_config` (permesso prima della risorsa); classi con
+    `class.manage` nell'ambito del livello e della classe, **dopo** aver trovato
+    la risorsa nel tenant (404 prima di 403, come le rotte di lettura delle classi);
+  - ordine di un nuovo livello: facoltativo, per default in coda (max + 1, deciso
+    dal server); riordino = modifica del numero d'ordine (`PUT`);
+  - «dati collegati» di un livello: classi, materie, scale, soglie, ruoli con
+    ambito sul livello; di una classe: iscrizioni, insegnamenti, ruoli con ambito
+    sulla classe. Le traduzioni del nome si eliminano con il livello;
+  - in un livello **disattivato** non si creano né si riattivano classi (409
+    `ERR_SCHOOL_LEVEL_DEACTIVATED`); le classi esistenti restano;
+  - disattivare ciò che è già disattivato (o viceversa) → 409 `ERR_STATE_UNCHANGED`;
+  - **nessuna rotta scrive `school_level_id`** (né altre colonne protette dalla
+    004): `PUT /admin/classes/:id` ignora un eventuale `schoolLevelId` (test). Le
+    violazioni della 004 restano quindi impossibili da queste rotte; se un domani
+    arrivassero, il gestore errori le traduce già in 409
+    `ERR_IMMUTABLE_REFERENCE` (test esistente in `immutabilita.test.js`);
+  - le eliminazioni con dati collegati sono verificate prima del DELETE; in più
+    un 23503 residuo sul DELETE diventa 409 con lo stesso codice (mai 400 o 500).
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne
