@@ -44,6 +44,9 @@ header.app h1.titolo { margin: 0; font-size: inherit; }
 header.app .titolo-app { background: none; border: 0; padding: 0; font-weight: 600; font-size: 1.05rem; cursor: pointer; color: inherit; }
 header.app .utente { flex: 1; font-size: .85rem; }
 header.app .controllo { display: inline-flex; align-items: center; gap: .35rem; font-size: .85rem; }
+header.app .istituto-attivo { font-weight: 600; }
+button.scelta { inline-size: 100%; border-width: 1px; }
+.scelta[aria-current="true"] { border-color: var(--istituzionale); border-inline-start-width: 4px; }
 header.app select { padding-block: .2rem; padding-inline: .4rem; border-radius: 4px; border: 1px solid transparent; color: var(--inchiostro); }
 .collegamento-chiaro { background: none; border: 0; color: inherit; text-decoration: underline; cursor: pointer; padding: 0; }
 

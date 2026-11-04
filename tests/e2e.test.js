@@ -73,7 +73,6 @@ async function accedi(pagina, hash = '') {
   await pagina.fill('#campo-password', 'Sviluppo!2026');
   await pagina.click('form.modulo-accesso button[type=submit]');
   await pagina.waitForSelector('#intestazione:not([hidden])');
-  await pagina.selectOption('#tenant', { index: 1 });
   await pagina.waitForSelector('#contenuto .elenco .scelta');
   await stabile(pagina);
 }
@@ -526,9 +525,8 @@ test('Iterazione 1: il PLATFORM_ADMIN crea una scuola; il nuovo amministratore e
   await pagina.waitForSelector('#contenuto .conferma');
   assert.equal(await pagina.textContent('#contenuto .conferma'), CATALOGO.UI_PASSWORD_CHANGED);
   assert.equal(await pagina.isHidden('#blocco-tenant'), false);
-  const opzioni = await pagina.$$eval('#tenant option', (o) => o.map((x) => x.textContent));
-  assert.deepEqual(opzioni, [CATALOGO.UI_TENANT_NONE, 'Istituto Comprensivo Omega'], 'solo la propria scuola');
-  await pagina.selectOption('#tenant', { index: 1 });
+  assert.equal((await pagina.textContent('#istituto-attivo bdi')), 'Istituto Comprensivo Omega', 'entra direttamente nella sua sola scuola');
+  assert.equal(await pagina.isHidden('#cambia-istituto'), true, 'una sola scuola: niente «Cambia istituto»');
   await pagina.waitForSelector('#amministrazione:not([hidden])');
   await stabile(pagina);
   await pagina.click('#amministrazione');

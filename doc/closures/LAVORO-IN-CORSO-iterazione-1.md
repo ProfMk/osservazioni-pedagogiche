@@ -22,11 +22,11 @@
 | 3 | Server: creazione scuola + primo amministratore, reimpostazione | completato | `cdcdb2d` |
 | 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | completato | `f501978` |
 | 5 | E2E del primo accesso; README (005, nuovo file di test) | completato | `8fe125b` |
-| 6a | Passo 6, server: selezione automatica dell'istituto al login, ruoli per scuola in `/me` | completato | (questo commit) |
-| 6b | Passo 6, client: vista «Scegli l'istituto», intestazione senza `<select>`, «Cambia istituto» | da fare | |
+| 6a | Passo 6, server: selezione automatica dell'istituto al login, ruoli per scuola in `/me` | completato | `0252804` |
+| 6b | Passo 6, client: vista «Scegli l'istituto», intestazione senza `<select>`, «Cambia istituto» (+ i 2 punti E2E che usavano `#tenant`) | completato | (questo commit) |
 | 6c | Passo 6, E2E: punti che usavano `#tenant`, casi nuovi | da fare | |
 
-**Passo in corso:** 6b (prompt «passo 6: scelta dell'istituto dopo l'accesso», partenza `8fe125b`).
+**Passo in corso:** 6c (prompt «passo 6: scelta dell'istituto dopo l'accesso», partenza `8fe125b`).
 
 ## Ultimo esito di `npm test`
 
@@ -42,6 +42,16 @@ scontato `activeTenantId` NULL dopo il login di un account con una sola scuola):
   La verifica di P3 al login passa al test nuovo con `multitenant.user`.
 - `tests/primoAccesso.test.js`, «Primo accesso…»: prima nessuna sessione con
   `active_tenant_id`; dopo la sessione ha il tenant della sua unica scuola.
+
+- `tests/e2e.test.js`, helper `accedi()` (non è un'asserzione): tolta la riga
+  `selectOption('#tenant', { index: 1 })`; il docente entra direttamente.
+- `tests/e2e.test.js`, «Iterazione 1: …» (mio, del passo 5): prima
+  `#tenant option` = `[UI_TENANT_NONE, 'Istituto Comprensivo Omega']` e
+  `selectOption('#tenant')`; dopo `#istituto-attivo bdi` = «Istituto
+  Comprensivo Omega» e `#cambia-istituto` nascosto.
+
+E2E (accorgimento: `--require` dallo scratchpad che passa a `chromium.launch`
+`executablePath: '/opt/pw-browsers/chromium'`): 15/15 dopo il 6b.
 
 **Prova a contrario (passo 6a):** senza la selezione automatica falliscono 3
 degli 8 test nuovi (una sola scuola, una sola scuola con cambio obbligatorio,
@@ -171,3 +181,23 @@ membership mista).
   sistema). Per il PLATFORM_ADMIN `tenantsDisponibiliPerSwitch` comprende ora
   solo i tenant **attivi** (gli unici che `switch-tenant` accetta), con
   `ruoli` di norma vuoto.
+- `[DECISIONE PROPOSTA]` (6b) Adeguamenti E2E nel commit 6b e non nel 6c:
+  senza, il commit 6b avrebbe lasciato rossi gli E2E. Il 6c aggiunge i casi
+  nuovi.
+- `[DECISIONE PROPOSTA]` (6b) Intestazione: nome della scuola attiva come testo
+  (con «Istituto attivo:» nascosto alla vista, per i lettori di schermo) e
+  «Cambia istituto» solo con più di una scuola. Durante il cambio password
+  obbligatorio il nome non si mostra (resta solo «Esci», come prima).
+- `[DECISIONE PROPOSTA]` (6b) «Scegli l'istituto» è la rotta `#/istituti`
+  (pila e `pushState` come le altre); ogni scuola è un `<button class="scelta">`
+  con nome e ruoli (`ROLE_*`, uniti con `Intl.ListFormat`); la scuola attiva ha
+  `aria-current`. La vista rilegge `/me`, così l'elenco è aggiornato. Dopo la
+  scelta si va agli insegnamenti sostituendo la voce della storia, come faceva
+  il `<select>`.
+- `[DECISIONE PROPOSTA]` (6b) PLATFORM_ADMIN senza scuola attiva: prima vista
+  l'Amministrazione, con una sezione «Entra in un istituto» (stesso elenco di
+  pulsanti, tutte le scuole attive, da `/platform/tenants`).
+- `[DECISIONE PROPOSTA]` (6b) Nessuna scuola: «Nessun istituto associato a
+  questo account.» e nell'intestazione solo nome ed «Esci».
+- `[DECISIONE PROPOSTA]` (6b) Le voci `UI_TENANT`, `UI_TENANT_NONE`,
+  `UI_SELECT_TENANT_PROMPT` restano nel catalogo, non più usate dal client.
