@@ -15,12 +15,13 @@ Push solo su questo ramo.
 | 4 | fatto | `990b424` | Server, livelli e classi |
 | 5 | fatto | `3d5d121` | Server, quadro |
 | 6 | fatto | `9855774` | Client, cornice dell'amministrazione e quadro |
-| 7 | fatto | (questo commit) | Client, calendario |
-| 8 | da fare | | Client, livelli e classi |
+| 7 | fatto | `4feb47a` | Client, calendario |
+| 8 | fatto | (questo commit) | Client, livelli e classi |
 | 9 | da fare | | E2E |
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 8: `npm test` → **206/206**.
 - Passo 7: `npm test` → **206/206**.
 - Passo 6: `npm test` → **206/206**. E2E esistenti **19/19** con l'accorgimento
   (vedi sotto). `npx playwright-core install chromium` provato una volta:
@@ -161,6 +162,18 @@ li riesegue in locale con il comando ufficiale.
   - la modifica di un periodo avviene sul posto (il modulo sostituisce la riga,
     «Annulla» ridisegna); dopo ogni scrittura riuscita la vista si ridisegna dal
     server con «Modifica salvata.».
+
+- **Livelli e classi nel client (passo 8):**
+  - sezione «Livelli e classi»: elenco dei livelli (anche disattivati, con lo
+    stato e il numero di classi attive dal server), «Classi» porta alle classi
+    del livello (`#/amministrazione/classi/<livello>`, nel menu resta evidenziata
+    «Livelli e classi», le briciole tornano ai livelli);
+  - livelli: nuovo (nome, ordine facoltativo), modifica sul posto (nome e
+    ordine), disattiva (con conferma), riattiva, elimina (con conferma, solo se
+    il server la ammette);
+  - classi: nuova, rinomina sul posto, disattiva (con conferma), riattiva,
+    elimina (con conferma); in un livello disattivato niente modulo e una nota;
+  - **nessuna azione «sposta in un altro livello»** (decisione 14).
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne

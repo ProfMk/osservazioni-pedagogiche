@@ -1210,6 +1210,7 @@
   var SEZIONI_ADMIN = [
     { id: 'quadro', chiave: 'UI_ADMIN_SECTION_OVERVIEW', istituto: true, anno: true },
     { id: 'calendario', chiave: 'UI_ADMIN_SECTION_CALENDAR', istituto: true, anno: true },
+    { id: 'livelli', chiave: 'UI_ADMIN_SECTION_LEVELS', istituto: true },
     { id: 'scuole', chiave: 'UI_ADMIN_SECTION_SCHOOLS', piattaforma: true },
   ];
 
@@ -1540,6 +1541,129 @@
       if (periodi.modificabile) nodi.push(moduloPeriodo(contesto.anno, null, null));
     }
     return { nodi: nodi };
+  };
+
+  // --- Livelli e classi --------------------------------------------------------------------
+
+  function moduloLivello(livello, annulla) {
+    var nome = inputTesto(100, livello ? livello.nome.testo : null);
+    var ordine = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', size: 6, value: livello ? String(livello.ordine) : null });
+    return moduloAdmin({
+      id: livello ? 'livello-' + livello.id : 'nuovo-livello',
+      titolo: livello ? 'UI_EDIT_LEVEL' : 'UI_NEW_SCHOOL_LEVEL', parametri: { nome: livello ? livello.nome : null },
+      invio: livello ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
+      campi: [
+        { nome: 'nome', etichetta: 'UI_LEVEL_NAME', input: nome, campo: 'UI_FIELD_NOME' },
+        { nome: 'ordine', etichetta: 'UI_LEVEL_ORDER', input: ordine, campo: 'UI_FIELD_ORDINE', aiuto: { chiave: 'UI_LEVEL_ORDER_HINT' } },
+      ],
+      invia: function () {
+        var corpo = { nome: nome.value, ordine: ordine.value };
+        return livello ? api('/admin/school-levels/' + livello.id, corpoJson('PUT', corpo)) : api('/admin/school-levels', corpoJson('POST', corpo));
+      },
+    });
+  }
+
+  function rigaLivello(l, r) {
+    var riga = el('li', { classe: 'voce-admin' });
+    var parametri = { nome: l.nome, livello: l.nome };
+    var azioni = [
+      haPermesso('class.manage') ? collegamentoA(rottaAdmin(r, { sezione: 'classi', livelloId: l.id }), [t('span', 'UI_LEVEL_OPEN_CLASSES')], {
+        'aria-label': I18n.testo('UI_LEVEL_OPEN_CLASSES_FOR', parametri),
+      }) : null,
+      t('button', 'UI_EDIT', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_EDIT_FOR', parametri),
+        onclick: function () { riga.replaceChildren(moduloLivello(l, function () { disegna(stato.rotta); })); riga.querySelector('input').focus(); },
+      }),
+      l.azioni.indexOf('disattiva') >= 0 ? pulsanteAzione('UI_DEACTIVATE', {
+        per: 'UI_DEACTIVATE_FOR', conferma: 'UI_LEVEL_DEACTIVATE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/school-levels/' + l.id + '/deactivate', corpoJson('POST')); },
+      }) : null,
+      l.azioni.indexOf('riattiva') >= 0 ? pulsanteAzione('UI_REACTIVATE', {
+        per: 'UI_REACTIVATE_FOR', parametri: parametri,
+        esegui: function () { return api('/admin/school-levels/' + l.id + '/reactivate', corpoJson('POST')); },
+      }) : null,
+      l.azioni.indexOf('elimina') >= 0 ? pulsanteAzione('UI_DELETE', {
+        per: 'UI_DELETE_FOR', conferma: 'UI_LEVEL_DELETE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/school-levels/' + l.id, corpoJson('DELETE')); },
+      }) : null,
+    ];
+    riga.append(
+      contenuto('span', l.nome, { classe: 'titolo' }),
+      ' ', t('span', chiaveStatoLivello(l.stato), null, { classe: 'etichetta-stato stato-' + l.stato }),
+      ' ', t('span', 'UI_LEVEL_CLASSES_COUNT', { n: l.classiAttive }, { classe: 'sottotitolo' }),
+      el('span', { classe: 'azioni' }, azioni)
+    );
+    return riga;
+  }
+
+  SEZIONI_VISTE.livelli = async function (r) {
+    var livelli = await api('/admin/school-levels');
+    return {
+      nodi: [
+        t('h3', 'UI_SCHOOL_LEVELS'),
+        livelli.length ? el('ul', { classe: 'elenco-admin elenco-livelli' }, livelli.map(function (l) { return rigaLivello(l, r); }))
+          : t('p', 'UI_NO_SCHOOL_LEVELS', null, { classe: 'stato' }),
+        moduloLivello(null, null),
+      ],
+    };
+  };
+
+  function moduloClasse(livello, classe, annulla) {
+    var nome = inputTesto(50, classe ? classe.nome : null);
+    return moduloAdmin({
+      id: classe ? 'classe-' + classe.id : 'nuova-classe',
+      titolo: classe ? 'UI_RENAME_CLASS' : 'UI_NEW_CLASS', parametri: { nome: classe ? classe.nome : null, livello: livello.nome },
+      invio: classe ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
+      campi: [{ nome: 'nome', etichetta: 'UI_CLASS_NAME', input: nome, campo: 'UI_FIELD_NOME', aiuto: classe ? null : { chiave: 'UI_CLASS_NAME_HINT' } }],
+      invia: function () {
+        return classe ? api('/admin/classes/' + classe.id, corpoJson('PUT', { nome: nome.value }))
+          : api('/admin/school-levels/' + livello.id + '/classes', corpoJson('POST', { nome: nome.value }));
+      },
+    });
+  }
+
+  function rigaClasse(livello, c) {
+    var riga = el('li', { classe: 'voce-admin' });
+    var parametri = { nome: c.nome, livello: livello.nome };
+    var azioni = [
+      t('button', 'UI_RENAME', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_RENAME_FOR', parametri),
+        onclick: function () { riga.replaceChildren(moduloClasse(livello, c, function () { disegna(stato.rotta); })); riga.querySelector('input').focus(); },
+      }),
+      c.azioni.indexOf('disattiva') >= 0 ? pulsanteAzione('UI_DEACTIVATE', {
+        per: 'UI_DEACTIVATE_FOR', conferma: 'UI_CLASS_DEACTIVATE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/classes/' + c.id + '/deactivate', corpoJson('POST')); },
+      }) : null,
+      c.azioni.indexOf('riattiva') >= 0 ? pulsanteAzione('UI_REACTIVATE', {
+        per: 'UI_REACTIVATE_FOR', parametri: parametri,
+        esegui: function () { return api('/admin/classes/' + c.id + '/reactivate', corpoJson('POST')); },
+      }) : null,
+      c.azioni.indexOf('elimina') >= 0 ? pulsanteAzione('UI_DELETE', {
+        per: 'UI_DELETE_FOR', conferma: 'UI_CLASS_DELETE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/classes/' + c.id, corpoJson('DELETE')); },
+      }) : null,
+    ];
+    riga.append(
+      el('span', { classe: 'titolo' }, [el('bdi', {}, [c.nome])]),
+      ' ', t('span', chiaveStatoClasse(c.stato), null, { classe: 'etichetta-stato stato-' + c.stato }),
+      el('span', { classe: 'azioni' }, azioni)
+    );
+    return riga;
+  }
+
+  SEZIONI_VISTE.classi = async function (r) {
+    var dati = await api('/admin/school-levels/' + r.livelloId + '/classes');
+    var livello = dati.livello;
+    return {
+      voci: [{ contenuto: livello.nome }],
+      nodi: [
+        el('h3', {}, [t('span', 'UI_CLASSES_OF_LEVEL'), ' ', contenuto('span', livello.nome)]),
+        livello.stato === 'attivo' ? null : t('p', 'UI_LEVEL_DEACTIVATED_NOTE', null, { classe: 'nota' }),
+        dati.classi.length ? el('ul', { classe: 'elenco-admin elenco-classi' }, dati.classi.map(function (c) { return rigaClasse(livello, c); }))
+          : t('p', 'UI_NO_CLASSES', null, { classe: 'stato' }),
+        livello.stato === 'attivo' ? moduloClasse(livello, null, null) : null,
+      ],
+    };
   };
 
   // --- Scuole (PLATFORM_ADMIN): entrare in una scuola, crearla, reimpostare una password ----
