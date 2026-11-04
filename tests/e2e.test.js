@@ -545,3 +545,129 @@ test('Iterazione 1: il PLATFORM_ADMIN crea una scuola; il nuovo amministratore e
   assert.deepEqual(pagina.errori, []);
   await pagina.context().close();
 });
+
+// --- Iterazione 1, passo 6: scelta dell'istituto ------------------------------------------
+
+async function entraCome(pagina, email) {
+  await pagina.goto(`${srv.origine}/`);
+  await pagina.fill('#campo-email', email);
+  await pagina.fill('#campo-password', 'Sviluppo!2026');
+  await pagina.click('form.modulo-accesso button[type=submit]');
+  await pagina.waitForSelector('#intestazione:not([hidden])');
+  await stabile(pagina);
+}
+
+const titoloVista = (pagina) => pagina.textContent('#contenuto h2');
+const pulsantiIstituti = (pagina) => pagina.$$eval('#contenuto .elenco-istituti button.scelta',
+  (b) => b.map((x) => x.innerText.split('\n').map((r) => r.trim()).filter(Boolean)));
+
+test('Passo 6: docente di una sola scuola — dopo il login vede subito i suoi insegnamenti; nessun select dell\'istituto', async () => {
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, 'teacher.math.a@alfa.test');
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+  assert.ok((await pagina.$$('#contenuto .elenco a.scelta')).length > 0, 'i suoi insegnamenti');
+  assert.equal(await pagina.$('#tenant'), null, 'nessun <select id="tenant">');
+  assert.deepEqual(await pagina.$$eval('#intestazione select', (s) => s.map((x) => x.id)), ['lingua'], 'resta solo il selettore della lingua');
+  assert.equal(await pagina.textContent('#istituto-attivo bdi'), 'Istituto Comprensivo Alfa');
+  assert.equal(await pagina.isHidden('#cambia-istituto'), true, 'una sola scuola: niente «Cambia istituto»');
+  await senzaTestiMancanti(pagina, 'insegnamenti dopo il login');
+  await nessunaViolazione(pagina, 'insegnamenti dopo il login');
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Passo 6: utente con due scuole — pulsanti con nome e ruoli, scelta da tastiera, «Cambia istituto» e tasto Indietro', async () => {
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, 'multitenant.user@example.test');
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_CHOOSE_TENANT);
+  assert.ok(pagina.url().endsWith('#/istituti'));
+  assert.deepEqual(await pulsantiIstituti(pagina), [
+    ['Istituto Comprensivo Alfa', CATALOGO.ROLE_TEACHER],
+    ['Istituto Comprensivo Beta', CATALOGO.ROLE_COORDINATOR],
+  ]);
+  assert.equal(await pagina.isHidden('#blocco-tenant'), true, 'nessuna scuola attiva da mostrare');
+  assert.equal(await pagina.$('#tenant'), null);
+  await senzaTestiMancanti(pagina, 'scegli l\'istituto');
+  await nessunaViolazione(pagina, 'scegli l\'istituto');
+
+  // Da tastiera: fuoco sul secondo pulsante, Invio.
+  await pagina.focus('#contenuto .elenco-istituti button.scelta >> nth=1');
+  await pagina.keyboard.press('Enter');
+  await pagina.waitForFunction(() => document.querySelector('#istituto-attivo bdi'));
+  await stabile(pagina);
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+  assert.equal(await pagina.textContent('#istituto-attivo bdi'), 'Istituto Comprensivo Beta');
+  assert.equal(await pagina.isVisible('#cambia-istituto'), true);
+  assert.equal(await pagina.textContent('#cambia-istituto'), CATALOGO.UI_CHANGE_TENANT);
+
+  // «Cambia istituto» riporta all'elenco (scuola attiva segnata); il tasto Indietro torna dove si era.
+  await pagina.click('#cambia-istituto');
+  await pagina.waitForSelector('#contenuto .elenco-istituti');
+  await stabile(pagina);
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_CHOOSE_TENANT);
+  assert.deepEqual(await pagina.$$eval('.elenco-istituti button[aria-current="true"] .titolo', (n) => n.map((x) => x.textContent)),
+    ['Istituto Comprensivo Beta']);
+  await nessunaViolazione(pagina, 'cambia istituto');
+  await pagina.goBack();
+  await pagina.waitForFunction((t) => document.querySelector('#contenuto h2') && document.querySelector('#contenuto h2').textContent === t,
+    CATALOGO.UI_TEACHINGS);
+
+  // Di nuovo l'elenco, poi l'altra scuola.
+  await pagina.click('#cambia-istituto');
+  await pagina.waitForSelector('#contenuto .elenco-istituti');
+  await pagina.click('#contenuto .elenco-istituti button.scelta >> nth=0');
+  await pagina.waitForFunction(() => document.querySelector('#istituto-attivo bdi')
+    && document.querySelector('#istituto-attivo bdi').textContent === 'Istituto Comprensivo Alfa');
+  await stabile(pagina);
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Passo 6: RTL — la vista «Scegli l\'istituto» si specchia (testo all\'inizio della riga di lettura), senza testi mancanti', async () => {
+  await abilitaRtlDiProva();
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, 'multitenant.user@example.test');
+  await pagina.click('#contenuto .elenco-istituti button.scelta >> nth=0'); // Alfa, dove la lingua RTL di prova è abilitata
+  await pagina.waitForSelector('#blocco-lingua:not([hidden])');
+  await stabile(pagina);
+  await cambiaLingua(pagina, 'ar-XB', 'rtl');
+  await pagina.click('#cambia-istituto');
+  await pagina.waitForSelector('#contenuto .elenco-istituti');
+  await stabile(pagina);
+  await senzaTestiMancanti(pagina, 'scegli l\'istituto RTL');
+  const posizione = await pagina.$eval('#contenuto .elenco-istituti button.scelta', (b) => {
+    const box = b.getBoundingClientRect();
+    const testo = document.createRange();
+    testo.selectNodeContents(b.querySelector('.titolo'));
+    const titolo = testo.getBoundingClientRect();
+    return { direzione: getComputedStyle(b).direction, distanzaFine: box.right - titolo.right, distanzaInizio: titolo.left - box.left };
+  });
+  assert.equal(posizione.direzione, 'rtl');
+  assert.ok(posizione.distanzaFine < posizione.distanzaInizio, 'in RTL il nome sta a destra, dove inizia la riga');
+  await nessunaViolazione(pagina, 'scegli l\'istituto RTL');
+  await pagina.click('#contenuto .elenco-istituti button.scelta >> nth=0');
+  await pagina.waitForSelector('#blocco-lingua:not([hidden])');
+  await stabile(pagina);
+  await cambiaLingua(pagina, 'it', 'ltr');
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Passo 6: PLATFORM_ADMIN — prima vista l\'Amministrazione; entra in una scuola con lo stesso elenco di pulsanti', async () => {
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, 'platform.admin@platform.test');
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_ADMINISTRATION);
+  assert.ok(pagina.url().endsWith('#/amministrazione'));
+  const nomi = (await pulsantiIstituti(pagina)).map((righe) => righe[0]);
+  assert.ok(nomi.includes('Istituto Comprensivo Alfa') && nomi.includes('Istituto Comprensivo Beta'), nomi.join(', '));
+  await nessunaViolazione(pagina, 'amministrazione con elenco delle scuole');
+  await pagina.click('#contenuto .elenco-istituti button.scelta:has-text("Istituto Comprensivo Beta")');
+  await pagina.waitForFunction(() => document.querySelector('#istituto-attivo bdi'));
+  await stabile(pagina);
+  assert.equal(await pagina.textContent('#istituto-attivo bdi'), 'Istituto Comprensivo Beta');
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+  assert.equal(await pagina.isVisible('#cambia-istituto'), true);
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});

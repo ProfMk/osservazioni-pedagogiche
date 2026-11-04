@@ -23,10 +23,10 @@
 | 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | completato | `f501978` |
 | 5 | E2E del primo accesso; README (005, nuovo file di test) | completato | `8fe125b` |
 | 6a | Passo 6, server: selezione automatica dell'istituto al login, ruoli per scuola in `/me` | completato | `0252804` |
-| 6b | Passo 6, client: vista «Scegli l'istituto», intestazione senza `<select>`, «Cambia istituto» (+ i 2 punti E2E che usavano `#tenant`) | completato | (questo commit) |
-| 6c | Passo 6, E2E: punti che usavano `#tenant`, casi nuovi | da fare | |
+| 6b | Passo 6, client: vista «Scegli l'istituto», intestazione senza `<select>`, «Cambia istituto» (+ i 2 punti E2E che usavano `#tenant`) | completato | `a6aa6b3` |
+| 6c | Passo 6, E2E: 4 casi nuovi (una scuola, due scuole con «Cambia istituto» e Indietro, RTL, PLATFORM_ADMIN) | completato | (questo commit) |
 
-**Passo in corso:** 6c (prompt «passo 6: scelta dell'istituto dopo l'accesso», partenza `8fe125b`).
+**Passo in corso:** nessuno: passo 6 completato (partenza `8fe125b`), resta il resoconto.
 
 ## Ultimo esito di `npm test`
 
@@ -51,7 +51,8 @@ scontato `activeTenantId` NULL dopo il login di un account con una sola scuola):
   Comprensivo Omega» e `#cambia-istituto` nascosto.
 
 E2E (accorgimento: `--require` dallo scratchpad che passa a `chromium.launch`
-`executablePath: '/opt/pw-browsers/chromium'`): 15/15 dopo il 6b.
+`executablePath: '/opt/pw-browsers/chromium'`): 15/15 dopo il 6b, 19/19 dopo
+il 6c. Da rieseguire sul computer del proprietario con `npm run test:e2e`.
 
 **Prova a contrario (passo 6a):** senza la selezione automatica falliscono 3
 degli 8 test nuovi (una sola scuola, una sola scuola con cambio obbligatorio,
@@ -201,3 +202,7 @@ membership mista).
   questo account.» e nell'intestazione solo nome ed «Esci».
 - `[DECISIONE PROPOSTA]` (6b) Le voci `UI_TENANT`, `UI_TENANT_NONE`,
   `UI_SELECT_TENANT_PROMPT` restano nel catalogo, non più usate dal client.
+- `[DECISIONE PROPOSTA]` (6c) «Nell'intestazione non c'è più nessun
+  `<select>`» è verificato come: nessun `#tenant`, e l'unico `<select>` rimasto è
+  quello della lingua (`#lingua`, preesistente, visibile solo con almeno due
+  lingue abilitate).
