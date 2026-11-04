@@ -92,6 +92,9 @@ migrations/
   002_audit_append_only.sql        Ruoli DB app_role/audit_owner e privilegi
   003_lingua_contenuti_v2.sql      V2: lingue, lingua di piattaforma/tenant/preferita, sovrascritture
                                    del catalogo, traduzioni dei contenuti, lingua dei contenuti d'autore
+  004_immutabilita_strutturale.sql Trigger di immutabilità dei riferimenti strutturali
+  005_account_primo_accesso.sql    Obbligo di cambio password, scadenza della password temporanea,
+                                   unicità dell'email senza maiuscole
 seed/
   seed_multitenant.sql             Due tenant di esempio, utenti, classi, Teaching, Activity, Observation
 server/
@@ -133,7 +136,10 @@ tests/
   lingua.test.js                   Lingua C2/P3, catalogo, errori come codici, contenuti multilingue
   v21.test.js                      Campi E1–E4 del payload V2.1 (colori, bande dei valori, complessivo, valutazioni)
   geometria.test.js                Geometria del disco (settori uguali, raggio = valore, RTL)
-  e2e.test.js                      Browser sul seed esteso: viste V2.1, colori, navigazione, RTL, B/N, axe-core
+  primoAccesso.test.js             Migration 005, nuova scuola e primo amministratore, password temporanea,
+                                   cambio obbligatorio, reimpostazione, nessuna password in audit e log
+  e2e.test.js                      Browser sul seed esteso: viste V2.1, colori, navigazione, RTL, B/N, axe-core,
+                                   creazione di una scuola e primo accesso
   support/pglite.js                Database di prova in memoria (PGlite) per i test, nessuna installazione richiesta
 ```
 
@@ -170,6 +176,7 @@ psql "$DATABASE_URL" -f migrations/001_ruoli_permessi_sistema.sql
 psql "$DATABASE_URL" -f migrations/002_audit_append_only.sql
 psql "$DATABASE_URL" -f migrations/003_lingua_contenuti_v2.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_immutabilita_strutturale.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/005_account_primo_accesso.sql
 ```
 
 La 003 non modifica i privilegi di `audit_log` stabiliti dalla 002 e concede
@@ -178,6 +185,12 @@ esplicitamente a `app_role` i privilegi sulle nuove tabelle.
 La 004 aggiunge i trigger di immutabilità (decisione 2 della chiusura V1.1):
 va eseguita con il ruolo proprietario delle tabelle, è rieseguibile e, a
 fine esecuzione, `pg_trigger` deve contenere 26 trigger `trg_%immutabil%`.
+
+La 005 aggiunge `accounts.deve_cambiare_password` (default `false`: gli account
+esistenti non sono toccati), `accounts.password_temporanea_scade_il` e l'indice
+univoco `uq_accounts_email_lower` su `lower(email)`. Se trova email doppie a
+meno delle maiuscole si ferma senza applicare nulla e indica la query per
+elencarle. È rieseguibile.
 
 Poi, per un ambiente di sviluppo/collaudo con dati di esempio realistici
 (due tenant, più utenti, classi, Teaching, Activity, Observation — **mai
@@ -236,7 +249,7 @@ npx playwright-core install chromium
 
 I test di integrazione usano PGlite: un database Postgres reale (WASM),
 ricreato da zero a ogni esecuzione con l'intera catena
-`migrations/000 → 001 → 002 → 003 → 004 → seed/seed_multitenant.sql`. Nessuna
+`migrations/000 → 001 → 002 → 003 → 004 → 005 → seed/seed_multitenant.sql`. Nessuna
 installazione di PostgreSQL è necessaria per eseguire la suite. Non
 richiedono nemmeno una `DATABASE_URL` o un `SESSION_SECRET` propri: li
 imposta `tests/support/pglite.js`.

@@ -10,6 +10,8 @@
  * criticità piena / da verificare; mini-dischi; navigazione a pila (settore = carta, ←,
  * tasto Indietro); tabella alternativa; confronto «rispetto al suo complessivo»; nessun
  * andamento; specchio RTL; marcatore di testo mancante; accessibilità (axe-core).
+ * Iterazione 1: creazione di una scuola, password temporanea mostrata una volta, primo
+ * accesso con cambio obbligatorio.
  *
  * Richiede Chromium installato per playwright-core: `npm run test:e2e`.
  */
@@ -442,5 +444,106 @@ test('Bianco e nero: ogni distinzione ha anche una forma (righe, tratteggio, bor
     chipConTesto: [...document.querySelectorAll('.carta .chip:not(.vuoto)')].every((c) => c.textContent.trim().length > 0),
   }));
   assert.deepEqual(forme, { parziale: true, certezzaTesto: true, chipConTesto: true });
+  await pagina.context().close();
+});
+
+test('Iterazione 1: il PLATFORM_ADMIN crea una scuola; il nuovo amministratore entra con la temporanea, è obbligato a cambiarla, poi vede la propria amministrazione', async () => {
+  const pagina = await nuovaPagina({ permissions: ['clipboard-read', 'clipboard-write'] });
+  await pagina.goto(`${srv.origine}/`);
+  await pagina.fill('#campo-email', 'platform.admin@platform.test');
+  await pagina.fill('#campo-password', 'Sviluppo!2026');
+  await pagina.click('form.modulo-accesso button[type=submit]');
+  await pagina.waitForSelector('#intestazione:not([hidden])');
+  await pagina.click('#amministrazione');
+  await pagina.waitForSelector('form.modulo-scuola');
+  await stabile(pagina);
+  await senzaTestiMancanti(pagina, 'amministrazione della piattaforma');
+  await nessunaViolazione(pagina, 'amministrazione della piattaforma');
+
+  // Nuova scuola: le etichette portano ai campi (getByLabel), l'email con maiuscole.
+  await pagina.getByLabel(CATALOGO.UI_SCHOOL_NAME, { exact: true }).fill('Istituto Comprensivo Omega');
+  await pagina.getByLabel(CATALOGO.UI_SCHOOL_SLUG, { exact: true }).fill('omega');
+  await pagina.getByLabel(CATALOGO.UI_FIRST_NAME, { exact: true }).fill('Olga');
+  await pagina.getByLabel(CATALOGO.UI_LAST_NAME, { exact: true }).fill('Omega');
+  await pagina.locator('form.modulo-scuola').getByLabel(CATALOGO.UI_EMAIL, { exact: true }).fill('Olga.Omega@Omega.test');
+  await pagina.click('form.modulo-scuola button[type=submit]');
+  await pagina.waitForSelector('#password-temporanea');
+  const temporanea = (await pagina.textContent('#password-temporanea')).trim();
+  assert.match(temporanea, /^[A-HJ-NP-Za-km-np-z2-9]{16}$/);
+  assert.equal(await pagina.evaluate(() => document.activeElement.id), 'titolo-credenziali', 'il fuoco va al riquadro della password');
+  assert.ok((await pagina.innerText('.riquadro-credenziali')).includes(CATALOGO.UI_TEMP_PASSWORD_WARNING));
+  await senzaTestiMancanti(pagina, 'password temporanea');
+  await nessunaViolazione(pagina, 'password temporanea');
+  await pagina.click('.riquadro-credenziali button.azione');
+  await pagina.waitForSelector('.esito-copia span');
+  assert.equal(await pagina.textContent('.esito-copia'), CATALOGO.UI_COPIED);
+  assert.equal(await pagina.evaluate(() => navigator.clipboard.readText()), temporanea);
+  assert.ok((await pagina.innerText('.elenco-scuole')).includes('olga.omega@omega.test'));
+
+  // Una sola volta: ridisegnata la vista, la password non c'è più.
+  await pagina.click('#amministrazione');
+  await pagina.waitForFunction(() => !document.querySelector('#password-temporanea') && document.querySelector('form.modulo-scuola'));
+  assert.ok(!(await pagina.innerText('body')).includes(temporanea));
+  await pagina.click('#esci');
+  await pagina.waitForSelector('form.modulo-accesso');
+
+  // Primo accesso: solo la schermata di cambio password.
+  await pagina.fill('#campo-email', 'olga.omega@omega.test');
+  await pagina.fill('#campo-password', temporanea);
+  await pagina.click('form.modulo-accesso button[type=submit]');
+  await pagina.waitForSelector('#titolo-cambio-password');
+  assert.equal(await pagina.evaluate(() => document.activeElement.id), 'password-attuale');
+  const intestazione = await pagina.evaluate(() => ['blocco-tenant', 'amministrazione', 'cambia-password', 'come-leggere-apri', 'esci']
+    .map((id) => document.getElementById(id).hidden));
+  assert.deepEqual(intestazione, [true, true, true, true, false], 'solo «Esci» resta disponibile');
+  await senzaTestiMancanti(pagina, 'cambio obbligatorio');
+  await nessunaViolazione(pagina, 'cambio obbligatorio');
+
+  // Errori associati ai campi: conferma diversa (nel client), nuova uguale alla temporanea (dal server).
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_TEMPORARY, { exact: true }).fill(temporanea);
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_NEW, { exact: true }).fill('una frase lunga e nuova');
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_CONFIRM, { exact: true }).fill('una frase diversa');
+  await pagina.press('#password-ripetuta', 'Enter');
+  await pagina.waitForSelector('#password-ripetuta-errore:not([hidden])');
+  assert.equal(await pagina.textContent('#password-ripetuta-errore'), CATALOGO.ERR_PASSWORD_CONFIRMATION_MISMATCH);
+  assert.deepEqual(await pagina.evaluate(() => [document.activeElement.id, document.activeElement.getAttribute('aria-invalid'),
+    document.activeElement.getAttribute('aria-describedby')]), ['password-ripetuta', 'true', 'password-ripetuta-errore']);
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_NEW, { exact: true }).fill(temporanea);
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_CONFIRM, { exact: true }).fill(temporanea);
+  await pagina.press('#password-ripetuta', 'Enter');
+  await pagina.waitForSelector('#password-nuova-errore:not([hidden])');
+  assert.equal(await pagina.textContent('#password-nuova-errore'), CATALOGO.ERR_PASSWORD_SAME_AS_TEMPORARY);
+  assert.equal(await pagina.getAttribute('#password-nuova', 'aria-invalid'), 'true');
+  assert.ok((await pagina.getAttribute('#password-nuova', 'aria-describedby')).split(' ').includes('password-nuova-errore'));
+  await nessunaViolazione(pagina, 'cambio obbligatorio con errore');
+  assert.deepEqual(pagina.errori.map((e) => e.replace(srv.origine, '')), ['400 /api/auth/password'], 'il solo errore atteso');
+  pagina.errori.length = 0;
+
+  // Cambio riuscito, da tastiera; poi la propria scuola e la propria amministrazione.
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_NEW, { exact: true }).fill('una frase lunga e nuova');
+  await pagina.getByLabel(CATALOGO.UI_PASSWORD_CONFIRM, { exact: true }).fill('una frase lunga e nuova');
+  await pagina.press('#password-ripetuta', 'Enter');
+  await pagina.waitForSelector('#contenuto .conferma');
+  assert.equal(await pagina.textContent('#contenuto .conferma'), CATALOGO.UI_PASSWORD_CHANGED);
+  assert.equal(await pagina.isHidden('#blocco-tenant'), false);
+  const opzioni = await pagina.$$eval('#tenant option', (o) => o.map((x) => x.textContent));
+  assert.deepEqual(opzioni, [CATALOGO.UI_TENANT_NONE, 'Istituto Comprensivo Omega'], 'solo la propria scuola');
+  await pagina.selectOption('#tenant', { index: 1 });
+  await pagina.waitForSelector('#amministrazione:not([hidden])');
+  await stabile(pagina);
+  await pagina.click('#amministrazione');
+  await pagina.waitForFunction((titolo) => [...document.querySelectorAll('#contenuto h3')].some((h) => h.textContent === titolo), CATALOGO.UI_TRANSLATION_COMPLETENESS);
+  assert.equal(await pagina.textContent('#contenuto h2'), CATALOGO.UI_ADMINISTRATION);
+  assert.equal(await pagina.$('form.modulo-scuola'), null, 'niente amministrazione della piattaforma');
+  await senzaTestiMancanti(pagina, 'amministrazione della scuola');
+  await nessunaViolazione(pagina, 'amministrazione della scuola');
+
+  // «Cambia password» resta raggiungibile dal menu.
+  await pagina.click('#cambia-password');
+  await pagina.waitForSelector('form.modulo-password');
+  assert.equal(await pagina.textContent('label[for=password-attuale]'), CATALOGO.UI_PASSWORD_CURRENT);
+  await senzaTestiMancanti(pagina, 'cambio volontario');
+  await nessunaViolazione(pagina, 'cambio volontario');
+  assert.deepEqual(pagina.errori, []);
   await pagina.context().close();
 });

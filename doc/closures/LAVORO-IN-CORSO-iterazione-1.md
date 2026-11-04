@@ -20,16 +20,16 @@
 | 1 | Migration 005 (+ test della migration) | completato | `4a20cf6` |
 | 2 | Server: login, middleware del cambio obbligatorio, `POST /api/auth/password`, password mai nei log | completato | `008602f` |
 | 3 | Server: creazione scuola + primo amministratore, reimpostazione | completato | `cdcdb2d` |
-| 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | completato | (questo commit) |
-| 5 | E2E del primo accesso | da fare | |
+| 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | completato | `f501978` |
+| 5 | E2E del primo accesso; README (005, nuovo file di test) | completato | (questo commit) |
 
-**Passo in corso:** 5.
+**Passo in corso:** nessuno: passi completati, resta il resoconto.
 
 ## Ultimo esito di `npm test`
 
-173/173 (145 esistenti + 28 di `tests/primoAccesso.test.js`). E2E (con il
-preload del Chromium preinstallato): 14/14 esistenti + 1 nuovo, non ancora
-committato (passo 5). Righe `[errore]`:
+173/173 (145 esistenti + 28 di `tests/primoAccesso.test.js`). E2E: `npm run test:e2e`
+**non eseguibile** nell'ambiente (Chromium 1194 non scaricabile); con il preload
+del Chromium preinstallato 15/15 (14 esistenti + 1 nuovo). Righe `[errore]`:
 le 3 preesistenti, più una attesa del test «Email con maiuscole» (passa a
 `gestoreErrori` un 23505 reale per provare la traduzione in 409).
 
