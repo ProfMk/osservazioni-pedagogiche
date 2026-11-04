@@ -10,10 +10,13 @@ async function getTutteITenant(client) {
 
 /** Crea un nuovo tenant (solo PLATFORM_ADMIN, verificato dalla rotta). */
 async function creaTenant(client, { slug, nome }) {
-  if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+  if (!slug || typeof slug !== 'string' || !/^[a-z0-9-]+$/.test(slug)) {
     throw datiNonValidi('ERR_TENANT_SLUG_INVALID');
   }
-  if (!nome || !nome.trim()) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_NOME' });
+  // Limiti delle colonne (tenants.slug varchar(60), tenants.nome varchar(200)): un errore di campo, non un 500.
+  if (slug.length > 60) throw datiNonValidi('ERR_FIELD_TOO_LONG', { campo: 'UI_FIELD_SLUG', massimo: 60 });
+  if (!nome || typeof nome !== 'string' || !nome.trim()) throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_NOME' });
+  if (Array.from(nome.trim()).length > 200) throw datiNonValidi('ERR_FIELD_TOO_LONG', { campo: 'UI_FIELD_NOME', massimo: 200 });
   const { rows: esistente } = await client.query('SELECT 1 FROM tenants WHERE slug = $1', [slug]);
   if (esistente.length > 0) throw conflitto('ERR_TENANT_SLUG_TAKEN', { slug });
   // Un nuovo tenant nasce con la configurazione linguistica di piattaforma (C2): una lingua

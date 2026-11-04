@@ -18,16 +18,18 @@
 | N | Passo | Stato | Commit |
 |---|---|---|---|
 | 1 | Migration 005 (+ test della migration) | completato | `4a20cf6` |
-| 2 | Server: login, middleware del cambio obbligatorio, `POST /api/auth/password`, password mai nei log | completato | (questo commit) |
-| 3 | Server: creazione scuola + primo amministratore, reimpostazione | da fare | |
+| 2 | Server: login, middleware del cambio obbligatorio, `POST /api/auth/password`, password mai nei log | completato | `008602f` |
+| 3 | Server: creazione scuola + primo amministratore, reimpostazione | completato | (questo commit) |
 | 4 | Client: modulo «Nuova scuola», riquadro password, reimpostazione, «Cambia password» | da fare | |
 | 5 | E2E del primo accesso | da fare | |
 
-**Passo in corso:** 3.
+**Passo in corso:** 4.
 
 ## Ultimo esito di `npm test`
 
-161/161 (145 esistenti + 16 di `tests/primoAccesso.test.js`).
+173/173 (145 esistenti + 28 di `tests/primoAccesso.test.js`). Righe `[errore]`:
+le 3 preesistenti, più una attesa del test «Email con maiuscole» (passa a
+`gestoreErrori` un 23505 reale per provare la traduzione in 409).
 
 **Prova a contrario (passo 2):** tolto `richiedePasswordAggiornata` da
 `routes/index.js` e da `switch-tenant`, il test «Primo accesso: … ogni altra API
@@ -76,3 +78,38 @@
   errori scriveva in console il corpo della richiesta sugli errori imprevisti
   (anche quello del login). `server/lib/asincrono.js` ora sostituisce con
   `[omessa]` ogni campo il cui nome contiene «password», a qualunque profondità.
+- `[DECISIONE PROPOSTA]` `POST /api/platform/tenants`: `amministratore` è
+  facoltativo lato server (il test esistente crea un tenant senza), obbligatorio
+  nel modulo del client. Risposta 201: i campi del tenant restano al primo
+  livello (compatibilità) e, se c'è l'amministratore, si aggiunge
+  `amministratore: { account, accountEsistente, passwordTemporanea?,
+  passwordTemporaneaScadeIl? }`. `Cache-Control: no-store` sulle risposte che
+  possono contenere una password.
+- `[DECISIONE PROPOSTA]` Email esistente: nome e cognome inviati sono ignorati
+  (resta la persona dell'account); la risposta riporta quelli salvati.
+- `[DECISIONE PROPOSTA]` Audit della creazione: `account.create` con `dopo` =
+  id, email, stato, personId, nome, cognome, deveCambiarePassword,
+  passwordTemporaneaScadeIl (niente password, niente hash);
+  `membership.create`; `role_assignment.create` con lo stesso `dopo` di
+  `POST /api/role-assignments`. Nessuna riga separata per la persona. Tutte con
+  `tenant_id` della scuola nuova e l'attore PLATFORM_ADMIN.
+- `[DECISIONE PROPOSTA]` Il ruolo passa da `creaRoleAssignment` di
+  `queries/rbac.js` (stessi controlli, nessuna duplicazione).
+- `[DECISIONE PROPOSTA]` Reimpostazione: valida solo per un account con un
+  TENANT_ADMIN attivo (scope TENANT) in quella scuola; altrimenti 404
+  `UI_RESOURCE_ACCOUNT`; scuola inesistente 404 `UI_RESOURCE_TENANT`; account
+  disabilitato 409 `ERR_ACCOUNT_DISABLED`. Revoca tutte le sessioni
+  (`reimpostazione_password`), non tocca `password_changed_at`. Audit
+  `account.password_reset` con `prima`/`dopo` `NULL` e `tenant_id` della
+  scuola. Risposta 200 `{ account, passwordTemporanea,
+  passwordTemporaneaScadeIl }`. La password è dell'account, quindi vale per
+  tutte le scuole in cui lavora.
+- `[DECISIONE PROPOSTA]` `GET /api/platform/tenants` aggiunge a ogni tenant
+  `amministratori: [{ account_id, email, stato, nome, cognome }]` (serve al
+  client per l'azione «Nuova password temporanea»).
+- `[DECISIONE PROPOSTA]` Lunghezze: nome e cognome ≤ 100 caratteri, slug ≤ 60,
+  nome della scuola ≤ 200 (limiti delle colonne): `ERR_FIELD_TOO_LONG {campo,
+  massimo}` invece di un 500. Campi: `UI_FIELD_ADMIN_NAME`,
+  `UI_FIELD_ADMIN_SURNAME`, `UI_FIELD_SLUG`, `UI_FIELD_NOME`.
+- `[DECISIONE PROPOSTA]` Formato email volutamente minimo
+  (`^[^\s@]+@[^\s@]+\.[^\s@]+$`, ≤ 255).
