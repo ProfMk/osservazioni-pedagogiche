@@ -54,6 +54,7 @@ class SessioneHttp {
   get(percorso, intestazioni) { return this.richiesta('GET', percorso, undefined, intestazioni); }
   post(percorso, corpo) { return this.richiesta('POST', percorso, corpo); }
   put(percorso, corpo) { return this.richiesta('PUT', percorso, corpo); }
+  del(percorso) { return this.richiesta('DELETE', percorso); }
 }
 
 async function login(base, email, password = PASSWORD_SVILUPPO) {

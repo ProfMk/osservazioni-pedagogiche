@@ -325,4 +325,7 @@ router.put('/admin/traduzioni', asincrono(async (req, res) => {
   res.json(risultato);
 }));
 
+// /api/admin/* — amministrazione dell'istituto (iterazione 2A): calendario, livelli, classi, quadro.
+router.use('/admin', require('./amministrazione'));
+
 module.exports = router;

@@ -10,8 +10,8 @@ Push solo su questo ramo.
 | Passo | Stato | Commit | Contenuto |
 |---|---|---|---|
 | 1 | fatto | `f849e04` | Migration 006 e test |
-| 2 | fatto | (questo commit) | Regola dell'anno |
-| 3 | da fare | | Server, calendario |
+| 2 | fatto | `aa7b5a4` | Regola dell'anno |
+| 3 | fatto | (questo commit) | Server, calendario |
 | 4 | da fare | | Server, livelli e classi |
 | 5 | da fare | | Server, quadro |
 | 6 | da fare | | Client, cornice dell'amministrazione e quadro |
@@ -21,6 +21,10 @@ Push solo su questo ramo.
 | 10 | da fare | | README |
 
 ## Ultimo esito dei test
+- Passo 3: `npm test` → **196/196** (+8 in `tests/anniScolastici.test.js`). Righe
+  `[errore]`: le 4 della baseline + 1 **attesa**: `POST /api/admin/school-years/:id/switch-to`
+  con `P0001 guasto di prova` (trigger di prova che simula un guasto a metà di
+  «passa al nuovo anno», per provarne l'atomicità; risposta 500 `ERR_INTERNAL`).
 - Passo 2: `npm test` → **188/188** (+3 in `tests/anniScolastici.test.js`). Righe
   `[errore]`: le stesse 4 della baseline.
 - Passo 1: `npm test` → **185/185** (181 + 4 di `tests/anniScolastici.test.js`).
@@ -50,6 +54,29 @@ Push solo su questo ramo.
     404 (come se non esistessero). Le **scritture** dei docenti passano invece
     dalla verifica dell'anno e ricevono il 409: così il test richiesto «scrittura
     su anno in preparazione → 409» vale anche per chi conosce l'id.
+
+- **Calendario (passo 3):**
+  - rotte sotto `/api/admin`, montate dentro il dominio (`routes/amministrazione.js`);
+  - permesso `tenant.manage_config` verificato **prima** della ricerca della
+    risorsa: docente e coordinatore → sempre 403; anno o periodo di un'altra
+    scuola → 404;
+  - le **azioni ammesse** su ogni anno (`attiva`, `passa`, `chiudi`, `riapri`,
+    `elimina`) e l'**anno di lavoro** predefinito le decide il server (R-13);
+    `elimina` compare solo se l'anno non ha materie, iscrizioni o periodi;
+  - «passa al nuovo anno» = `POST /school-years/:id/switch-to` sull'anno in
+    preparazione: prima chiude l'attivo, poi attiva il nuovo; due righe
+    d'audit `school_year.switch` (una per anno) con lo stesso `correlation_id`;
+  - senza anno attivo, `switch-to` → 409 `ERR_SCHOOL_YEAR_NO_ACTIVE` (si usa
+    «attiva»); transizione da uno stato sbagliato → 409
+    `ERR_SCHOOL_YEAR_TRANSITION_NOT_ALLOWED`;
+  - le transizioni bloccano con `FOR UPDATE` tutti gli anni del tenant;
+  - nome e date di un anno **non** si modificano (non previsto dal prompt): un
+    anno in preparazione senza dati si elimina e si ricrea;
+  - sovrapposizione: basta un giorno in comune (`inizio ≤ fine altrui` e
+    `fine ≥ inizio altrui`);
+  - periodi: eliminando un periodo si eliminano anche le sue traduzioni
+    (`content_translations`), che non sono «dati collegati» ma parte del nome;
+  - errori sul campo: ogni errore di validazione porta `campo` (UI_FIELD_*).
 
 ## Preparazione dei dati di test adattata (nessuna asserzione modificata)
 Il nuovo indice vieta un secondo anno `attivo` nello stesso tenant. Due test ne
