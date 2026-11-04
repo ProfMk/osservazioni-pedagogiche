@@ -88,6 +88,14 @@ async function revocaTutteLeSessioni(client, accountId, motivo = 'invalidazione_
   );
 }
 
+/** Revoca tutte le sessioni dell'account TRANNE una (cambio password: resta aperta quella che l'ha fatto). */
+async function revocaAltreSessioni(client, accountId, sessioneDaConservareId, motivo) {
+  await client.query(
+    'UPDATE sessions SET revoked_at = now(), revoked_reason = $3 WHERE account_id = $1 AND id <> $2 AND revoked_at IS NULL',
+    [accountId, sessioneDaConservareId, motivo]
+  );
+}
+
 /**
  * Rotazione del token (sez. 11): stessa riga di sessione, nuovo token
  * opaco. Usata subito dopo il login per prevenire session fixation.
@@ -108,5 +116,6 @@ module.exports = {
   impostaTenantAttivo,
   revocaSessione,
   revocaTutteLeSessioni,
+  revocaAltreSessioni,
   ruotaToken,
 };

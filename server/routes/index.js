@@ -12,19 +12,25 @@
  * /platform richiede autenticazione+CSRF ma NON un tenant attivo: le
  * operazioni di piattaforma (sez. 9) non sono delimitate da un tenant.
  * Tutto il resto (dominio operativo) richiede anche il contesto tenant.
+ *
+ * Cambio password obbligatorio (iterazione 1): /platform e il dominio passano
+ * per richiedePasswordAggiornata subito dopo l'autenticazione; in /auth lo
+ * monta switch-tenant. Ne sono fuori solo /auth/me, /auth/password,
+ * /auth/logout (e il login) e /i18n.
  */
 const express = require('express');
 const { autenticazione } = require('../middleware/autenticazione');
 const { richiedeCsrf } = require('../middleware/csrf');
 const { contestoTenant } = require('../middleware/contestoTenant');
+const { richiedePasswordAggiornata } = require('../middleware/cambioPassword');
 const { ErroreApplicativo } = require('../lib/erroreApplicativo');
 
 const router = express.Router();
 
 router.use('/i18n', require('./i18n'));
 router.use('/auth', require('./auth'));
-router.use('/platform', autenticazione, richiedeCsrf, require('./tenant'));
-router.use('/', autenticazione, richiedeCsrf, contestoTenant, require('./dominio'));
+router.use('/platform', autenticazione, richiedePasswordAggiornata, richiedeCsrf, require('./tenant'));
+router.use('/', autenticazione, richiedePasswordAggiornata, richiedeCsrf, contestoTenant, require('./dominio'));
 
 // Gestore errori centrale: ErroreApplicativo -> stato HTTP + { codice, parametri };
 // per qualunque altro errore, diagnosi in console (mai al client, sez. 68) e ERR_INTERNAL.

@@ -10,14 +10,26 @@ const cookie = require('cookie');
 const { pool, transazione } = require('../db');
 const { autenticazione, NOME_COOKIE } = require('../middleware/autenticazione');
 const { richiedeCsrf } = require('../middleware/csrf');
-const { verificaPassword } = require('../lib/password');
-const { creaSessione, revocaSessione, MINUTI_IDLE_TIMEOUT, ORE_ABSOLUTE_TIMEOUT } = require('../lib/sessioni');
+const { richiedePasswordAggiornata } = require('../middleware/cambioPassword');
+const { verificaPassword, hashPassword, validaPasswordNuova } = require('../lib/password');
+const {
+  creaSessione, revocaAltreSessioni, ruotaToken, MINUTI_IDLE_TIMEOUT, ORE_ABSOLUTE_TIMEOUT,
+} = require('../lib/sessioni');
 const { generaTokenCsrf } = require('../lib/csrf');
-const { trovaAccountPerEmail, getAccountById, getMembershipsDiAccount, haMembershipAttiva } = require('../queries/account');
+const {
+  normalizzaEmail, trovaAccountPerEmail, getAccountById, getMembershipsDiAccount, haMembershipAttiva,
+  getCredenzialiPerAggiornamento, aggiornaPassword,
+} = require('../queries/account');
+const { registraAudit } = require('../lib/audit');
 const { isPlatformAdmin, permessiNelTenant } = require('../lib/autorizzazione');
 const { getTutteITenant } = require('../queries/tenant');
 const { getRoleAssignmentsDiAccount } = require('../queries/rbac');
 const { nonAutenticato, vietato, datiNonValidi } = require('../lib/erroreApplicativo');
+
+/** true se la password temporanea dell'account è scaduta (scaduta = credenziali non valide). */
+function temporaneaScaduta(account) {
+  return !!account.password_temporanea_scade_il && new Date(account.password_temporanea_scade_il).getTime() <= Date.now();
+}
 const { asincrono } = require('../lib/asincrono');
 const { contestoLinguaSessione, aggiornaLinguaSessione, lingueAbilitate } = require('../lib/lingua');
 
@@ -61,6 +73,8 @@ async function costruisciVistaMe(client, { account, sessione }) {
   await aggiornaLinguaSessione(client, sessione.id, lingua.lingua);
   return {
     account: { id: account.id, email: account.email, nome: account.nome, cognome: account.cognome },
+    // Password temporanea ancora da cambiare: finché è true, le altre API rispondono 403 ERR_PASSWORD_CHANGE_REQUIRED.
+    deveCambiarePassword: account.deve_cambiare_password === true,
     isPlatformAdmin: admin,
     memberships,
     tenantsDisponibiliPerSwitch: admin ? tenants : memberships,
@@ -89,12 +103,14 @@ router.post('/login', asincrono(async (req, res) => {
   if (!email || !password) throw datiNonValidi('ERR_CREDENTIALS_REQUIRED');
 
   const esito = await transazione(async (client) => {
-    const account = await trovaAccountPerEmail(client, String(email).toLowerCase().trim());
+    const account = await trovaAccountPerEmail(client, normalizzaEmail(email));
     // Stesso messaggio generico sia per account inesistente sia per password errata (non rivelare quale).
     const credenzialiErrate = () => nonAutenticato('ERR_CREDENTIALS_INVALID');
     if (!account || account.stato !== 'attivo') throw credenzialiErrate();
     const ok = await verificaPassword(account.password_hash, password);
     if (!ok) throw credenzialiErrate();
+    // Password temporanea oltre la validità: stesso errore generico (decisione 4).
+    if (temporaneaScaduta(account)) throw credenzialiErrate();
 
     const { token, sessione } = await creaSessione(client, {
       accountId: account.id, userAgent: req.header('User-Agent'), ip: req.ip,
@@ -123,8 +139,46 @@ router.get('/me', autenticazione, asincrono(async (req, res) => {
   res.json(vista);
 }));
 
+// POST /api/auth/password  body: { passwordAttuale, passwordNuova }
+// Cambio della password: obbligatorio dopo una password temporanea, possibile in ogni momento.
+// Dopo il cambio: le ALTRE sessioni dell'account sono revocate, il token della sessione corrente
+// è ruotato (nuovo cookie), l'obbligo di cambio e la scadenza della temporanea sono azzerati.
+// Audit account.password_change senza valori (né password né hash).
+router.post('/password', autenticazione, richiedeCsrf, asincrono(async (req, res) => {
+  const { passwordAttuale, passwordNuova } = req.body || {};
+  if (typeof passwordAttuale !== 'string' || passwordAttuale.length === 0) {
+    throw datiNonValidi('ERR_REQUIRED_FIELD', { campo: 'UI_FIELD_PASSWORD_CURRENT' });
+  }
+  validaPasswordNuova(passwordNuova);
+
+  const token = await transazione(async (client) => {
+    const credenziali = await getCredenzialiPerAggiornamento(client, req.accountId);
+    if (!credenziali || credenziali.stato !== 'attivo') throw nonAutenticato('ERR_SESSION_REQUIRED');
+    const attualeValida = await verificaPassword(credenziali.password_hash, passwordAttuale) && !temporaneaScaduta(credenziali);
+    if (!attualeValida) throw datiNonValidi('ERR_PASSWORD_CURRENT_INVALID');
+    if (passwordNuova === passwordAttuale) {
+      throw datiNonValidi(credenziali.deve_cambiare_password ? 'ERR_PASSWORD_SAME_AS_TEMPORARY' : 'ERR_PASSWORD_SAME_AS_CURRENT');
+    }
+    await aggiornaPassword(client, req.accountId, await hashPassword(passwordNuova));
+    await revocaAltreSessioni(client, req.accountId, req.sessione.id, 'cambio_password');
+    const nuovoToken = await ruotaToken(client, req.sessione.id);
+    await registraAudit(client, {
+      tenantId: req.sessione.active_tenant_id || null,
+      actorAccountId: req.accountId,
+      azione: 'account.password_change',
+      risorsa: 'account',
+      risorsaId: req.accountId,
+    });
+    return nuovoToken;
+  });
+
+  impostaCookieSessione(res, token);
+  const account = await getAccountById(pool, req.accountId);
+  res.json(await costruisciVistaMe(pool, { account, sessione: req.sessione }));
+}));
+
 // POST /api/auth/switch-tenant  body: { tenantId }
-router.post('/switch-tenant', autenticazione, richiedeCsrf, asincrono(async (req, res) => {
+router.post('/switch-tenant', autenticazione, richiedePasswordAggiornata, richiedeCsrf, asincrono(async (req, res) => {
   const tenantId = Number(req.body && req.body.tenantId);
   if (!Number.isInteger(tenantId) || tenantId <= 0) throw datiNonValidi('ERR_INVALID_IDENTIFIER', { campo: 'UI_FIELD_TENANT_ID' });
 
