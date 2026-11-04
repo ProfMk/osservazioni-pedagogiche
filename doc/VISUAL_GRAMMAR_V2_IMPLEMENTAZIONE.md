@@ -4,6 +4,48 @@
 **Versione:** Visual Grammar V2 consolidata  
 **Scopo:** documento normativo di progetto, da versionare nel repository e usare come contesto per agenti AI e sviluppatori.
 
+> ## ⚠ Nota di stato (04/11/2026) — leggere prima di tutto il resto
+>
+> **Il codice in `main` implementa la Visual Grammar V2.1, revisione 2**, che
+> cambia la *rappresentazione* rispetto a questo documento e lascia invariata
+> la *semantica*. La V2.1 rev. 2 è descritta nel `README.md`, sezione «Visual
+> Grammar V2.1 (revisione 2)». Questo documento **non è stato aggiornato**
+> (debito rispetto a R-8; registrato in `doc/closures/CHECKPOINT-010.md`).
+>
+> **Regola di prevalenza, fino al riallineamento di questo documento:**
+>
+> 1. Per le sezioni elencate sotto vale la **V2.1 rev. 2** (README e codice di
+>    `main`), non il testo di questo documento.
+> 2. Per tutte le altre sezioni questo documento resta **normativo**, come
+>    dice il §0.
+> 3. **Non modificare il codice per riportarlo alla V2** su queste sezioni:
+>    niente righe di livello al posto del disco, niente colori neutri al posto
+>    dei colori di banda, nessuna colonna andamento. Se una richiesta sembra
+>    chiederlo, segnalare la contraddizione (Appendice B).
+>
+> | Sezione | Questo documento (V2) | In vigore (V2.1 rev. 2) |
+> |---|---|---|
+> | §1, §7 | Unità fondamentale: la riga di livello, con la sua anatomia | Il **disco a settori**, uguale a ogni livello (L0–L3); mini-dischi nella matrice |
+> | §4, §5.1 | Livello = distanza lungo l'asse della riga | Livello = **raggio del riempimento** del settore (0% bordo interno, 100% bordo esterno) |
+> | §5.2 | Vocabolario chiuso senza disco né settore; riferimento `▏` | Si aggiungono **disco** e **settore**; riferimento di classe **`⌒`** (arco con terminali); `◇` storico invariato |
+> | §5.1, §17, R-4 | «Il colore non rappresenta la banda»; vietati i colori per banda | **Colore = banda**, assegnato dal server, sempre insieme a numero ed etichetta; non osservato = grigio neutro tratteggiato |
+> | §12 | Andamento disegnato quando la regola è implementata | **Nessuna colonna e nessun indicatore di andamento** (rinviato, coerente con §28) |
+> | §16 | Viste descritte con righe e tacche | Stesse viste con il disco; matrice con mini-dischi; tacca della classe → `⌒` |
+> | R-3 | Rappresentazioni ammesse: riga di livello, distribuzione, sequenza, timbro | Si aggiunge il **disco** |
+> | §25 | Cita `001_vincoli_osservazioni.sql` | Migration attuali: `000_schema_base`, `001_ruoli_permessi_sistema`, `002_audit_append_only`, `003_lingua_contenuti_v2`, `004_immutabilita_strutturale` |
+> | §27 | Lavoro sul ramo `visual-grammar-v2`, baseline `0ff1428…` | Storico: il ramo è unito in `main` dal commit `4d19432` |
+>
+> **Invariati e in vigore** (elenco non esaustivo): principi e strati del dato
+> come significato (§2, §4 «Regole»), presenza dei segnali (§6), certezza
+> (§9), criticità (§10), confronti (§11), dati mancanti ed esclusi (§13),
+> Regola B e N-6 (§14), localizzazione, RTL, contenuto multilingue, C2 e
+> identificatori (§18–§22), conservazione della semantica (§34), Appendice B.
+>
+> **Riferimenti nei test e nei commenti** (§7, §8, §17, §29.12, P3–P15, B-1…B-7,
+> C4, C5, E1–E4): vengono da numerazioni precedenti o dalle richieste della
+> V2.1, non da questo documento. Corrispondenza plausibile in
+> `doc/closures/CHECKPOINT-010.md`, da confermare.
+
 ---
 
 ## 0. Scopo e principio di prevalenza
