@@ -12,7 +12,7 @@
  * codici d'errore.
  *
  * Database disponibili, ricreati da zero a ogni esecuzione:
- *   pglite://completo         schema V1 + ruoli/permessi + audit + lingua/contenuti V2 + immutabilità + seed multi-tenant
+ *   pglite://completo         schema V1 + ruoli/permessi + audit + lingua/contenuti V2 + immutabilità + primo accesso + seed multi-tenant
  *   pglite://senza-migration  solo schema base (test di regressione sulla migration)
  *   pglite://esteso           come "completo" + seed/seed_esteso.sql (scenari ampi per le viste V2)
  *
@@ -37,6 +37,7 @@ const SCRIPT_PER_DATABASE = {
     'migrations/002_audit_append_only.sql',
     'migrations/003_lingua_contenuti_v2.sql',
     'migrations/004_immutabilita_strutturale.sql',
+    'migrations/005_account_primo_accesso.sql',
     'seed/seed_multitenant.sql',
   ],
   [URL_SENZA_MIGRATION]: ['migrations/000_schema_base.sql'],
@@ -46,6 +47,7 @@ const SCRIPT_PER_DATABASE = {
     'migrations/002_audit_append_only.sql',
     'migrations/003_lingua_contenuti_v2.sql',
     'migrations/004_immutabilita_strutturale.sql',
+    'migrations/005_account_primo_accesso.sql',
     'seed/seed_multitenant.sql',
     'seed/seed_esteso.sql',
   ],

@@ -71,4 +71,26 @@ async function getRoleAssignmentsDiAccount(client, accountId) {
   return rows;
 }
 
-module.exports = { creaRoleAssignment, getRoleAssignmentPerId, getRoleAssignmentsDiAccount };
+/**
+ * Ruoli dell'account per tenant (RoleAssignment attivi con un tenant, di qualunque scope):
+ * Map tenantId -> [codici], senza doppioni, nell'ordine dei ruoli di sistema (001).
+ * Serve al client per mostrare, accanto a ogni scuola, i ruoli che vi ha l'utente.
+ */
+async function getRuoliPerTenant(client, accountId) {
+  const { rows } = await client.query(
+    `SELECT r.tenant_id, ro.codice
+     FROM role_assignments r JOIN roles ro ON ro.id = r.role_id
+     WHERE r.account_id = $1 AND r.revoked_at IS NULL AND r.tenant_id IS NOT NULL
+     GROUP BY r.tenant_id, ro.codice, ro.id
+     ORDER BY r.tenant_id, ro.id`,
+    [accountId]
+  );
+  const perTenant = new Map();
+  rows.forEach((r) => {
+    if (!perTenant.has(r.tenant_id)) perTenant.set(r.tenant_id, []);
+    perTenant.get(r.tenant_id).push(r.codice);
+  });
+  return perTenant;
+}
+
+module.exports = { creaRoleAssignment, getRoleAssignmentPerId, getRoleAssignmentsDiAccount, getRuoliPerTenant };

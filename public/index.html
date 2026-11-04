@@ -12,9 +12,9 @@
 <header class="app" id="intestazione" hidden>
   <h1 class="titolo"><button type="button" class="titolo-app" id="titolo-app"></button></h1>
   <span class="utente" id="utente"></span>
-  <span class="controllo">
-    <label for="tenant" id="etichetta-tenant"></label>
-    <select id="tenant"></select>
+  <span class="controllo istituto" id="blocco-tenant" hidden>
+    <span class="istituto-attivo" id="istituto-attivo"></span>
+    <button type="button" class="collegamento-chiaro" id="cambia-istituto" hidden></button>
   </span>
   <span class="controllo" id="blocco-lingua" hidden>
     <label for="lingua" id="etichetta-lingua"></label>
@@ -22,6 +22,7 @@
   </span>
   <button type="button" class="collegamento-chiaro" id="come-leggere-apri" aria-controls="come-leggere" aria-expanded="false"></button>
   <button type="button" class="collegamento-chiaro" id="amministrazione" hidden></button>
+  <button type="button" class="collegamento-chiaro" id="cambia-password"></button>
   <button type="button" class="collegamento-chiaro" id="esci"></button>
 </header>
 <aside class="come-leggere" id="come-leggere" hidden></aside>

@@ -19,7 +19,7 @@
   var t = G.t;
   var contenuto = G.contenuto;
 
-  var stato = { me: null, insegnamenti: null, rotta: null, comeLeggere: false };
+  var stato = { me: null, insegnamenti: null, rotta: null, comeLeggere: false, credenzialiDaMostrare: null };
 
   // --- Infrastruttura -----------------------------------------------------------------
 
@@ -80,6 +80,8 @@
       case 'criterioAlunno': return '#/classe/' + r.teachingId + '/alunno/' + r.enrollmentId + '/nucleo/' + r.nucleoId + '/criterio/' + r.criterioId;
       case 'attivita': return '#/classe/' + r.teachingId + '/attivita/' + r.activityId + '/' + r.scheda;
       case 'amministrazione': return '#/amministrazione';
+      case 'password': return '#/password';
+      case 'istituti': return '#/istituti';
       default: return '#/insegnamenti';
     }
   }
@@ -89,6 +91,8 @@
     var id = function (i) { return Number(p[i]); };
     if (p[0] === 'materia' && p[1]) return { tipo: 'materia', subjectId: id(1) };
     if (p[0] === 'amministrazione') return { tipo: 'amministrazione' };
+    if (p[0] === 'password') return { tipo: 'password' };
+    if (p[0] === 'istituti') return { tipo: 'istituti' };
     if (p[0] === 'classe' && p[1]) {
       if (p[2] === 'nucleo') return { tipo: 'nucleoClasse', teachingId: id(1), nucleoId: id(3) };
       if (p[2] === 'alunno') {
@@ -110,9 +114,16 @@
     return disegna(rotta);
   }
 
+  /** Rotte che non richiedono un istituto attivo (scelta dell'istituto, amministrazione, password). */
+  function senzaIstituto(rotta) {
+    return ['istituti', 'amministrazione', 'password'].indexOf(rotta.tipo) >= 0;
+  }
+
   window.addEventListener('popstate', function (evento) {
-    if (!stato.me || !stato.me.activeTenantId) return;
-    disegna(evento.state && evento.state.rotta ? evento.state.rotta : daHash(location.hash));
+    if (!stato.me || stato.me.deveCambiarePassword) return;
+    var rotta = evento.state && evento.state.rotta ? evento.state.rotta : daHash(location.hash);
+    if (!stato.me.activeTenantId && !senzaIstituto(rotta)) return;
+    disegna(rotta);
   });
 
   // --- Cornice di ogni livello: «← superiore», briciole, titolo -------------------------
@@ -165,8 +176,17 @@
     } catch (errore) {
       contenitore().replaceChildren();
       if (errore instanceof ErroreApi && errore.stato === 401) { mostraAccesso(); return; }
+      if (errore instanceof ErroreApi && errore.codice === 'ERR_PASSWORD_CHANGE_REQUIRED') { await riprendiDaMe(); return; }
       mostraErrore(errore instanceof ErroreApi ? errore : { codice: 'ERR_INTERNAL' });
     }
+  }
+
+  /** Rilegge la sessione dal server e riparte (es. password temporanea da cambiare). */
+  async function riprendiDaMe() {
+    try {
+      stato.me = await api('/auth/me');
+      await avviaApp();
+    } catch (errore) { mostraAccesso(); }
   }
 
   // --- Accesso, intestazione, lingua, tenant --------------------------------------------
@@ -174,6 +194,7 @@
   function mostraAccesso() {
     stato.me = null;
     stato.insegnamenti = null;
+    stato.credenzialiDaMostrare = null;
     $('intestazione').hidden = true;
     $('percorso').replaceChildren();
     var email = el('input', { type: 'email', id: 'campo-email', required: true, autocomplete: 'username' });
@@ -202,32 +223,35 @@
     contenitore().replaceChildren(modulo);
   }
 
+  /** Scuole tra cui l'utente può scegliere (per il PLATFORM_ADMIN: tutte quelle attive). */
+  function istitutiDisponibili() { return (stato.me && stato.me.tenantsDisponibiliPerSwitch) || []; }
+  function idIstituto(tn) { return tn.tenant_id !== undefined ? tn.tenant_id : tn.id; }
+  /** Account senza alcuna scuola (e non di piattaforma): solo il messaggio e «Esci». */
+  function senzaScuole() { return !stato.me.isPlatformAdmin && istitutiDisponibili().length === 0; }
+
   function aggiornaIntestazione() {
     var me = stato.me;
+    // Password temporanea da cambiare: solo nome ed «Esci» (le altre API sono bloccate).
+    var limitata = !!me.deveCambiarePassword;
+    // Nessuna scuola: solo nome ed «Esci».
+    var ridotta = limitata || senzaScuole();
     $('intestazione').hidden = false;
     $('titolo-app').textContent = I18n.testo('UI_APP_TITLE');
     var ruoli = Array.from(new Set((me.ruoliNelTenantAttivo || []).map(function (r) { return I18n.testo('ROLE_' + r.ruolo); })));
     $('utente').textContent = me.account.nome + ' ' + me.account.cognome
       + (ruoli.length ? ' · ' + new Intl.ListFormat(I18n.locale(), { type: 'unit' }).format(ruoli) : '');
 
-    var selettoreTenant = $('tenant');
-    $('etichetta-tenant').textContent = I18n.testo('UI_TENANT');
-    selettoreTenant.replaceChildren(t('option', 'UI_TENANT_NONE', null, { value: '' }));
-    me.tenantsDisponibiliPerSwitch.forEach(function (tn) {
-      var id = tn.tenant_id !== undefined ? tn.tenant_id : tn.id;
-      selettoreTenant.append(el('option', { value: id, selected: id === me.activeTenantId }, [tn.nome]));
-    });
-    selettoreTenant.onchange = async function () {
-      if (!selettoreTenant.value) return;
-      try {
-        stato.me = await api('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenantId: Number(selettoreTenant.value) }) });
-        await avviaApp({ radice: true });
-      } catch (errore) { mostraErrore(errore); }
-    };
+    // Istituto attivo come testo; «Cambia istituto» solo se le scuole sono più di una.
+    var attivo = istitutiDisponibili().find(function (tn) { return idIstituto(tn) === me.activeTenantId; });
+    $('blocco-tenant').hidden = !attivo || limitata;
+    $('istituto-attivo').replaceChildren.apply($('istituto-attivo'), attivo
+      ? [t('span', 'UI_ACTIVE_TENANT_LABEL', null, { classe: 'nascosta' }), ' ', el('bdi', {}, [attivo.nome])] : []);
+    $('cambia-istituto').textContent = I18n.testo('UI_CHANGE_TENANT');
+    $('cambia-istituto').hidden = limitata || istitutiDisponibili().length < 2;
 
     var lingue = (me.lingua && me.lingua.lingueAbilitate) || [];
     var selettoreLingua = $('lingua');
-    $('blocco-lingua').hidden = lingue.length < 2;
+    $('blocco-lingua').hidden = ridotta || lingue.length < 2;
     $('etichetta-lingua').textContent = I18n.testo('UI_LANGUAGE');
     selettoreLingua.replaceChildren();
     lingue.forEach(function (l) {
@@ -247,11 +271,15 @@
     };
 
     $('esci').textContent = I18n.testo('UI_LOGOUT');
+    $('cambia-password').textContent = I18n.testo('UI_CHANGE_PASSWORD');
+    $('cambia-password').hidden = ridotta;
     $('come-leggere-apri').textContent = I18n.testo('HOW_TO_READ');
     $('come-leggere-apri').setAttribute('aria-expanded', String(stato.comeLeggere));
+    $('come-leggere-apri').hidden = ridotta;
+    if (ridotta) stato.comeLeggere = false;
     var amministrazione = $('amministrazione');
     amministrazione.textContent = I18n.testo('UI_ADMINISTRATION');
-    amministrazione.hidden = !(me.isPlatformAdmin || haPermesso('tenant.manage_config'));
+    amministrazione.hidden = ridotta || !(me.isPlatformAdmin || haPermesso('tenant.manage_config'));
     disegnaComeLeggere();
   }
 
@@ -308,14 +336,144 @@
   async function avviaApp(opzioni) {
     await caricaCatalogo();
     aggiornaIntestazione();
+    if (stato.me.deveCambiarePassword) {
+      mostraCambioObbligatorio();
+      return;
+    }
     if (!stato.me.activeTenantId) {
-      $('percorso').replaceChildren();
-      contenitore().replaceChildren(t('p', 'UI_SELECT_TENANT_PROMPT', null, { classe: 'stato' }));
+      if (senzaScuole()) {
+        $('percorso').replaceChildren();
+        contenitore().replaceChildren(t('p', 'UI_NO_TENANT', null, { classe: 'stato', role: 'status' }));
+        return;
+      }
+      // Nessuna scuola attiva: PLATFORM_ADMIN all'Amministrazione, chi ha più scuole alla scelta.
+      var richiesta = daHash(location.hash);
+      var iniziale = stato.me.isPlatformAdmin ? { tipo: 'amministrazione' } : { tipo: 'istituti' };
+      await vai(senzaIstituto(richiesta) ? richiesta : iniziale, { sostituisci: true });
       return;
     }
     stato.insegnamenti = null;
     var rotta = opzioni && opzioni.radice ? { tipo: 'insegnamenti' } : daHash(location.hash);
     await vai(rotta, { sostituisci: true });
+  }
+
+  // --- Moduli: campi con etichetta, aiuto ed errore associati ---------------------------
+
+  /** Campo di modulo: etichetta, eventuale aiuto e area d'errore, collegati con for/aria-describedby. */
+  function campo(id, chiaveEtichetta, input, aiuto) {
+    input.setAttribute('id', id);
+    var descrizioni = [];
+    var figli = [t('label', chiaveEtichetta, null, { for: id }), input];
+    if (aiuto) {
+      figli.push(t('span', aiuto.chiave, aiuto.parametri, { id: id + '-aiuto', classe: 'aiuto' }));
+      descrizioni.push(id + '-aiuto');
+    }
+    figli.push(el('span', { id: id + '-errore', classe: 'errore-campo', role: 'alert', hidden: true }));
+    descrizioni.push(id + '-errore');
+    input.setAttribute('aria-describedby', descrizioni.join(' '));
+    return el('span', { classe: 'campo' }, figli);
+  }
+
+  function azzeraErroriCampi(modulo) {
+    mostraErrore(null);
+    modulo.querySelectorAll('.errore-campo').forEach(function (area) { area.hidden = true; area.replaceChildren(); area.removeAttribute('data-testo-mancante'); });
+    modulo.querySelectorAll('[aria-invalid]').forEach(function (input) { input.removeAttribute('aria-invalid'); });
+  }
+
+  function mostraErroreCampo(input, errore) {
+    var area = $(input.id + '-errore');
+    area.textContent = I18n.testo(errore.codice, errore.parametri);
+    if (!I18n.esiste(errore.codice)) area.setAttribute('data-testo-mancante', errore.codice);
+    area.hidden = false;
+    input.setAttribute('aria-invalid', 'true');
+    input.focus();
+  }
+
+  /**
+   * Errore del server sul campo a cui si riferisce (parametro `campo` o codice), altrimenti
+   * nell'area d'errore generale. Sessione scaduta: di nuovo l'accesso.
+   */
+  function assegnaErrore(errore, perCodice, perCampo) {
+    if (errore instanceof ErroreApi && errore.stato === 401) { mostraAccesso(); return; }
+    var input = (errore.parametri && perCampo[errore.parametri.campo]) || perCodice[errore.codice];
+    if (input) mostraErroreCampo(input, errore);
+    else mostraErrore(errore instanceof ErroreApi ? errore : { codice: 'ERR_INTERNAL' });
+  }
+
+  function conferma(chiave, parametri) {
+    return t('p', chiave, parametri, { classe: 'conferma', role: 'status' });
+  }
+
+  // --- Cambio password (obbligatorio dopo una password temporanea, o volontario) --------
+
+  /**
+   * Modulo di cambio password. `obbligatorio`: primo accesso o password reimpostata (la
+   * password attuale è quella temporanea). `fatto(me)` riceve la vista /me aggiornata.
+   */
+  function moduloCambioPassword(opzioni) {
+    var regole = stato.me.regolePassword;
+    var attributi = function (autocomplete) {
+      return { type: 'password', required: true, 'aria-required': 'true', autocomplete: autocomplete, minlength: regole.minimo, maxlength: regole.massimo };
+    };
+    var attuale = el('input', { type: 'password', required: true, 'aria-required': 'true', autocomplete: 'current-password' });
+    var nuova = el('input', attributi('new-password'));
+    var ripetuta = el('input', attributi('new-password'));
+    var invio = t('button', 'UI_PASSWORD_SAVE', null, { type: 'submit', classe: 'azione' });
+    var perCodice = {
+      ERR_PASSWORD_CURRENT_INVALID: attuale,
+      ERR_PASSWORD_TOO_SHORT: nuova,
+      ERR_PASSWORD_TOO_LONG: nuova,
+      ERR_PASSWORD_SAME_AS_TEMPORARY: nuova,
+      ERR_PASSWORD_SAME_AS_CURRENT: nuova,
+      ERR_PASSWORD_CONFIRMATION_MISMATCH: ripetuta,
+    };
+    var perCampo = { UI_FIELD_PASSWORD_CURRENT: attuale, UI_FIELD_PASSWORD_NEW: nuova };
+    var modulo = el('form', {
+      classe: opzioni.obbligatorio ? 'modulo-accesso modulo-password' : 'modulo modulo-password',
+      novalidate: true,
+      onsubmit: async function (evento) {
+        evento.preventDefault();
+        azzeraErroriCampi(modulo);
+        if (nuova.value !== ripetuta.value) {
+          mostraErroreCampo(ripetuta, { codice: 'ERR_PASSWORD_CONFIRMATION_MISMATCH', parametri: {} });
+          return;
+        }
+        invio.disabled = true;
+        try {
+          var me = await api('/auth/password', { method: 'POST', body: JSON.stringify({ passwordAttuale: attuale.value, passwordNuova: nuova.value }) });
+          await opzioni.fatto(me);
+        } catch (errore) {
+          assegnaErrore(errore, perCodice, perCampo);
+          invio.disabled = false;
+        }
+      },
+    }, [
+      opzioni.obbligatorio ? t('h1', 'UI_CHANGE_PASSWORD', null, { id: 'titolo-cambio-password' }) : null,
+      opzioni.obbligatorio ? t('p', 'UI_CHANGE_PASSWORD_REQUIRED', null, { classe: 'nota' }) : null,
+      el('div', { classe: 'campi colonna' }, [
+        campo('password-attuale', opzioni.obbligatorio ? 'UI_PASSWORD_TEMPORARY' : 'UI_PASSWORD_CURRENT', attuale),
+        campo('password-nuova', 'UI_PASSWORD_NEW', nuova, { chiave: 'UI_PASSWORD_RULES', parametri: regole }),
+        campo('password-ripetuta', 'UI_PASSWORD_CONFIRM', ripetuta),
+        invio,
+      ]),
+    ]);
+    return modulo;
+  }
+
+  /** Primo accesso: la sola cosa possibile è cambiare la password (o uscire). */
+  function mostraCambioObbligatorio() {
+    $('percorso').replaceChildren();
+    mostraErrore(null);
+    var modulo = moduloCambioPassword({
+      obbligatorio: true,
+      fatto: async function (me) {
+        stato.me = me;
+        await avviaApp();
+        contenitore().prepend(conferma('UI_PASSWORD_CHANGED'));
+      },
+    });
+    contenitore().replaceChildren(modulo);
+    $('password-attuale').focus();
   }
 
   // --- Dati condivisi -------------------------------------------------------------------
@@ -847,16 +1005,207 @@
     }).concat([esclusioni(r.esclusioni)]);
   }
 
-  // --- Amministrazione (piattaforma: tenant; istituto: completezza delle traduzioni, B-6) ---
+  // --- Scelta dell'istituto (più scuole; PLATFORM_ADMIN) ---------------------------------
+
+  /** Un pulsante per scuola, nella stessa forma dell'elenco degli insegnamenti: nome e ruoli dell'utente. */
+  function elencoIstituti(elenco) {
+    return el('div', { classe: 'elenco elenco-istituti' }, elenco.map(function (tn) {
+      var id = idIstituto(tn);
+      var ruoli = (tn.ruoli || []).map(function (r) { return I18n.testo('ROLE_' + r); });
+      var pulsante = el('button', {
+        type: 'button', classe: 'scelta', 'aria-current': id === stato.me.activeTenantId ? 'true' : null,
+        onclick: async function () {
+          pulsante.disabled = true;
+          try {
+            stato.me = await api('/auth/switch-tenant', { method: 'POST', body: JSON.stringify({ tenantId: id }) });
+            await avviaApp({ radice: true });
+          } catch (errore) {
+            pulsante.disabled = false;
+            if (errore instanceof ErroreApi && errore.stato === 401) mostraAccesso();
+            else mostraErrore(errore instanceof ErroreApi ? errore : { codice: 'ERR_INTERNAL' });
+          }
+        },
+      }, [
+        el('span', { classe: 'titolo' }, [el('bdi', {}, [tn.nome])]),
+        ruoli.length ? el('span', { classe: 'sottotitolo' }, [new Intl.ListFormat(I18n.locale(), { type: 'unit' }).format(ruoli)]) : null,
+      ]);
+      return pulsante;
+    }));
+  }
+
+  VISTE.istituti = async function () {
+    var voci = stato.me.activeTenantId ? [RADICE, { chiave: 'UI_CHOOSE_TENANT' }] : [{ chiave: 'UI_CHOOSE_TENANT' }];
+    var indietro = cornice(voci);
+    stato.me = await api('/auth/me'); // elenco aggiornato (per esempio dopo la creazione di una scuola)
+    var elenco = istitutiDisponibili();
+    return [indietro, t('h2', 'UI_CHOOSE_TENANT'),
+      elenco.length ? elencoIstituti(elenco) : t('p', 'UI_NO_TENANT', null, { classe: 'stato' })];
+  };
+
+  // --- Cambio password volontario (dal menu) --------------------------------------------
+
+  VISTE.password = async function () {
+    var indietro = cornice([RADICE, { chiave: 'UI_CHANGE_PASSWORD' }]);
+    var area = el('div', {});
+    area.append(moduloCambioPassword({
+      obbligatorio: false,
+      fatto: async function (me) {
+        stato.me = me;
+        aggiornaIntestazione();
+        area.replaceChildren(conferma('UI_PASSWORD_CHANGED'));
+      },
+    }));
+    return [indietro, t('h2', 'UI_CHANGE_PASSWORD'), area];
+  };
+
+  // --- Amministrazione (piattaforma: scuole e amministratori; istituto: completezza delle traduzioni, B-6) ---
+
+  function persona(a) { return a.nome + ' ' + a.cognome; }
+
+  /**
+   * Credenziali appena generate, mostrate UNA volta: restano solo in memoria fino al
+   * prossimo disegno della vista (nessuna copia in storage, indirizzo o storia).
+   */
+  function riquadroCredenziali(c) {
+    var figli = [];
+    if (c.scuola) figli.push(t('p', 'UI_SCHOOL_CREATED', { scuola: c.scuola }, { classe: 'conferma' }));
+    if (c.accountEsistente) {
+      figli.push(t('p', 'UI_ADMIN_EXISTING_ACCOUNT', { email: c.account.email }));
+    } else {
+      var esitoCopia = el('span', { classe: 'esito-copia', role: 'status' });
+      var codice = el('code', { id: 'password-temporanea', classe: 'password-temporanea', translate: 'no' }, [el('bdi', {}, [c.passwordTemporanea])]);
+      var copia = t('button', 'UI_COPY', null, {
+        type: 'button', classe: 'azione', 'aria-describedby': 'password-temporanea',
+        onclick: async function () {
+          try {
+            await navigator.clipboard.writeText(c.passwordTemporanea);
+            esitoCopia.replaceChildren(t('span', 'UI_COPIED'));
+          } catch (errore) {
+            window.getSelection().selectAllChildren(codice);
+            esitoCopia.replaceChildren(t('span', 'UI_COPY_FAILED'));
+          }
+        },
+      });
+      figli.push(
+        t('h3', 'UI_TEMP_PASSWORD_TITLE', { persona: persona(c.account) }, { id: 'titolo-credenziali', tabindex: '-1' }),
+        t('p', 'UI_TEMP_PASSWORD_FOR', { email: c.account.email }),
+        el('p', { classe: 'riga-password' }, [codice, ' ', copia, ' ', esitoCopia]),
+        el('p', { classe: 'avvertenza' }, [t('strong', 'UI_TEMP_PASSWORD_WARNING')]),
+        t('p', 'UI_TEMP_PASSWORD_EXPIRES', { scadenza: I18n.dataOra(c.scadeIl) }, { classe: 'nota' })
+      );
+    }
+    var riquadro = el('section', { classe: 'riquadro-credenziali', 'aria-labelledby': c.accountEsistente ? null : 'titolo-credenziali' }, figli);
+    riquadro.append(t('button', 'UI_DONE', null, { type: 'button', classe: 'collegamento', onclick: function () { riquadro.remove(); } }));
+    return riquadro;
+  }
+
+  async function mostraCredenziali(credenziali) {
+    stato.credenzialiDaMostrare = credenziali;
+    await disegna({ tipo: 'amministrazione' });
+    var titolo = $('titolo-credenziali');
+    if (titolo) titolo.focus();
+  }
+
+  function moduloNuovaScuola() {
+    var testo = function (massimo, autocomplete) {
+      return el('input', { type: 'text', required: true, 'aria-required': 'true', maxlength: massimo, autocomplete: autocomplete || 'off' });
+    };
+    var nomeScuola = testo(200, 'organization');
+    var slug = testo(60);
+    slug.setAttribute('spellcheck', 'false');
+    slug.setAttribute('autocapitalize', 'none');
+    var nome = testo(100);
+    var cognome = testo(100);
+    var email = el('input', { type: 'email', required: true, 'aria-required': 'true', maxlength: 255, autocomplete: 'off' });
+    var invio = t('button', 'UI_CREATE_SCHOOL', null, { type: 'submit', classe: 'azione' });
+    var perCodice = { ERR_TENANT_SLUG_INVALID: slug, ERR_TENANT_SLUG_TAKEN: slug, ERR_EMAIL_INVALID: email, ERR_ACCOUNT_DISABLED: email };
+    var perCampo = { UI_FIELD_NOME: nomeScuola, UI_FIELD_SLUG: slug, UI_FIELD_ADMIN_NAME: nome, UI_FIELD_ADMIN_SURNAME: cognome };
+    var modulo = el('form', {
+      classe: 'modulo modulo-scuola',
+      novalidate: true,
+      'aria-labelledby': 'titolo-nuova-scuola',
+      onsubmit: async function (evento) {
+        evento.preventDefault();
+        azzeraErroriCampi(modulo);
+        invio.disabled = true;
+        try {
+          var creata = await api('/platform/tenants', {
+            method: 'POST',
+            body: JSON.stringify({
+              slug: slug.value.trim(), nome: nomeScuola.value,
+              amministratore: { nome: nome.value, cognome: cognome.value, email: email.value },
+            }),
+          });
+          var a = creata.amministratore;
+          await mostraCredenziali({
+            scuola: creata.nome, account: a.account, accountEsistente: a.accountEsistente,
+            passwordTemporanea: a.passwordTemporanea, scadeIl: a.passwordTemporaneaScadeIl,
+          });
+        } catch (errore) {
+          assegnaErrore(errore, perCodice, perCampo);
+          invio.disabled = false;
+        }
+      },
+    }, [
+      t('h3', 'UI_NEW_SCHOOL', null, { id: 'titolo-nuova-scuola' }),
+      el('div', { classe: 'campi' }, [
+        campo('scuola-nome', 'UI_SCHOOL_NAME', nomeScuola),
+        campo('scuola-slug', 'UI_SCHOOL_SLUG', slug, { chiave: 'UI_SCHOOL_SLUG_HINT' }),
+      ]),
+      el('fieldset', { classe: 'gruppo' }, [
+        t('legend', 'UI_FIRST_ADMIN'),
+        el('div', { classe: 'campi' }, [
+          campo('admin-nome', 'UI_FIRST_NAME', nome),
+          campo('admin-cognome', 'UI_LAST_NAME', cognome),
+          campo('admin-email', 'UI_EMAIL', email),
+        ]),
+      ]),
+      invio,
+    ]);
+    return modulo;
+  }
+
+  function voceScuola(tn) {
+    var amministratori = tn.amministratori || [];
+    return el('li', {}, [
+      tn.nome, ' · ', tn.slug, ' · ', t('span', 'STATUS_TENANT_' + tn.stato.toUpperCase()),
+      amministratori.length ? el('ul', { classe: 'amministratori' }, amministratori.map(function (a) {
+        return el('li', {}, [
+          t('span', 'UI_SCHOOL_ADMIN', { persona: persona(a), email: a.email }), ' ',
+          t('button', 'UI_RESET_PASSWORD', null, {
+            type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_RESET_PASSWORD_FOR', { persona: persona(a) }),
+            onclick: async function () {
+              if (!window.confirm(I18n.testo('UI_RESET_CONFIRM', { persona: persona(a) }))) return;
+              try {
+                var r = await api('/platform/tenants/' + tn.id + '/admins/' + a.account_id + '/reset-password', { method: 'POST' });
+                await mostraCredenziali({ account: r.account, accountEsistente: false, passwordTemporanea: r.passwordTemporanea, scadeIl: r.passwordTemporaneaScadeIl });
+              } catch (errore) {
+                if (errore instanceof ErroreApi && errore.stato === 401) mostraAccesso();
+                else mostraErrore(errore instanceof ErroreApi ? errore : { codice: 'ERR_INTERNAL' });
+              }
+            },
+          }),
+        ]);
+      })) : el('ul', { classe: 'amministratori' }, [t('li', 'UI_NO_SCHOOL_ADMIN', null, { classe: 'stato' })]),
+    ]);
+  }
 
   VISTE.amministrazione = async function () {
     var indietro = cornice([RADICE, { chiave: 'UI_ADMINISTRATION' }]);
     var corpo = [indietro, t('h2', 'UI_ADMINISTRATION')];
+    var credenziali = stato.credenzialiDaMostrare;
+    stato.credenzialiDaMostrare = null;
     if (stato.me.isPlatformAdmin) {
       var tenants = await api('/platform/tenants');
-      corpo.push(t('h3', 'UI_TENANTS'), el('ul', { classe: 'elenco-semplice' }, tenants.map(function (tn) {
-        return el('li', {}, [tn.nome, ' · ', tn.slug, ' · ', t('span', 'STATUS_TENANT_' + tn.stato.toUpperCase())]);
-      })));
+      if (credenziali) corpo.push(riquadroCredenziali(credenziali));
+      // Entrare in una scuola: lo stesso elenco di pulsanti, con tutte le scuole attive (sempre aggiornato).
+      var attive = tenants.filter(function (tn) { return tn.stato === 'attivo'; });
+      corpo.push(el('section', { classe: 'sezione', 'aria-labelledby': 'titolo-entra-istituto' }, [
+        t('h3', 'UI_ENTER_TENANT', null, { id: 'titolo-entra-istituto' }),
+        attive.length ? elencoIstituti(attive) : t('p', 'UI_NO_TENANT', null, { classe: 'stato' }),
+      ]));
+      corpo.push(moduloNuovaScuola());
+      corpo.push(t('h3', 'UI_TENANTS'), el('ul', { classe: 'elenco-semplice elenco-scuole' }, tenants.map(voceScuola)));
     }
     if (stato.me.activeTenantId && haPermesso('tenant.manage_config')) {
       var completezza = await api('/admin/traduzioni/completezza');
@@ -891,7 +1240,13 @@
     disegnaComeLeggere();
   });
   $('amministrazione').addEventListener('click', function () { vai({ tipo: 'amministrazione' }); });
-  $('titolo-app').addEventListener('click', function () { if (stato.me && stato.me.activeTenantId) vai({ tipo: 'insegnamenti' }); });
+  $('cambia-password').addEventListener('click', function () { vai({ tipo: 'password' }); });
+  $('titolo-app').addEventListener('click', function () {
+    if (!stato.me || stato.me.deveCambiarePassword || senzaScuole()) return;
+    if (stato.me.activeTenantId) vai({ tipo: 'insegnamenti' });
+    else vai(stato.me.isPlatformAdmin ? { tipo: 'amministrazione' } : { tipo: 'istituti' });
+  });
+  $('cambia-istituto').addEventListener('click', function () { vai({ tipo: 'istituti' }); });
 
   (async function () {
     await caricaCatalogo();
