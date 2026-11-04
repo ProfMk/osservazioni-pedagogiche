@@ -277,6 +277,8 @@
     "COLUMN_USE": "Uso",
     "COLUMN_NOTE": "Nota",
     "COLUMN_HISTORY": "Storico",
-    "COLUMN_CLASS": "Classe"
+    "COLUMN_CLASS": "Classe",
+    "ERR_SCHOOL_YEAR_IN_PREPARATION": "L'anno scolastico è ancora in preparazione: i docenti potranno scriverci quando sarà attivo.",
+    "UI_RESOURCE_SCHOOL_YEAR": "Anno scolastico"
   }
 }

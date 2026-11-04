@@ -42,8 +42,9 @@ router.get('/teachings/:teachingId/pedagogical-units', asincrono(async (req, res
   res.json(await dominio.getPedagogicalUnitsDiTeaching(pool, teachingId, req.tenantId, req.lingua));
 }));
 
+// Letture del percorso degli insegnamenti: un insegnamento di un anno in preparazione -> 404.
 async function scopeDiTeaching(teachingId, tenantId) {
-  const teaching = await dominio.verificaTeachingNelTenant(pool, teachingId, tenantId);
+  const teaching = await dominio.verificaTeachingNelPercorso(pool, teachingId, tenantId);
   return { schoolLevelId: teaching.school_level_id, classId: teaching.class_id, teachingId: teaching.id };
 }
 
@@ -177,7 +178,7 @@ router.get('/classes/:classId/teachings', asincrono(async (req, res) => {
 // GET /api/activities/:activityId/griglia — tabella di classe della singola attività.
 router.get('/activities/:activityId/griglia', asincrono(async (req, res) => {
   const activityId = Number(req.params.activityId);
-  const activityInfo = await dominio.verificaActivityNelTenant(pool, activityId, req.tenantId);
+  const activityInfo = await dominio.verificaActivityNelPercorso(pool, activityId, req.tenantId);
   await richiedePermesso(pool, {
     accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
     schoolLevelId: activityInfo.school_level_id, classId: activityInfo.class_id, teachingId: activityInfo.teaching_id,
@@ -188,7 +189,7 @@ router.get('/activities/:activityId/griglia', asincrono(async (req, res) => {
 // GET /api/activities/:activityId/report-classe — esito dell'attività (VIEW_ACTIVITY_OUTCOME): niente media mobile.
 router.get('/activities/:activityId/report-classe', asincrono(async (req, res) => {
   const activityId = Number(req.params.activityId);
-  const activityInfo = await dominio.verificaActivityNelTenant(pool, activityId, req.tenantId);
+  const activityInfo = await dominio.verificaActivityNelPercorso(pool, activityId, req.tenantId);
   await richiedePermesso(pool, {
     accountId: req.accountId, permesso: 'report.read', tenantId: req.tenantId,
     schoolLevelId: activityInfo.school_level_id, classId: activityInfo.class_id, teachingId: activityInfo.teaching_id,
