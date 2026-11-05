@@ -14,8 +14,8 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 | 3 | Reflow della griglia | `42ad8c4` | 215/215 | 28/28 |
 | 4 | Partenza per ruolo, «Classi del mio livello» | `8d0fbe6` | 217/217 | 30/30 |
 | 5 | Nome dell'anno modificabile | `2c38a5b` | 219/219 | 31/31 |
-| 6 | Etichette e aiuto per livello e ordine | (questo commit) | 219/219 | 32/32 |
-| 7 | Chiusura (README, numeri finali) | — | — | — |
+| 6 | Etichette e aiuto per livello e ordine | `52bcffb` | 219/219 | 32/32 |
+| 7 | Chiusura (README, numeri finali) | (questo commit) | 219/219 | 32/32 |
 
 ## Passo 0 — Avvio
 - Ramo `iterazione-2-inserimento-osservazioni`, albero pulito, `HEAD` = `2e8e671`.
@@ -171,6 +171,17 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
   `tests/strutturaIstituto.test.js` verifica il codice `UI_FIELD_ORDINE`, non il testo).
 - Test: un E2E nuovo (nota, posizione nell'elenco, aiuti collegati ai due campi, errore sulla posizione,
   testi mancanti, axe-core).
+
+## Passo 7 — Chiusura
+- `README.md`: tabella «Inserimento delle osservazioni e partenza per ruolo» (nuova
+  `GET /teachings/:id/scrittura`, campi aggiunti a griglia, PUT della cella, `/auth/me` e elenco degli anni,
+  `PUT /admin/school-years/:annoId`), regola unica di scrittura, comportamento del client, rotte nuove del
+  client, nuovo file di test, ordine dei file eseguiti da `npm test`, scenario end-to-end aggiornato.
+  Nessuna migration nuova: la catena dei test (`000 → 006 → seed`) non cambia.
+- Stato finale (Windows, comando ufficiale): `npm test` **219/219** (206 di partenza + 13 nuovi, tutti in
+  `tests/inserimentoOsservazioni.test.js`); `npm run test:e2e` **32/32** (22 di partenza + 10 nuovi).
+- Nessuna dipendenza nuova; seed e migration non toccati; `.env` non letto; nessun server di sviluppo avviato;
+  `window.confirm` invariato.
 
 ## Decisioni prese da Claude Code
 1. **Anno in preparazione nella regola**: `motivoDiSolaLettura` restituisce

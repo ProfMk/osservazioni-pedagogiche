@@ -122,7 +122,7 @@ server/
     contestoTenant.js               Risolve/verifica il tenant attivo della sessione
   queries/
     account.js, tenant.js, rbac.js, configurazione.js, dominio.js, progresso.js
-    calendario.js, struttura.js, quadro.js   Amministrazione dell'istituto: anni e periodi,
+    calendario.js, struttura.js, quadro.js   Amministrazione dell'istituto: anni (anche il nome) e periodi,
                                    livelli e classi, quadro (cose da fare, riepilogo per livello)
   routes/
     auth.js, tenant.js, dominio.js, i18n.js, index.js (pipeline e gestore errori)
@@ -134,7 +134,8 @@ public/
   js/i18n.js                       Catalogo, plurali, formattazione Intl
   js/geometria.js                  Sola geometria grafica del disco (seno/coseno), nessuna semantica
   js/grammatica.js                 Componenti della grammatica visuale (disco, carta, tabella, segni)
-  js/app.js                        Percorso unico e viste V2
+  js/app.js                        Percorso unico e viste V2; griglia con salvataggio sul posto e reflow;
+                                   partenza per ruolo; «Classi del mio livello»
 tests/
   calcoli.test.js, regolaB.test.js Test puri del motore (nessun database)
   conformita.test.js               Controlli statici del client (proprietà logiche, testi, nessun calcolo)
@@ -147,8 +148,12 @@ tests/
   sceltaIstituto.test.js           Selezione automatica dell'istituto, ruoli per scuola
   anniScolastici.test.js           Migration 006, regola dell'anno (docenti / configurazione), calendario
   strutturaIstituto.test.js        Livelli, classi e quadro dell'istituto
+  inserimentoOsservazioni.test.js  Regola di scrittura (sola lettura), esito sul posto del salvataggio di una cella,
+                                   controlli statici del salvataggio sul posto, partenza per ruolo, nome dell'anno
   e2e.test.js                      Browser sul seed esteso: viste V2.1, colori, navigazione, RTL, B/N, axe-core,
-                                   creazione di una scuola e primo accesso, amministrazione dell'istituto
+                                   creazione di una scuola e primo accesso, amministrazione dell'istituto,
+                                   inserimento delle osservazioni (sola lettura, salvataggio sul posto, reflow
+                                   da 320 px), partenza per ruolo, «Classi del mio livello», nome dell'anno
   support/pglite.js                Database di prova in memoria (PGlite) per i test, nessuna installazione richiesta
 ```
 
@@ -257,6 +262,11 @@ npm run test:e2e       # nel browser (richiede Chromium per playwright-core)
 npm run test:all       # tutto
 ```
 
+`npm test` esegue, in quest'ordine: `calcoli`, `regolaB`, `conformita`, `integration`, `lingua`,
+`seedEsteso`, `v21`, `geometria`, `immutabilita`, `primoAccesso`, `sceltaIstituto`, `anniScolastici`,
+`strutturaIstituto`, `inserimentoOsservazioni` (tutti in `tests/`, `*.test.js`). Un file di test nuovo va
+aggiunto agli script `test` e `test:integration` di `package.json`, altrimenti non viene eseguito.
+
 **Prima esecuzione degli E2E su un computer nuovo:** installare una volta il
 browser di Playwright, altrimenti tutti i casi E2E falliscono subito con
 `Executable doesn't exist`:
@@ -302,8 +312,8 @@ POST /api/auth/login (teacher.math.a@alfa.test)
   → POST /api/auth/switch-tenant (Alfa)
   → GET /api/teachings                          (Matematica 2A/2B)
   → GET /api/teachings/:id/activities            ("Numeri entro il cento")
-  → GET /api/activities/:id/griglia
-  → PUT /api/activities/:id/enrollments/:e/criteria/:c  (osserva un alunno)
+  → GET /api/activities/:id/griglia              (scrittura: { consentita: true, motivo: null })
+  → PUT /api/activities/:id/enrollments/:e/criteria/:c  (osserva un alunno: cella ed esito della riga)
   → riga in audit_log nella stessa transazione
 
 POST /api/auth/login (teacher.math.b@beta.test)
@@ -357,9 +367,35 @@ con il suo audit. Una risorsa di un'altra scuola risponde 404.
 
 Regola dell'anno: le scritture dei docenti (attività, osservazioni) solo su un
 anno `attivo` (`in_preparazione` → 409 `ERR_SCHOOL_YEAR_IN_PREPARATION`, `chiuso`
-→ 409 `ERR_SCHOOL_YEAR_CLOSED`); quelle di configurazione (periodi) su `attivo` e
-`in_preparazione`. Gli insegnamenti degli anni in preparazione non compaiono nel
+→ 409 `ERR_SCHOOL_YEAR_CLOSED`); quelle di configurazione (periodi, nome dell'anno) su
+`attivo` e `in_preparazione`. Gli insegnamenti degli anni in preparazione non compaiono nel
 percorso degli insegnamenti, per nessun ruolo.
+
+### Inserimento delle osservazioni e partenza per ruolo (iterazione 2, lavoro 2)
+
+| Metodo e percorso | Permesso | Contenuto |
+|---|---|---|
+| `GET /api/teachings/:id/scrittura` | `teaching.read` (ambito del Teaching; anno in preparazione → 404) | `{ attivita: { consentita, motivo }, osservazioni: { consentita, motivo } }` (`activity.create`, `observation.create`) |
+| `GET /api/activities/:id/griglia` | `observation.read` | Campo aggiunto `scrittura: { consentita, motivo }` (`observation.create`) |
+| `PUT /api/activities/:a/enrollments/:e/criteria/:c` | `observation.create` | Oltre a `observationId` ed `eliminato`: `cella: { criterionId, valore }` e `riga: { enrollmentId, valutazionePresenti, valutazioniTotali, esito }`, calcolati come nella griglia nella stessa transazione (anche per `valore: null`) |
+| `GET /api/auth/me` (e login, `switch-tenant`, cambio password) | sessione | Campo aggiunto `partenza`: `scuole` (PLATFORM_ADMIN), `quadro` (TENANT_ADMIN), `classi` (COORDINATOR), `insegnamenti` (gli altri); precedenza nell'ordine; `null` senza tenant attivo |
+| `PUT /api/admin/school-years/:annoId` | `tenant.manage_config` | `{ nome }`: nuovo nome di un anno attivo o in preparazione (anno chiuso → 409 `ERR_SCHOOL_YEAR_CLOSED`, nome occupato → 409 `ERR_SCHOOL_YEAR_NAME_TAKEN`); le date non cambiano; audit `school_year.rename` |
+| `GET /api/admin/school-years` | `tenant.manage_config` | Campo aggiunto per anno `rinominabile` (l'elenco `azioni` non cambia) |
+
+- **Regola unica di scrittura** (`regolaDiScrittura` in `server/queries/dominio.js`): `motivo` = chiave di catalogo
+  del perché nessuno può scrivere ora (oggi l'anno chiuso), uguale per tutti i ruoli che leggono; `consentita` =
+  nessun motivo e permesso del chiamante con l'ambito completo. Il 409 delle scritture dei docenti usa lo stesso
+  punto (`motivoDiSolaLettura`).
+- **Client**: avviso fisso di sola lettura (motivo dal server) sopra le schede dell'attività e nella scheda
+  «Attività»; controlli della griglia e modulo «Nuova attività» solo se il server consente la scrittura.
+  Salvataggio di una cella **sul posto**: nessun ridisegno, scritture in coda per alunno, esito della riga dal
+  PUT, errore accanto al controllo con ritorno all'ultimo valore salvato. **Reflow**: nessuno scorrimento
+  laterale della griglia da 320 px; quando la tabella non sta nel contenitore (larghezza misurata, non una soglia
+  fissa) la stessa struttura diventa una scheda per alunno.
+- **Rotte del client**: la partenza per ruolo vale per l'indirizzo vuoto o non riconosciuto, dopo l'accesso, dopo
+  «Cambia istituto» e per il titolo dell'app (un indirizzo valido ha la precedenza). Nuove: `#/insegnamenti`
+  (esplicita), `#/classi` («Classi del mio livello»: i livelli di cui l'utente è COORDINATOR, con le classi
+  attive) e `#/classi/<classId>` (gli insegnamenti della classe, verso la scheda esistente della classe).
 
 Tutti gli errori hanno la forma `{ "errore": { "codice": "ERR_*", "parametri": {…} } }`.
 
