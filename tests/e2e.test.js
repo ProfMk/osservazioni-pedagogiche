@@ -981,9 +981,9 @@ test('Lavoro 2: salvataggio sul posto — stesso controllo, fuoco e scorrimento 
   assert.deepEqual(await pagina.evaluate(() => [scrollY, window.caricamentiVisti]), [scorrimento, 0]);
 
   // Il risultato non cambia: una griglia ridisegnata da zero mostra lo stesso esito.
-  const esitoSulPosto = await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`);
+  const esitoSulPosto = await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito .valori-esito`);
   await vaiA(pagina, hashGriglia(id));
-  assert.equal(await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`), esitoSulPosto);
+  assert.equal(await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito .valori-esito`), esitoSulPosto);
   await senzaTestiMancanti(pagina, 'griglia dopo i salvataggi');
   await nessunaViolazione(pagina, 'griglia dopo i salvataggi');
 
@@ -1005,7 +1005,7 @@ test('Lavoro 2: un salvataggio fallito (500, poi 409) riporta il controllo all\'
   const cella = selCella(riga.enrollmentId, g.criteri[0].id);
   await pagina.selectOption(`${cella} select`, '1');
   await salvataggiConclusi(pagina);
-  const esitoSalvato = await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`);
+  const esitoSalvato = await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito .valori-esito`);
 
   const simulate = [
     { status: 500, body: '' },
@@ -1031,7 +1031,7 @@ test('Lavoro 2: un salvataggio fallito (500, poi 409) riporta il controllo all\'
     assert.deepEqual(await statoCella(), {
       valore: '1', invalido: 'true', descritto: true, messaggio: CATALOGO[codice], segno: '1', bannerGlobale: '', fuoco: true,
     }, codice);
-    assert.equal(await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`), esitoSalvato, 'esito invariato');
+    assert.equal(await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito .valori-esito`), esitoSalvato, 'esito invariato');
   }
   assert.equal((await grigliaApi(id)).righe[0].celle[0].valore, 1, 'nel database resta l\'ultimo valore salvato');
   await nessunaViolazione(pagina, 'griglia con un errore sul controllo');
@@ -1110,5 +1110,174 @@ test('Lavoro 2: anno chiuso — avviso di sola lettura appena si entra (griglia,
     await pagina.context().close();
   } finally {
     await pool.query("UPDATE school_years SET stato = 'attivo' WHERE id = $1", [anno]);
+  }
+});
+
+// --- Lavoro 2: reflow della griglia (nessuno scorrimento laterale da 320 px) ----------------
+
+const DESCRIZIONE_LUNGA = 'Riconosce e descrive regolarità in sequenze di numeri e figure'; // circa 60 caratteri
+
+/**
+ * Unità di Matematica 2A con 3, 4 e 8 criteri (una descrizione lunga ciascuna) e un'attività per unità.
+ * Dati propri del test, rimossi alla fine (`rimuovi`).
+ */
+async function unitaDiProvaReflow() {
+  const uno = async (sql, p) => (await pool.query(sql, p)).rows[0];
+  const alfa = (await uno("SELECT id FROM tenants WHERE slug = 'alfa'")).id;
+  const anno = (await uno("SELECT id FROM school_years WHERE tenant_id = $1 AND stato = 'attivo'", [alfa])).id;
+  const materia = (await uno("SELECT id FROM subjects WHERE tenant_id = $1 AND nome = 'Matematica'", [alfa])).id;
+  const unita = [];
+  for (const [n, ordine] of [[3, 91], [4, 92], [8, 93]]) {
+    const u = (await uno('INSERT INTO pedagogical_units (tenant_id, school_year_id, subject_id, nome, ordine) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [alfa, anno, materia, `Reflow ${n} criteri`, ordine])).id;
+    for (let i = 1; i <= n; i += 1) {
+      await pool.query('INSERT INTO criteria (tenant_id, school_year_id, pedagogical_unit_id, codice, descrizione, ordine) VALUES ($1, $2, $3, $4, $5, $6)',
+        [alfa, anno, u, `RF${n}-${i}`, i === 2 ? DESCRIZIONE_LUNGA : `Criterio ${i} di prova`, i]);
+    }
+    const a = await api.post(`/teachings/${t2A.teaching_id}/activities`, { nome: `Reflow ${n}`, dataAttivita: '2026-11-23', pedagogicalUnitId: u });
+    assert.equal(a.status, 201);
+    unita.push({ criteri: n, unitaId: u, activityId: a.corpo.activity_id });
+  }
+  const rimuovi = async () => {
+    for (const u of unita) {
+      await pool.query('DELETE FROM observations WHERE activity_id = $1', [u.activityId]);
+      await pool.query('DELETE FROM activities WHERE id = $1', [u.activityId]);
+      await pool.query('DELETE FROM criteria WHERE pedagogical_unit_id = $1', [u.unitaId]);
+      await pool.query('DELETE FROM pedagogical_units WHERE id = $1', [u.unitaId]);
+    }
+  };
+  return { unita, rimuovi };
+}
+
+/** Due fotogrammi: il tempo che la griglia scelga la disposizione (ResizeObserver, poi requestAnimationFrame). */
+const fotogrammi = (pagina) => pagina.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+/** Misure del reflow: scorrimento laterale di pagina e contenitori, disposizione, controlli presenti. */
+async function misureReflow(pagina) {
+  await fotogrammi(pagina);
+  return pagina.evaluate(() => {
+    const radice = document.documentElement;
+    const contenitore = document.querySelector('.griglia-contenitore');
+    const tabella = contenitore.querySelector('table.griglia');
+    const scorrevoli = [...document.querySelectorAll('#contenuto *')]
+      .filter((n) => ['auto', 'scroll'].includes(getComputedStyle(n).overflowX) && n.scrollWidth > n.clientWidth)
+      .map((n) => n.className || n.tagName);
+    return {
+      pagina: radice.scrollWidth <= radice.clientWidth,
+      contenitore: contenitore.scrollWidth <= contenitore.clientWidth && tabella.offsetWidth <= contenitore.clientWidth,
+      scorrevoli,
+      schede: contenitore.classList.contains('a-schede'),
+      controlli: tabella.querySelectorAll('tbody td[data-criterio] select').length,
+      etichetteVisibili: [...tabella.querySelectorAll('tbody tr:first-child .etichetta-scheda')].filter((e) => e.offsetWidth > 0).length,
+    };
+  });
+}
+
+test('Lavoro 2: reflow — 320, 768 e 1280 px con 3, 4 e 8 criteri e una descrizione lunga: nessuno scorrimento laterale, tutti i controlli, axe in entrambe le disposizioni', async () => {
+  const { unita, rimuovi } = await unitaDiProvaReflow();
+  try {
+    const pagina = await nuovaPagina();
+    await accedi(pagina);
+    const disposizioni = {};
+    for (const larghezza of [320, 768, 1280]) {
+      await pagina.setViewportSize({ width: larghezza, height: 900 });
+      for (const u of unita) {
+        const dove = `${larghezza} px, ${u.criteri} criteri`;
+        await vaiA(pagina, hashGriglia(u.activityId));
+        const righe = (await grigliaApi(u.activityId)).righe.length;
+        const m = await misureReflow(pagina);
+        assert.deepEqual([m.pagina, m.contenitore, m.scorrevoli], [true, true, []], `${dove}: nessuno scorrimento laterale`);
+        assert.equal(m.controlli, righe * u.criteri, `${dove}: tutti i controlli presenti`);
+        assert.equal(m.etichetteVisibili, m.schede ? u.criteri + 1 : 0, `${dove}: etichette visibili solo nelle schede (criteri ed esito)`);
+        disposizioni[dove] = m.schede;
+        await senzaTestiMancanti(pagina, dove);
+        await nessunaViolazione(pagina, dove);
+      }
+    }
+    // A 320 px è sempre una scheda per alunno; a 1280 px con 3 criteri la tabella sta e resta tabella.
+    assert.deepEqual(Object.entries(disposizioni).filter(([d]) => d.startsWith('320')).map(([, s]) => s), [true, true, true]);
+    assert.equal(disposizioni['1280 px, 3 criteri'], false, 'sopra la soglia resta la tabella');
+    assert.equal(disposizioni['1280 px, 8 criteri'], true, 'la soglia dipende dal numero di criteri');
+
+    // Da schede a tabella e ritorno ridimensionando la stessa vista, senza oscillare.
+    const tre = unita[0];
+    await vaiA(pagina, hashGriglia(tre.activityId));
+    await pagina.setViewportSize({ width: 320, height: 900 });
+    assert.equal((await misureReflow(pagina)).schede, true);
+    await pagina.setViewportSize({ width: 1280, height: 900 });
+    assert.equal((await misureReflow(pagina)).schede, false);
+    const stabili = await pagina.evaluate(async () => {
+      const visti = [];
+      for (let i = 0; i < 6; i += 1) {
+        await new Promise((r) => requestAnimationFrame(r));
+        visti.push(document.querySelector('.griglia-contenitore').classList.contains('a-schede'));
+      }
+      return visti;
+    });
+    assert.deepEqual(stabili, [false, false, false, false, false, false], 'nessuna oscillazione');
+    assert.deepEqual(pagina.errori, []);
+    await pagina.context().close();
+  } finally {
+    await rimuovi();
+  }
+});
+
+test('Lavoro 2: reflow — in modalità scheda nome, criteri ed esito nell\'ordine del DOM; selezione e salvataggio sul posto funzionano; RTL senza scorrimento', async () => {
+  const { unita, rimuovi } = await unitaDiProvaReflow();
+  try {
+    const quattro = unita[1];
+    await abilitaRtlDiProva(); // prima dell'accesso: il selettore della lingua compare con due lingue abilitate
+    const pagina = await nuovaPagina({ viewport: { width: 320, height: 800 } });
+    await accedi(pagina);
+    await vaiA(pagina, hashGriglia(quattro.activityId));
+    assert.equal((await misureReflow(pagina)).schede, true);
+    const g = await grigliaApi(quattro.activityId);
+    const riga = g.righe[2];
+    // Ordine del DOM e della lettura: nome → criteri → esito; l'etichetta ripetuta non si legge due volte.
+    const scheda = await pagina.$eval(`tr[data-iscrizione="${riga.enrollmentId}"]`, (tr) => ({
+      ordine: [...tr.children].map((c) => (c.tagName === 'TH' ? 'nome' : c.classList.contains('esito') ? 'esito' : c.dataset.criterio)),
+      etichetteNascoste: [...tr.querySelectorAll('.etichetta-scheda')].every((e) => e.getAttribute('aria-hidden') === 'true'),
+      inColonna: [...tr.children].every((c, i, tutti) => i === 0 || c.getBoundingClientRect().top >= tutti[i - 1].getBoundingClientRect().bottom - 1),
+      ruoli: [tr.getAttribute('role'), tr.querySelector('th').getAttribute('role'), tr.querySelector('td').getAttribute('role')],
+    }));
+    assert.deepEqual(scheda.ordine, ['nome', ...g.criteri.map((c) => String(c.id)), 'esito']);
+    assert.deepEqual([scheda.etichetteNascoste, scheda.inColonna, scheda.ruoli], [true, true, ['row', 'rowheader', 'cell']]);
+    assert.equal(await pagina.getAttribute(`${selCella(riga.enrollmentId, g.criteri[1].id)} select`, 'aria-label'),
+      testoCatalogo('UI_CELL_LABEL', { alunno: `${riga.cognome} ${riga.nome}`, criterio: DESCRIZIONE_LUNGA }), 'il nome accessibile del controllo resta');
+
+    // Selezione e salvataggio sul posto in modalità scheda.
+    const cella = selCella(riga.enrollmentId, g.criteri[1].id);
+    await pagina.$eval(`${cella} select`, (s) => s.scrollIntoView({ block: 'center' }));
+    await pagina.focus(`${cella} select`);
+    const scorrimento = await pagina.evaluate(() => scrollY);
+    await osservaCaricamenti(pagina);
+    await pagina.selectOption(`${cella} select`, '2');
+    await salvataggiConclusi(pagina);
+    await esitoDiRigaComeServer(pagina, quattro.activityId, riga.enrollmentId);
+    assert.deepEqual(await pagina.evaluate((sel) => [scrollY, window.caricamentiVisti, document.activeElement === document.querySelector(`${sel} select`)], cella), [scorrimento, 0, true]);
+    assert.equal(await pagina.getAttribute(`${cella} .valore`, 'data-valore'), '2');
+    const dopo = await misureReflow(pagina);
+    assert.deepEqual([dopo.pagina, dopo.contenitore, dopo.schede], [true, true, true]);
+
+    // RTL a 320 px con 8 criteri: stessa disposizione a schede, specchiata, senza scorrimento laterale.
+    await vaiA(pagina, hashGriglia(unita[2].activityId));
+    await cambiaLingua(pagina, 'ar-XB', 'rtl');
+    const rtl = await misureReflow(pagina);
+    assert.deepEqual([rtl.pagina, rtl.contenitore, rtl.scorrevoli, rtl.schede], [true, true, [], true], 'RTL: nessuno scorrimento laterale');
+    const allineamento = await pagina.$eval('table.griglia tbody tr:first-child th', (th) => {
+      const tr = th.closest('tr').getBoundingClientRect();
+      const testo = document.createRange();
+      testo.selectNodeContents(th);
+      const r = testo.getBoundingClientRect();
+      return (tr.right - r.right) < (r.left - tr.left);
+    });
+    assert.ok(allineamento, 'RTL: il nome dell\'alunno all\'inizio della riga di lettura (a destra)');
+    await senzaTestiMancanti(pagina, 'griglia a schede RTL');
+    await nessunaViolazione(pagina, 'griglia a schede RTL');
+    await cambiaLingua(pagina, 'it', 'ltr');
+    assert.deepEqual(pagina.errori, []);
+    await pagina.context().close();
+  } finally {
+    await rimuovi();
   }
 });

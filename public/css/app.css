@@ -242,6 +242,26 @@ table.osservazioni tr.esclusa td { color: var(--inchiostro-tenue); opacity: .75;
 .cella-valore { white-space: nowrap; }
 .griglia select { max-inline-size: 12rem; }
 .griglia td.esito { white-space: nowrap; }
+
+/* Griglia di inserimento: reflow (nota 7). Nessuno scorrimento laterale: quando la tabella non sta nel
+   contenitore (misura in app.js, adattaGriglia) la stessa struttura si dispone a una scheda per alunno —
+   nome, i suoi criteri con l'etichetta visibile, il suo esito — nell'ordine del DOM. */
+.griglia-contenitore { min-inline-size: 0; }
+/* Il messaggio d'errore di una cella va a capo: non allarga la tabella. */
+.griglia .errore-campo { display: block; white-space: normal; }
+.griglia .etichetta-scheda { display: none; }
+.griglia-contenitore.a-schede table.griglia { display: block; background: none; }
+.a-schede table.griglia thead { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.a-schede table.griglia tbody { display: grid; gap: .75rem; }
+.a-schede table.griglia tbody tr {
+  display: grid; gap: .6rem; min-inline-size: 0;
+  background: var(--foglio); border: 1px solid var(--linea); border-radius: 8px; padding-block: .7rem; padding-inline: .8rem;
+}
+.a-schede table.griglia tbody th, .a-schede table.griglia tbody td { display: block; border: 0; padding: 0; white-space: normal; min-inline-size: 0; overflow-wrap: anywhere; }
+.a-schede table.griglia tbody th { font-size: 1rem; }
+.a-schede .griglia .etichetta-scheda { display: block; margin-block-end: .2rem; font-size: .82rem; color: var(--inchiostro-tenue); }
+.a-schede table.griglia select { max-inline-size: 100%; }
+.a-schede table.griglia td.esito { border-block-start: 1px solid var(--traccia); padding-block-start: .5rem; }
 .valutazione { background: var(--foglio); border: 1px solid var(--linea); border-radius: 8px; padding-block: .5rem; padding-inline: .8rem; margin-block-end: .5rem; }
 .valutazione p { margin-block: .25rem; }
 .timbro { font-size: 1.2rem; }

@@ -967,7 +967,7 @@
       el('div', { classe: 'corpo-scheda', role: 'tabpanel' }, corpo.filter(Boolean))];
   };
 
-  /** Esito di una riga: n/N, percentuale e banda come arrivano dal server (griglia o risposta del salvataggio). */
+  /** Esito di una riga: percentuale, banda e n/N come arrivano dal server (griglia o risposta del salvataggio). */
   function contenutoEsitoRiga(esito, ctx) {
     return [G.numero(esito, ctx), ' ', G.chipBanda(esito, ctx), ' ', t('span', 'BASE_COUNT', { n: esito.base.n, N: esito.base.N }, { classe: 'tenue' })];
   }
@@ -976,6 +976,9 @@
    * Griglia di inserimento (P14: stessa semantica): ogni cella mostra il valore con il colore della sua banda;
    * vuota = non osservato (grigio). Riferimenti stabili nel DOM: tr[data-iscrizione], td[data-criterio], td.esito.
    * I controlli compaiono solo se il server consente la scrittura (g.scrittura).
+   * Una sola struttura per le due disposizioni (tabella o una scheda per alunno, vedi adattaGriglia): i ruoli
+   * espliciti conservano la semantica tabellare anche quando la disposizione a schede cambia `display`.
+   * L'etichetta del criterio ripetuta nella scheda è aria-hidden: il controllo ha già il suo nome accessibile.
    */
   async function grigliaAttivita(a) {
     var g = await api('/activities/' + a.activity_id + '/griglia');
@@ -985,15 +988,16 @@
     // Una sola regione per l'annuncio cortese dei salvataggi, non una per cella.
     var annuncio = el('p', { classe: 'nascosta annuncio-salvataggio', role: 'status' });
     var contesto = { activityId: a.activity_id, ctx: ctx, annuncio: annuncio };
-    var corpoTabella = el('tbody', {}, g.righe.map(function (riga) {
+    var corpoTabella = el('tbody', { role: 'rowgroup' }, g.righe.map(function (riga) {
       var nomeAlunno = riga.cognome + ' ' + riga.nome;
       var statoRiga = { enrollmentId: riga.enrollmentId, coda: Promise.resolve(), esito: null };
       var celle = riga.celle.map(function (cella) {
         var criterio = g.criteri.find(function (c) { return c.id === cella.criterionId; });
+        var etichetta = el('span', { classe: 'etichetta-scheda', 'aria-hidden': 'true' }, [criterio.codice, ' ', contenuto('span', criterio.descrizione)]);
         var segnoValore = G.valoreScala(cella.valore, ctx);
         if (!scrittura) {
           var voce = g.scala.valori.find(function (v) { return v.valore === cella.valore; });
-          return el('td', { classe: 'cella-valore', 'data-criterio': cella.criterionId }, [segnoValore, ' ', voce ? contenuto('span', voce.etichetta) : t('span', 'UI_NOT_ASSESSED')]);
+          return el('td', { classe: 'cella-valore', role: 'cell', 'data-criterio': cella.criterionId }, [etichetta, segnoValore, ' ', voce ? contenuto('span', voce.etichetta) : t('span', 'UI_NOT_ASSESSED')]);
         }
         var selettore = el('select', { 'aria-label': I18n.testo('UI_CELL_LABEL', { alunno: nomeAlunno, criterio: criterio.descrizione }) }, [
           t('option', 'UI_NOT_ASSESSED', null, { value: '' }),
@@ -1001,21 +1005,60 @@
           return t('option', 'UI_SCALE_OPTION', { valore: v.valore, etichetta: v.etichetta }, { value: v.valore, selected: cella.valore === v.valore });
         })));
         var messaggio = el('span', { id: 'errore-cella-' + riga.enrollmentId + '-' + cella.criterionId, classe: 'errore-campo', role: 'alert', hidden: true });
-        var td = el('td', { classe: 'cella-valore', 'data-criterio': cella.criterionId }, [segnoValore, ' ', selettore, messaggio]);
+        var td = el('td', { classe: 'cella-valore', role: 'cell', 'data-criterio': cella.criterionId }, [etichetta, segnoValore, ' ', selettore, messaggio]);
         var statoCella = { criterionId: cella.criterionId, td: td, selettore: selettore, segno: segnoValore, messaggio: messaggio, salvato: cella.valore, inCorso: 0 };
         selettore.addEventListener('change', function () { salvaCellaSulPosto(contesto, statoRiga, statoCella); });
         return td;
       });
-      statoRiga.esito = el('td', { classe: 'esito' }, contenutoEsitoRiga(riga.esito, ctx));
-      return el('tr', { 'data-iscrizione': riga.enrollmentId }, [el('th', { scope: 'row' }, [nomeAlunno])].concat(celle).concat([statoRiga.esito]));
+      statoRiga.esito = el('span', { classe: 'valori-esito' }, contenutoEsitoRiga(riga.esito, ctx));
+      var esito = el('td', { classe: 'esito', role: 'cell' }, [t('span', 'UI_ACTIVITY_RESULT', null, { classe: 'etichetta-scheda', 'aria-hidden': 'true' }), statoRiga.esito]);
+      return el('tr', { role: 'row', 'data-iscrizione': riga.enrollmentId }, [el('th', { scope: 'row', role: 'rowheader' }, [nomeAlunno])].concat(celle).concat([esito]));
     }));
-    return [el('div', { classe: 'scorrimento' }, [el('table', { classe: 'griglia' }, [
+    var tabella = el('table', { classe: 'griglia', role: 'table' }, [
       el('caption', { classe: 'nascosta' }, [t('span', 'UI_GRID')]),
-      el('thead', {}, [el('tr', {}, [t('th', 'UI_STUDENT', null, { scope: 'col' })]
-        .concat(g.criteri.map(function (c) { return el('th', { scope: 'col' }, [c.codice, ' ', contenuto('span', c.descrizione)]); }))
-        .concat([t('th', 'UI_ACTIVITY_RESULT', null, { scope: 'col' })]))]),
+      el('thead', { role: 'rowgroup' }, [el('tr', { role: 'row' }, [t('th', 'UI_STUDENT', null, { scope: 'col', role: 'columnheader' })]
+        .concat(g.criteri.map(function (c) { return el('th', { scope: 'col', role: 'columnheader' }, [c.codice, ' ', contenuto('span', c.descrizione)]); }))
+        .concat([t('th', 'UI_ACTIVITY_RESULT', null, { scope: 'col', role: 'columnheader' })]))]),
       corpoTabella,
-    ])]), annuncio];
+    ]);
+    var contenitoreGriglia = el('div', { classe: 'griglia-contenitore' }, [tabella]);
+    adattaGriglia(contenitoreGriglia, tabella);
+    return [contenitoreGriglia, annuncio];
+  }
+
+  /**
+   * Reflow della griglia (nota 7), solo presentazione: se la tabella non sta nel contenitore la griglia
+   * diventa una scheda per alunno (classe a-schede), altrimenti resta tabella. La soglia non è fissa: è la
+   * larghezza naturale della tabella (numero di criteri, scala, lunghezza dei testi tradotti), misurata in
+   * modalità tabella e conservata, così la griglia non oscilla tra le due disposizioni. Il cambio avviene al
+   * fotogramma successivo, fuori dal ciclo di ResizeObserver.
+   */
+  function adattaGriglia(contenitoreGriglia, tabella) {
+    var larghezzaNaturale = null;
+    var richiesto = false;
+    var aSchede = function () { return contenitoreGriglia.classList.contains('a-schede'); };
+    var misuraInTabella = function () {
+      if (tabella.offsetWidth > contenitoreGriglia.clientWidth) {
+        larghezzaNaturale = tabella.offsetWidth;
+        contenitoreGriglia.classList.add('a-schede');
+      }
+    };
+    var adatta = function () {
+      richiesto = false;
+      if (!contenitoreGriglia.isConnected || contenitoreGriglia.clientWidth === 0) return;
+      if (!aSchede()) misuraInTabella();
+      else if (larghezzaNaturale !== null && contenitoreGriglia.clientWidth >= larghezzaNaturale) {
+        contenitoreGriglia.classList.remove('a-schede');
+        misuraInTabella();
+      }
+    };
+    var osservatore = new ResizeObserver(function () {
+      if (!contenitoreGriglia.isConnected) { osservatore.disconnect(); return; }
+      if (richiesto) return;
+      richiesto = true;
+      requestAnimationFrame(adatta);
+    });
+    osservatore.observe(contenitoreGriglia);
   }
 
   /**

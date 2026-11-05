@@ -10,8 +10,8 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 |---|---|---|---|---|
 | 0 | Avvio, piano | `7b15a4c` | 206/206 | 22/22 |
 | 1 | Server: sola lettura ed esito sul posto | `ea3a90f` | 213/213 | 22/22 |
-| 2 | Client: avviso di sola lettura, salvataggio sul posto | (questo commit) | 215/215 | 26/26 |
-| 3 | Reflow della griglia | — | — | — |
+| 2 | Client: avviso di sola lettura, salvataggio sul posto | `881aade` | 215/215 | 26/26 |
+| 3 | Reflow della griglia | (questo commit) | 215/215 | 28/28 |
 | 4 | Partenza per ruolo, «Classi del mio livello» | — | — | — |
 | 5 | Nome dell'anno modificabile | — | — | — |
 | 6 | Etichette e aiuto per livello e ordine | — | — | — |
@@ -79,6 +79,40 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
   anno chiuso). axe-core sulle viste toccate (griglia con valori, griglia con errore, griglia/esito/scheda
   «Attività» ad anno chiuso).
 
+## Passo 3 — Reflow della griglia
+- **Approccio**: quello consigliato (misura, non solo CSS). `adattaGriglia(contenitore, tabella)` in `app.js`:
+  un `ResizeObserver` sul contenitore `.griglia-contenitore`; in modalità tabella, se `tabella.offsetWidth`
+  supera `contenitore.clientWidth` si conserva quella larghezza (= larghezza naturale minima della tabella con
+  questi criteri, questa scala e questi testi) e si passa alla classe `a-schede`; in modalità scheda si torna
+  alla tabella solo quando il contenitore è largo almeno quanto la larghezza conservata (poi si rimisura).
+  Nessuna soglia in pixel, nessun `Math.`. Il cambio di classe avviene in `requestAnimationFrame`, fuori dal
+  ciclo dell'osservatore (evita l'errore «ResizeObserver loop»). L'osservatore si scollega quando la griglia
+  esce dal DOM.
+- **Una sola struttura DOM**: la stessa `table.griglia`. In modalità scheda (`.a-schede`) tabella, righe e
+  celle diventano blocchi/griglie; `thead` resta nell'albero dell'accessibilità ma visivamente nascosto. Per
+  non perdere la semantica tabellare quando cambia `display` ogni elemento ha il **ruolo esplicito**
+  (`table`, `rowgroup`, `row`, `columnheader`, `rowheader`, `cell`); i selettori degli E2E esistenti
+  (`table.griglia`, `th scope`, `.valore`, `.valore.nullo`) trovano gli stessi elementi.
+- Scheda: nome (il `th` della riga) → criteri (etichetta visibile `.etichetta-scheda` con codice e
+  descrizione, `aria-hidden="true"`, poi segno e controllo) → esito (etichetta `UI_ACTIVITY_RESULT`
+  `aria-hidden`, poi `span.valori-esito`), nell'ordine del DOM. L'etichetta è nascosta (`display: none`)
+  in modalità tabella.
+- Il salvataggio sul posto aggiorna ora `span.valori-esito` dentro `td.esito` (l'etichetta della scheda resta).
+- Il messaggio d'errore di una cella va a capo (`display: block; white-space: normal`): non allarga la
+  tabella (prima di questa regola un errore faceva passare la griglia alle schede).
+- Tolto `overflow-x` dalla griglia (il contenitore `.scorrimento` non avvolge più la griglia; resta per la
+  tabella delle osservazioni, che non è stata toccata).
+- Test (E2E nuovi): 320, 768 e 1280 px × unità da 3, 4 e 8 criteri con una descrizione di 62 caratteri
+  (unità create nel setup del test e rimosse alla fine): nessuno scorrimento laterale di pagina e di
+  contenitori (`scrollWidth <= clientWidth`, nessun elemento con `overflow-x` auto/scroll che scorre),
+  tutti i controlli presenti, etichette visibili solo nelle schede, axe-core in entrambe le disposizioni;
+  a 320 px sempre schede, a 1280 px con 3 criteri tabella, con 8 criteri schede; ridimensionamento
+  320 → 1280 senza oscillazioni. Modalità scheda: ordine del DOM nome → criteri → esito, etichette
+  `aria-hidden`, ruoli, nome accessibile del controllo invariato, selezione e salvataggio sul posto; RTL
+  (ar-XB di prova) a 320 px con 8 criteri senza scorrimento, nome all'inizio della riga di lettura.
+- Tabelle a 320 px **non corrette** (fuori ambito, solo segnalate; sonda temporanea fuori dal repository):
+  vedi «Da riprendere».
+
 ## Decisioni prese da Claude Code
 1. **Anno in preparazione nella regola**: `motivoDiSolaLettura` restituisce
    `ERR_SCHOOL_YEAR_IN_PREPARATION` (lo stesso codice del 409 di oggi). Non è raggiungibile dalle
@@ -102,6 +136,13 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 9. (Passo 2) `aria-describedby` del controllo punta al messaggio solo mentre c'è un errore.
 10. (Passo 2) L'E2E dell'anno chiuso chiude **per la durata del test** l'anno attivo di Alfa e lo riapre nel
     `finally`; le attività usate dagli E2E nuovi sono create dal test stesso (nessun dato del seed toccato).
+11. (Passo 3) Ruoli ARIA espliciti sulla griglia **in entrambe le disposizioni** (in modalità tabella
+    coincidono con quelli nativi), per non dipendere da come il browser tratta `display` sugli elementi di
+    tabella.
+12. (Passo 3) Nella scheda l'esito sta **in coda** (ordine del DOM), con l'etichetta `UI_ACTIVITY_RESULT`
+    ripetuta e `aria-hidden`; `td.esito` contiene ora `span.valori-esito`, che il salvataggio aggiorna.
+13. (Passo 3) Nei miei E2E del passo 2 il testo dell'esito si legge da `td.esito .valori-esito` (non da tutta
+    la cella, che in modalità scheda contiene anche l'etichetta). Erano test nuovi di questo lavoro.
 
 ## Asserzioni esistenti modificate
 1. `tests/immutabilita.test.js`, test «Anno attivo: salvataggio e cancellazione (valore null) di
@@ -122,4 +163,15 @@ Nessuna.
 | `UI_CELL_SAVED` | (nuova) | Salvato. | 2 |
 
 ## Da riprendere
-(niente)
+- **Altre tabelle che a 320 px scorrono di lato** (fuori ambito, non corrette; la pagina non scorre, scorre
+  il loro contenitore). Misure con il seed esteso, docente `teacher.math.a@alfa.test`, Matematica 2A:
+  | Vista | Contenitore | Eccedenza |
+  |---|---|---|
+  | Quadro classe | «Mostra come tabella» (`.tabella-alternativa > .tabella-equivalente`) | +254 px |
+  | Studenti | `.tabella-alternativa > .tabella-equivalente.matrice` | +188 px |
+  | Profilo dell'alunno | `.tabella-alternativa > .tabella-equivalente` | +360 px |
+  | Nucleo dell'alunno | `.tabella-alternativa > .tabella-equivalente` | +336 px |
+  | Criterio dell'alunno | `.tabella-alternativa > .tabella-equivalente` | +329 px |
+  | Criterio dell'alunno | sequenza delle osservazioni (`.scorrimento > table.osservazioni`) | +63 px |
+  | Esito dell'attività | `.tabella-alternativa > .tabella-equivalente` | +243 px |
+  Nessuno scorrimento a 320 px in: scheda «Attività», «Valutazioni», griglia.
