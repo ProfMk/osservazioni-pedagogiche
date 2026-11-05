@@ -597,7 +597,7 @@ test('Passo 6: utente con due scuole — pulsanti con nome e ruoli, scelta da ta
   await pagina.keyboard.press('Enter');
   await pagina.waitForFunction(() => document.querySelector('#istituto-attivo bdi'));
   await stabile(pagina);
-  assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_MY_LEVEL_CLASSES); // lavoro 2: in Beta è COORDINATOR (partenza «classi»)
   assert.equal(await pagina.textContent('#istituto-attivo bdi'), 'Istituto Comprensivo Beta');
   assert.equal(await pagina.isVisible('#cambia-istituto'), true);
   assert.equal(await pagina.textContent('#cambia-istituto'), CATALOGO.UI_CHANGE_TENANT);
@@ -612,7 +612,7 @@ test('Passo 6: utente con due scuole — pulsanti con nome e ruoli, scelta da ta
   await nessunaViolazione(pagina, 'cambia istituto');
   await pagina.goBack();
   await pagina.waitForFunction((t) => document.querySelector('#contenuto h2') && document.querySelector('#contenuto h2').textContent === t,
-    CATALOGO.UI_TEACHINGS);
+    CATALOGO.UI_MY_LEVEL_CLASSES);
 
   // Di nuovo l'elenco, poi l'altra scuola.
   await pagina.click('#cambia-istituto');
@@ -668,7 +668,7 @@ test('Passo 6: PLATFORM_ADMIN — prima vista l\'Amministrazione; entra in una s
   await pagina.waitForFunction(() => document.querySelector('#istituto-attivo bdi'));
   await stabile(pagina);
   assert.equal(await pagina.textContent('#istituto-attivo bdi'), 'Istituto Comprensivo Beta');
-  assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+  assert.equal(await titoloVista(pagina), CATALOGO.UI_ADMINISTRATION); // lavoro 2: partenza «scuole» anche con una scuola attiva
   assert.equal(await pagina.isVisible('#cambia-istituto'), true);
   assert.deepEqual(pagina.errori, []);
   await pagina.context().close();
@@ -1279,5 +1279,129 @@ test('Lavoro 2: reflow — in modalità scheda nome, criteri ed esito nell\'ordi
     await pagina.context().close();
   } finally {
     await rimuovi();
+  }
+});
+
+// --- Lavoro 2: partenza per ruolo e «Classi del mio livello» -------------------------------
+
+const frammento = (pagina) => new URL(pagina.url()).hash;
+
+/** Clic sul titolo dell'app da un'altra vista: si torna alla partenza. */
+async function titoloRiportaA(pagina, atteso) {
+  await vaiA(pagina, '#/password');
+  await pagina.click('#titolo-app');
+  await pagina.waitForFunction((h) => location.hash === h, atteso);
+  await stabile(pagina);
+}
+
+test('Lavoro 2: partenza per ruolo — ogni account atterra dove deciso dal server; il titolo dell\'app riporta lì; un indirizzo valido ha la precedenza', async () => {
+  const casi = [
+    ['tenant.admin.a@alfa.test', '#/amministrazione/quadro', 'UI_ADMINISTRATION'],
+    ['coordinator.a@alfa.test', '#/classi', 'UI_MY_LEVEL_CLASSES'],
+    ['teacher.math.a@alfa.test', '#/insegnamenti', 'UI_TEACHINGS'],
+  ];
+  for (const [email, hash, titolo] of casi) {
+    const pagina = await nuovaPagina();
+    await entraCome(pagina, email);
+    assert.deepEqual([frammento(pagina), await titoloVista(pagina)], [hash, CATALOGO[titolo]], email);
+    if (hash === '#/amministrazione/quadro') {
+      assert.equal(await pagina.getAttribute('.menu-amministrazione [aria-current="page"]', 'href'), '#/amministrazione/quadro');
+    }
+    // Il collegamento verso «Classi del mio livello» solo per chi è COORDINATOR.
+    assert.equal(!!(await pagina.$('.collegamento-vista')), email === 'coordinator.a@alfa.test', `${email}: collegamento tra le viste`);
+    await senzaTestiMancanti(pagina, `partenza di ${email}`);
+    await nessunaViolazione(pagina, `partenza di ${email}`);
+    await titoloRiportaA(pagina, hash);
+    assert.equal(await titoloVista(pagina), CATALOGO[titolo], `${email}: titolo dell'app`);
+    assert.deepEqual(pagina.errori, []);
+    await pagina.context().close();
+  }
+
+  // PLATFORM_ADMIN: senza scuola attiva resta l'Amministrazione di oggi; entrato in una scuola, «Scuole».
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, 'platform.admin@platform.test');
+  assert.equal(frammento(pagina), '#/amministrazione');
+  await pagina.click('#contenuto .elenco-istituti button.scelta:has-text("Istituto Comprensivo Alfa")');
+  await pagina.waitForFunction(() => location.hash === '#/amministrazione/scuole' && document.querySelector('#istituto-attivo bdi'));
+  await stabile(pagina);
+  assert.equal(await pagina.getAttribute('.menu-amministrazione [aria-current="page"]', 'href'), '#/amministrazione/scuole');
+  await titoloRiportaA(pagina, '#/amministrazione/scuole');
+  await nessunaViolazione(pagina, 'partenza del PLATFORM_ADMIN con una scuola attiva');
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+
+  // Un indirizzo valido nell'URL vince sulla partenza; uno non riconosciuto porta alla partenza.
+  for (const [indirizzo, atteso] of [['#/insegnamenti', '#/insegnamenti'], ['#/sconosciuto/1', '#/classi']]) {
+    const p = await nuovaPagina();
+    await p.goto(`${srv.origine}/${indirizzo}`);
+    await p.fill('#campo-email', 'coordinator.a@alfa.test');
+    await p.fill('#campo-password', 'Sviluppo!2026');
+    await p.click('form.modulo-accesso button[type=submit]');
+    await p.waitForSelector('#intestazione:not([hidden])');
+    await stabile(p);
+    assert.equal(frammento(p), atteso, indirizzo);
+    assert.deepEqual(p.errori, []);
+    await p.context().close();
+  }
+});
+
+test('Lavoro 2: «Classi del mio livello» — il COORDINATOR va da Classi alla classe e alla scheda esistente, poi torna a «Insegnamenti»; classe senza insegnamenti', async () => {
+  const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0].id;
+  const vuota = (await pool.query(
+    "INSERT INTO classes (tenant_id, school_level_id, nome) VALUES ($1, (SELECT id FROM school_levels WHERE tenant_id = $1 AND nome = 'Primaria'), '2Z') RETURNING id", [alfa]
+  )).rows[0].id;
+  try {
+    const pagina = await nuovaPagina();
+    await entraCome(pagina, 'coordinator.a@alfa.test');
+    assert.equal(frammento(pagina), '#/classi');
+    const sezioni = await pagina.$$eval('#contenuto section.sezione', (s) => s.map((x) => [x.querySelector('h3').textContent, [...x.querySelectorAll('a.scelta .titolo')].map((a) => a.textContent)]));
+    assert.deepEqual(sezioni, [['Primaria', ['2A', '2B', '2Z']]], 'solo il livello coordinato, con le sue classi attive');
+    assert.equal(await pagina.$$eval('#contenuto select', (s) => s.length), 0, 'nessun <select>');
+
+    // Classe → insegnamenti (materia, docente, anno) → scheda esistente della classe.
+    await pagina.click('#contenuto a.scelta:has-text("2A")');
+    await pagina.waitForFunction(() => /^#\/classi\/\d+$/.test(location.hash));
+    await stabile(pagina);
+    assert.equal(await titoloVista(pagina), '2A');
+    assert.deepEqual(await pagina.$$eval('nav.percorso > *:not(.separatore)', (n) => n.map((x) => x.textContent)), [CATALOGO.UI_MY_LEVEL_CLASSES, '2A']);
+    const insegnamenti = await pagina.$$eval('#contenuto a.scelta', (n) => n.map((a) => [a.querySelector('.titolo').textContent, a.querySelector('.sottotitolo').textContent]));
+    assert.ok(insegnamenti.some(([m, s]) => m === 'Matematica' && s.includes('2026/2027')), JSON.stringify(insegnamenti));
+    await senzaTestiMancanti(pagina, 'classe del livello');
+    await nessunaViolazione(pagina, 'classe del livello');
+    await pagina.click('#contenuto a.scelta:has-text("Matematica")');
+    await pagina.waitForFunction(() => /^#\/classe\/\d+\/quadro$/.test(location.hash));
+    await stabile(pagina);
+    const briciole = await pagina.$$eval('nav.percorso > *:not(.separatore)', (n) => n.map((x) => x.textContent));
+    assert.deepEqual(briciole, [CATALOGO.UI_TEACHINGS, 'Matematica', '2A'], 'le briciole della scheda classe non cambiano');
+    assert.ok(await pagina.$('.schede [role=tab][aria-selected="true"]'));
+
+    // Tasto Indietro: di nuovo la classe del livello; poi «Insegnamenti» e ritorno a «Classi del mio livello».
+    await pagina.goBack();
+    await pagina.waitForFunction(() => /^#\/classi\/\d+$/.test(location.hash) && document.querySelector('#contenuto h2'));
+    await stabile(pagina);
+    await pagina.click('nav.percorso a');
+    await pagina.waitForFunction(() => location.hash === '#/classi');
+    await stabile(pagina);
+    await pagina.click('.collegamento-vista a');
+    await pagina.waitForFunction(() => location.hash === '#/insegnamenti');
+    await stabile(pagina);
+    assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);
+    assert.equal(await pagina.textContent('.collegamento-vista a'), CATALOGO.UI_MY_LEVEL_CLASSES);
+    await pagina.click('.collegamento-vista a');
+    await pagina.waitForFunction(() => location.hash === '#/classi');
+    await stabile(pagina);
+    assert.equal(await pagina.textContent('.collegamento-vista a'), CATALOGO.UI_TEACHINGS);
+
+    // Classe senza insegnamenti: il messaggio del catalogo.
+    await pagina.click('#contenuto a.scelta:has-text("2Z")');
+    await pagina.waitForFunction(() => /^#\/classi\/\d+$/.test(location.hash));
+    await stabile(pagina);
+    assert.equal(await pagina.textContent('#contenuto p.stato'), CATALOGO.UI_CLASS_NO_TEACHINGS);
+    await senzaTestiMancanti(pagina, 'classe senza insegnamenti');
+    await nessunaViolazione(pagina, 'classe senza insegnamenti');
+    assert.deepEqual(pagina.errori, []);
+    await pagina.context().close();
+  } finally {
+    await pool.query('DELETE FROM classes WHERE id = $1', [vuota]);
   }
 });

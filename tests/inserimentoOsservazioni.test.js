@@ -279,3 +279,74 @@ test('PUT della cella: il coordinatore e l\'amministratore non scrivono (403), s
     assert.deepEqual([r.status, r.corpo.errore.codice, r.corpo.riga], [409, 'ERR_SCHOOL_YEAR_CLOSED', undefined]);
   });
 });
+
+// ===========================================================================
+// PARTENZA PER RUOLO (passo 4)
+// ===========================================================================
+
+const { login } = require('./support/http');
+const { PARTENZA } = require('../server/routes/auth');
+
+/** partenza dopo il login (vista restituita dal login) e da /auth/me, che devono coincidere. */
+async function partenzaDopoLogin(email) {
+  const { sessione, risposta } = await login(srv.base, email);
+  assert.equal(risposta.status, 200, email);
+  const me = await sessione.get('/auth/me');
+  assert.equal(me.corpo.partenza, risposta.corpo.partenza, `${email}: login e /auth/me`);
+  return { sessione, partenza: risposta.corpo.partenza, vista: risposta.corpo };
+}
+
+async function cambiaTenant(sessione, slug) {
+  const t = (await sessione.get('/auth/me')).corpo.tenantsDisponibiliPerSwitch.find((x) => x.slug === slug);
+  const r = await sessione.post('/auth/switch-tenant', { tenantId: t.tenant_id ?? t.id });
+  assert.equal(r.status, 200);
+  assert.equal((await sessione.get('/auth/me')).corpo.partenza, r.corpo.partenza);
+  return r.corpo.partenza;
+}
+
+test('Partenza: codici stabili per ruolo — PLATFORM_ADMIN (con e senza scuola), TENANT_ADMIN, COORDINATOR, TEACHER, utente con due scuole', async () => {
+  assert.deepEqual(Object.values(PARTENZA), ['scuole', 'quadro', 'classi', 'insegnamenti']);
+  const piattaforma = await partenzaDopoLogin('platform.admin@platform.test');
+  assert.deepEqual([piattaforma.vista.activeTenantId, piattaforma.partenza], [null, 'scuole'], 'senza scuola attiva');
+  assert.equal(await cambiaTenant(piattaforma.sessione, 'alfa'), 'scuole', 'anche con una scuola attiva');
+
+  assert.equal((await partenzaDopoLogin('tenant.admin.a@alfa.test')).partenza, 'quadro');
+  assert.equal((await partenzaDopoLogin('tenant.admin.b@beta.test')).partenza, 'quadro');
+  assert.equal((await partenzaDopoLogin(COORDINATORE)).partenza, 'classi');
+  assert.equal((await partenzaDopoLogin(DOCENTE)).partenza, 'insegnamenti');
+
+  // Due scuole: nessuna scuola attiva dopo il login (resta la scelta dell'istituto), poi il ruolo di ognuna.
+  const multi = await partenzaDopoLogin('multitenant.user@example.test');
+  assert.deepEqual([multi.vista.activeTenantId, multi.partenza], [null, null]);
+  assert.equal(await cambiaTenant(multi.sessione, 'alfa'), 'insegnamenti', 'TEACHER in Alfa');
+  assert.equal(await cambiaTenant(multi.sessione, 'beta'), 'classi', 'COORDINATOR in Beta');
+  assert.equal(await cambiaTenant(multi.sessione, 'alfa'), 'insegnamenti');
+});
+
+test('Partenza: precedenza TENANT_ADMIN > COORDINATOR > TEACHER nel tenant attivo; i ruoli di un altro tenant non contano; nessun campo esistente cambia', async () => {
+  const coordinatore = (await uno('SELECT id FROM accounts WHERE email = $1', [COORDINATORE])).id;
+  const alfa = (await uno("SELECT id FROM tenants WHERE slug = 'alfa'")).id;
+  const teaching = (await uno("SELECT t.id FROM teachings t JOIN classes c ON c.id = t.class_id WHERE t.tenant_id = $1 AND c.nome = '2A' LIMIT 1", [alfa])).id;
+  const aggiungi = async (ruolo, colonne, valori) => (await uno(
+    `INSERT INTO role_assignments (account_id, role_id, scope_type, tenant_id, ${colonne}) VALUES ($1, (SELECT id FROM roles WHERE codice = $2), $3, $4, $5) RETURNING id`,
+    [coordinatore, ruolo, ...valori]
+  )).id;
+  const prima = (await partenzaDopoLogin(COORDINATORE)).vista;
+  const docente = await aggiungi('TEACHER', 'scope_teaching_id', ['TEACHING', alfa, teaching]);
+  try {
+    assert.equal((await partenzaDopoLogin(COORDINATORE)).partenza, 'classi', 'COORDINATOR prima di TEACHER');
+    const admin = await aggiungi('TENANT_ADMIN', 'scope_tenant_id', ['TENANT', alfa, alfa]);
+    try {
+      const dopo = (await partenzaDopoLogin(COORDINATORE)).vista;
+      assert.equal(dopo.partenza, 'quadro', 'TENANT_ADMIN prima di tutti');
+      // Solo un campo in più: gli altri campi di /auth/me restano quelli di prima.
+      assert.deepEqual(Object.keys(dopo).sort(), Object.keys(prima).sort());
+      assert.ok(Object.keys(prima).includes('partenza'));
+    } finally {
+      await pool.query('DELETE FROM role_assignments WHERE id = $1', [admin]);
+    }
+  } finally {
+    await pool.query('DELETE FROM role_assignments WHERE id = $1', [docente]);
+  }
+  assert.equal((await partenzaDopoLogin(COORDINATORE)).partenza, 'classi');
+});

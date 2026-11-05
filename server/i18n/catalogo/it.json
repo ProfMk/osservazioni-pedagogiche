@@ -402,6 +402,9 @@
     "UI_CLASS_DEACTIVATE_CONFIRM": "Disattivare la classe {nome}? Resterà leggibile nello storico.",
     "UI_CLASS_DELETE_CONFIRM": "Eliminare la classe {nome}? L'operazione non si può annullare.",
     "UI_READ_ONLY": "Sola lettura",
-    "UI_CELL_SAVED": "Salvato."
+    "UI_CELL_SAVED": "Salvato.",
+    "UI_MY_LEVEL_CLASSES": "Classi del mio livello",
+    "UI_MY_LEVEL_NONE": "Non coordini nessun livello in questo istituto.",
+    "UI_CLASS_NO_TEACHINGS": "Questa classe non ha ancora insegnamenti."
   }
 }

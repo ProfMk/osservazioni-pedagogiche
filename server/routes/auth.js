@@ -55,6 +55,23 @@ function cancellaCookieSessione(res) {
   }));
 }
 
+/**
+ * Partenza per ruolo (lavoro 2, nota 1): codice stabile (non un testo) della prima vista, deciso dal
+ * server. PLATFORM_ADMIN -> 'scuole' (anche con una scuola attiva); nel tenant attivo, con precedenza
+ * TENANT_ADMIN > COORDINATOR > TEACHER: 'quadro', 'classi', 'insegnamenti'. Senza tenant attivo (e non
+ * PLATFORM_ADMIN) null: resta la scelta dell'istituto, come prima.
+ */
+const PARTENZA = Object.freeze({ SCUOLE: 'scuole', QUADRO: 'quadro', CLASSI: 'classi', INSEGNAMENTI: 'insegnamenti' });
+
+function partenzaDi({ isPlatformAdmin: admin, activeTenantId, ruoliNelTenantAttivo }) {
+  if (admin) return PARTENZA.SCUOLE;
+  if (!activeTenantId) return null;
+  const ruoli = new Set(ruoliNelTenantAttivo.map((r) => r.ruolo));
+  if (ruoli.has('TENANT_ADMIN')) return PARTENZA.QUADRO;
+  if (ruoli.has('COORDINATOR')) return PARTENZA.CLASSI;
+  return PARTENZA.INSEGNAMENTI;
+}
+
 /** Costruisce la vista "me": account, membership, tenant attivo, permessi effettivi, csrfToken. */
 async function costruisciVistaMe(client, { account, sessione }) {
   const ruoliPerTenant = await getRuoliPerTenant(client, account.id);
@@ -89,6 +106,7 @@ async function costruisciVistaMe(client, { account, sessione }) {
     activeTenantId: sessione.active_tenant_id,
     permessiNelTenantAttivo: permessi,
     ruoliNelTenantAttivo,
+    partenza: partenzaDi({ isPlatformAdmin: admin, activeTenantId: sessione.active_tenant_id, ruoliNelTenantAttivo }),
     csrfToken: generaTokenCsrf(sessione.id),
     lingua: {
       codice: lingua.lingua,
@@ -220,3 +238,4 @@ router.post('/switch-tenant', autenticazione, richiedePasswordAggiornata, richie
 }));
 
 module.exports = router;
+module.exports.PARTENZA = PARTENZA;

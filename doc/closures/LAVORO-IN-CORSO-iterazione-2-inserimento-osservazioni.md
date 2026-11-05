@@ -11,8 +11,8 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 | 0 | Avvio, piano | `7b15a4c` | 206/206 | 22/22 |
 | 1 | Server: sola lettura ed esito sul posto | `ea3a90f` | 213/213 | 22/22 |
 | 2 | Client: avviso di sola lettura, salvataggio sul posto | `881aade` | 215/215 | 26/26 |
-| 3 | Reflow della griglia | (questo commit) | 215/215 | 28/28 |
-| 4 | Partenza per ruolo, «Classi del mio livello» | — | — | — |
+| 3 | Reflow della griglia | `42ad8c4` | 215/215 | 28/28 |
+| 4 | Partenza per ruolo, «Classi del mio livello» | (questo commit) | 217/217 | 30/30 |
 | 5 | Nome dell'anno modificabile | — | — | — |
 | 6 | Etichette e aiuto per livello e ordine | — | — | — |
 | 7 | Chiusura (README, numeri finali) | — | — | — |
@@ -113,6 +113,30 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 - Tabelle a 320 px **non corrette** (fuori ambito, solo segnalate; sonda temporanea fuori dal repository):
   vedi «Da riprendere».
 
+## Passo 4 — Partenza per ruolo e «Classi del mio livello»
+- Server (`server/routes/auth.js`): `PARTENZA` (`scuole`, `quadro`, `classi`, `insegnamenti`) e `partenzaDi(...)`;
+  `costruisciVistaMe` aggiunge `partenza` (login, `/auth/me`, cambio password, `switch-tenant`). PLATFORM_ADMIN →
+  `scuole` sempre; nel tenant attivo TENANT_ADMIN > COORDINATOR > TEACHER (`quadro`, `classi`, `insegnamenti`);
+  senza tenant attivo e senza PLATFORM_ADMIN → `null`. Nessun altro campo cambia.
+- Client (`public/js/app.js`):
+  - `rottaDiPartenza()`: unica traduzione codice → rotta (`#/amministrazione/scuole`, `#/amministrazione/quadro`,
+    `#/classi`, `#/insegnamenti`).
+  - `daHash` restituisce `null` per un indirizzo vuoto o non riconosciuto (riconosce ora anche `#/insegnamenti`,
+    `#/classi`, `#/classi/<id>`); `popstate` e `avviaApp` usano `daHash(...) || rottaDiPartenza()`;
+    `avviaApp({ radice })` (dopo l'accesso con scelta della scuola e «Cambia istituto») usa `rottaDiPartenza()`;
+    il clic sul titolo, con una scuola attiva, `rottaDiPartenza()`. **Senza scuola attiva** il ramo di
+    `avviaApp` e del titolo resta quello di prima (PLATFORM_ADMIN → `#/amministrazione`, altri → `#/istituti`).
+  - Viste nuove `VISTE.classi` (`#/classi`) e `VISTE.classeDelLivello` (`#/classi/<classId>`): livelli da
+    `ruoliNelTenantAttivo` (`ruolo === 'COORDINATOR'` con `scope_school_level_id`), nomi da `GET /school-levels`,
+    classi da `GET /school-levels/:id/classes`, insegnamenti da `GET /classes/:id/teachings`, collegamenti alla
+    scheda esistente `{ tipo: 'classe', teachingId, scheda: 'quadro' }`. Briciole «Classi del mio livello» › classe.
+  - `collegamentoVista(...)`: collegamento «Classi del mio livello» in «Insegnamenti» e «Insegnamenti» in
+    «Classi del mio livello», solo per chi è COORDINATOR nel tenant attivo.
+- Test: due test di integrazione in `tests/inserimentoOsservazioni.test.js` (tutti gli account richiesti, con
+  precedenza dei ruoli e un ruolo di prova aggiunto e rimosso nel test); due E2E nuovi (partenze, titolo,
+  indirizzo valido e non riconosciuto; percorso del COORDINATOR con classe senza insegnamenti creata e rimossa
+  nel test).
+
 ## Decisioni prese da Claude Code
 1. **Anno in preparazione nella regola**: `motivoDiSolaLettura` restituisce
    `ERR_SCHOOL_YEAR_IN_PREPARATION` (lo stesso codice del 409 di oggi). Non è raggiungibile dalle
@@ -143,6 +167,16 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
     ripetuta e `aria-hidden`; `td.esito` contiene ora `span.valori-esito`, che il salvataggio aggiorna.
 13. (Passo 3) Nei miei E2E del passo 2 il testo dell'esito si legge da `td.esito .valori-esito` (non da tutta
     la cella, che in modalità scheda contiene anche l'etichetta). Erano test nuovi di questo lavoro.
+14. (Passo 4) Senza tenant attivo `partenza` è `null` per chi non è PLATFORM_ADMIN (il client lo ignora: resta
+    la scelta dell'istituto); per il PLATFORM_ADMIN è `scuole`, ma il client senza scuola attiva continua ad
+    aprire `#/amministrazione` come prima (lo verifica l'E2E esistente).
+15. (Passo 4) Il ruolo COORDINATOR basta per `classi` (il server non controlla lo scope del ruolo); la vista
+    usa poi solo i ruoli con `scope_school_level_id`. Con nessun livello mostra `UI_MY_LEVEL_NONE`.
+16. (Passo 4) Il nome della classe della vista `#/classi/<id>` si trova tra le classi dei livelli coordinati
+    (le stesse richieste della vista «Classi»); una classe fuori dai propri livelli dà 404
+    (`ERR_NOT_FOUND`, `UI_RESOURCE_CLASS`) senza chiamare altre API.
+17. (Passo 4) Testo dei collegamenti di andata e ritorno: il nome della vista di destinazione (`UI_MY_LEVEL_CLASSES`,
+    `UI_TEACHINGS`).
 
 ## Asserzioni esistenti modificate
 1. `tests/immutabilita.test.js`, test «Anno attivo: salvataggio e cancellazione (valore null) di
@@ -152,6 +186,20 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
    - Motivo: il prompt (1d) aggiunge `cella` e `riga` alla risposta, anche per la cancellazione; il
      confronto per intero non può restare. Si conservano i due fatti verificati prima: `eliminato`
      vero e nessun `observationId`.
+2. `tests/e2e.test.js`, test «Passo 6: utente con due scuole — pulsanti con nome e ruoli, scelta da tastiera,
+   «Cambia istituto» e tasto Indietro» (due asserzioni).
+   - Prima: dopo la scelta di Beta `assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);` e, dopo
+     `goBack()`, attesa del titolo `CATALOGO.UI_TEACHINGS`.
+   - Dopo: `CATALOGO.UI_MY_LEVEL_CLASSES` in entrambi i punti.
+   - Motivo: decisione «Partenza per ruolo» (passo 4): in Beta `multitenant.user` è COORDINATOR e atterra su
+     «Classi del mio livello»; il tasto Indietro torna a quella vista. L'ultima asserzione (Alfa, TEACHER →
+     «Insegnamenti») resta invariata.
+3. `tests/e2e.test.js`, test «Passo 6: PLATFORM_ADMIN — prima vista l'Amministrazione; entra in una scuola con
+   lo stesso elenco di pulsanti».
+   - Prima: dopo l'ingresso in Beta `assert.equal(await titoloVista(pagina), CATALOGO.UI_TEACHINGS);`
+   - Dopo: `assert.equal(await titoloVista(pagina), CATALOGO.UI_ADMINISTRATION);`
+   - Motivo: partenza `scuole` per il PLATFORM_ADMIN anche con una scuola attiva (prompt, 4a e 4b). Le
+     asserzioni sulla prima vista senza scuola (`#/amministrazione`) restano invariate.
 
 ## Preparazione dati adattata
 Nessuna.
@@ -161,6 +209,9 @@ Nessuna.
 |---|---|---|---|
 | `UI_READ_ONLY` | (nuova) | Sola lettura | 2 |
 | `UI_CELL_SAVED` | (nuova) | Salvato. | 2 |
+| `UI_MY_LEVEL_CLASSES` | (nuova) | Classi del mio livello | 4 |
+| `UI_MY_LEVEL_NONE` | (nuova) | Non coordini nessun livello in questo istituto. | 4 |
+| `UI_CLASS_NO_TEACHINGS` | (nuova) | Questa classe non ha ancora insegnamenti. | 4 |
 
 ## Da riprendere
 - **Altre tabelle che a 320 px scorrono di lato** (fuori ambito, non corrette; la pagina non scorre, scorre
@@ -175,3 +226,6 @@ Nessuna.
   | Criterio dell'alunno | sequenza delle osservazioni (`.scorrimento > table.osservazioni`) | +63 px |
   | Esito dell'attività | `.tabella-alternativa > .tabella-equivalente` | +243 px |
   Nessuno scorrimento a 320 px in: scheda «Attività», «Valutazioni», griglia.
+- **Da valutare (passo 4)**: il PLATFORM_ADMIN che entra in una scuola atterra su «Scuole» (come deciso),
+  cioè sull'elenco delle scuole della piattaforma, con la scuola attiva solo nell'intestazione. Se si
+  preferisce il Quadro della scuola appena scelta, basta cambiare il codice nel server (`partenzaDi`).

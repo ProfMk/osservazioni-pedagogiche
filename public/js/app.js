@@ -84,14 +84,19 @@
         return '#/amministrazione' + (r.sezione ? '/' + r.sezione : '') + (r.livelloId ? '/' + r.livelloId : '') + (r.annoId ? '?anno=' + r.annoId : '');
       case 'password': return '#/password';
       case 'istituti': return '#/istituti';
+      case 'classi': return '#/classi';
+      case 'classeDelLivello': return '#/classi/' + r.classId;
       default: return '#/insegnamenti';
     }
   }
 
+  /** Rotta dell'indirizzo, oppure null se l'indirizzo è vuoto o non riconosciuto (allora vale la partenza). */
   function daHash(hash) {
     var parti = String(hash || '').replace(/^#\/?/, '').split('?');
     var p = parti[0].split('/');
     var id = function (i) { return Number(p[i]); };
+    if (p[0] === 'insegnamenti') return { tipo: 'insegnamenti' };
+    if (p[0] === 'classi') return p[1] ? { tipo: 'classeDelLivello', classId: id(1) } : { tipo: 'classi' };
     if (p[0] === 'materia' && p[1]) return { tipo: 'materia', subjectId: id(1) };
     if (p[0] === 'amministrazione') {
       var amministrazione = { tipo: 'amministrazione' };
@@ -114,7 +119,20 @@
       var schede = ['quadro', 'studenti', 'attivita', 'valutazioni'];
       return { tipo: 'classe', teachingId: id(1), scheda: schede.indexOf(p[2]) >= 0 ? p[2] : 'quadro' };
     }
-    return { tipo: 'insegnamenti' };
+    return null;
+  }
+
+  /**
+   * Partenza per ruolo (nota 1): il server decide il codice (stato.me.partenza), qui solo la sua rotta.
+   * Vale per l'indirizzo vuoto o non riconosciuto, dopo l'accesso, dopo «Cambia istituto» e per il titolo.
+   */
+  function rottaDiPartenza() {
+    switch (stato.me && stato.me.partenza) {
+      case 'scuole': return { tipo: 'amministrazione', sezione: 'scuole' };
+      case 'quadro': return { tipo: 'amministrazione', sezione: 'quadro' };
+      case 'classi': return { tipo: 'classi' };
+      default: return { tipo: 'insegnamenti' };
+    }
   }
 
   /** Va a un livello: nuova voce nella storia (o sostituzione), poi disegna. */
@@ -131,7 +149,7 @@
 
   window.addEventListener('popstate', function (evento) {
     if (!stato.me || stato.me.deveCambiarePassword) return;
-    var rotta = evento.state && evento.state.rotta ? evento.state.rotta : daHash(location.hash);
+    var rotta = evento.state && evento.state.rotta ? evento.state.rotta : (daHash(location.hash) || rottaDiPartenza());
     if (!stato.me.activeTenantId && !senzaIstituto(rotta)) return;
     disegna(rotta);
   });
@@ -359,11 +377,12 @@
       // Nessuna scuola attiva: PLATFORM_ADMIN all'Amministrazione, chi ha più scuole alla scelta.
       var richiesta = daHash(location.hash);
       var iniziale = stato.me.isPlatformAdmin ? { tipo: 'amministrazione' } : { tipo: 'istituti' };
-      await vai(senzaIstituto(richiesta) ? richiesta : iniziale, { sostituisci: true });
+      await vai(richiesta && senzaIstituto(richiesta) ? richiesta : iniziale, { sostituisci: true });
       return;
     }
     stato.insegnamenti = null;
-    var rotta = opzioni && opzioni.radice ? { tipo: 'insegnamenti' } : daHash(location.hash);
+    // Un indirizzo valido ha la precedenza; dopo l'accesso o «Cambia istituto» (radice) vale la partenza.
+    var rotta = opzioni && opzioni.radice ? rottaDiPartenza() : (daHash(location.hash) || rottaDiPartenza());
     await vai(rotta, { sostituisci: true });
   }
 
@@ -557,6 +576,74 @@
 
   var VISTE = {};
 
+  // --- «Classi del mio livello» (COORDINATOR, nota 1): solo API esistenti, nessun dato nuovo ------------
+
+  var RADICE_CLASSI = { chiave: 'UI_MY_LEVEL_CLASSES', rotta: { tipo: 'classi' } };
+
+  /** Livelli di cui l'utente è COORDINATOR nel tenant attivo (dai suoi ruoli, non da tentativi che rispondono 403). */
+  function livelliCoordinati() {
+    var ids = [];
+    (stato.me.ruoliNelTenantAttivo || []).forEach(function (r) {
+      if (r.ruolo === 'COORDINATOR' && r.scope_school_level_id && ids.indexOf(r.scope_school_level_id) < 0) ids.push(r.scope_school_level_id);
+    });
+    return ids;
+  }
+
+  /** Andata e ritorno tra «Insegnamenti» e «Classi del mio livello»: solo per chi è COORDINATOR qui. */
+  function collegamentoVista(rotta, chiave) {
+    if (!livelliCoordinati().length) return null;
+    return el('p', { classe: 'collegamento-vista' }, [t('a', chiave, null, {
+      href: versoHash(rotta), classe: 'collegamento', onclick: function (e) { e.preventDefault(); vai(rotta); },
+    })]);
+  }
+
+  /** Livelli coordinati con le loro classi attive, nell'ordine dei livelli del tenant. */
+  async function classiDeiLivelliCoordinati() {
+    var ids = livelliCoordinati();
+    var livelli = (await api('/school-levels')).filter(function (l) { return ids.indexOf(l.id) >= 0; });
+    var classi = await Promise.all(livelli.map(function (l) { return api('/school-levels/' + l.id + '/classes'); }));
+    return livelli.map(function (l, i) { return { livello: l, classi: classi[i] }; });
+  }
+
+  VISTE.classi = async function () {
+    cornice([RADICE_CLASSI]);
+    var gruppi = await classiDeiLivelliCoordinati();
+    return [
+      t('h2', 'UI_MY_LEVEL_CLASSES'),
+      collegamentoVista({ tipo: 'insegnamenti' }, 'UI_TEACHINGS'),
+      gruppi.length ? null : t('p', 'UI_MY_LEVEL_NONE', null, { classe: 'stato' }),
+    ].concat(gruppi.map(function (g) {
+      var idTitolo = 'livello-coordinato-' + g.livello.id;
+      return el('section', { classe: 'sezione', 'aria-labelledby': idTitolo }, [
+        contenuto('h3', g.livello.nome, { id: idTitolo }),
+        g.classi.length ? el('div', { classe: 'elenco' }, g.classi.map(function (c) {
+          var rotta = { tipo: 'classeDelLivello', classId: c.id };
+          return el('a', { href: versoHash(rotta), classe: 'scelta', onclick: function (e) { e.preventDefault(); vai(rotta); } }, [
+            el('span', { classe: 'titolo' }, [c.nome]),
+          ]);
+        })) : t('p', 'UI_NO_CLASSES', null, { classe: 'stato' }),
+      ]);
+    }));
+  };
+
+  /** Una classe del livello: i suoi insegnamenti, verso la scheda della classe già esistente. */
+  VISTE.classeDelLivello = async function (r) {
+    var classe = null;
+    (await classiDeiLivelliCoordinati()).forEach(function (g) {
+      g.classi.forEach(function (c) { if (c.id === r.classId) classe = c; });
+    });
+    if (!classe) throw new ErroreApi({ codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_CLASS' } }, 404);
+    var elenco = await api('/classes/' + classe.id + '/teachings');
+    var indietro = cornice([RADICE_CLASSI, { contenuto: classe.nome }]);
+    return [indietro, el('h2', {}, [classe.nome]), elenco.length ? el('div', { classe: 'elenco' }, elenco.map(function (tn) {
+      var rotta = { tipo: 'classe', teachingId: tn.teaching_id, scheda: 'quadro' };
+      return el('a', { href: versoHash(rotta), classe: 'scelta', onclick: function (e) { e.preventDefault(); vai(rotta); } }, [
+        contenuto('span', tn.materia, { classe: 'titolo' }),
+        t('span', 'UI_CLASS_SUBTITLE', { anno: tn.anno_scolastico, docente: tn.docente_nome + ' ' + tn.docente_cognome }, { classe: 'sottotitolo' }),
+      ]);
+    })) : t('p', 'UI_CLASS_NO_TEACHINGS', null, { classe: 'stato' })];
+  };
+
   VISTE.insegnamenti = async function () {
     cornice([RADICE]);
     var elenco = await insegnamenti();
@@ -566,6 +653,7 @@
     });
     return [
       t('h2', 'UI_TEACHINGS'),
+      collegamentoVista({ tipo: 'classi' }, 'UI_MY_LEVEL_CLASSES'),
       materie.length ? el('div', { classe: 'elenco' }, materie.map(function (m) {
         return el('a', { href: versoHash({ tipo: 'materia', subjectId: m.id }), classe: 'scelta', onclick: function (e) { e.preventDefault(); vai({ tipo: 'materia', subjectId: m.id }); } },
           [contenuto('span', m.materia, { classe: 'titolo' })]);
@@ -1825,7 +1913,7 @@
   $('cambia-password').addEventListener('click', function () { vai({ tipo: 'password' }); });
   $('titolo-app').addEventListener('click', function () {
     if (!stato.me || stato.me.deveCambiarePassword || senzaScuole()) return;
-    if (stato.me.activeTenantId) vai({ tipo: 'insegnamenti' });
+    if (stato.me.activeTenantId) vai(rottaDiPartenza());
     else vai(stato.me.isPlatformAdmin ? { tipo: 'amministrazione' } : { tipo: 'istituti' });
   });
   $('cambia-istituto').addEventListener('click', function () { vai({ tipo: 'istituti' }); });
