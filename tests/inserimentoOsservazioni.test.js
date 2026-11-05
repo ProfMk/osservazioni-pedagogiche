@@ -1,0 +1,241 @@
+'use strict';
+
+/**
+ * Iterazione 2, lavoro 2 — inserimento osservazioni (server).
+ *
+ * Parte 1: regola unica di scrittura { consentita, motivo } — nella griglia e nella nuova
+ *          GET /teachings/:id/scrittura; il motivo dipende solo dallo stato (lo ricevono tutti
+ *          i ruoli che leggono), consentita anche dal permesso con l'ambito completo.
+ * Parte 2: salvataggio sul posto — il PUT della cella restituisce la cella e l'esito della riga,
+ *          identici a quelli della griglia letta subito dopo (inserimento, modifica, cancellazione;
+ *          scala 0–2 di Alfa e 1–4 di Beta).
+ *
+ * Database proprio di questo file (un processo per file): ogni test che cambia lo stato
+ * dell'anno lo ripristina.
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+
+require('./support/pglite').installa();
+const { pool } = require('../server/db');
+const { avviaServer, loginESwitch } = require('./support/http');
+const dominio = require('../server/queries/dominio');
+
+const CATALOGO = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'server', 'i18n', 'catalogo', 'it.json'), 'utf8')).testi;
+
+let srv;
+test.before(async () => { srv = await avviaServer(); });
+test.after(async () => {
+  await srv.chiudi();
+  await pool.end();
+});
+
+const uno = async (sql, p) => (await pool.query(sql, p)).rows[0];
+const DOCENTE = 'teacher.math.a@alfa.test';
+const COORDINATORE = 'coordinator.a@alfa.test';
+const ADMIN = 'tenant.admin.a@alfa.test';
+
+const CONSENTITA = { consentita: true, motivo: null };
+const NON_CONSENTITA = { consentita: false, motivo: null };
+const ANNO_CHIUSO = { consentita: false, motivo: 'ERR_SCHOOL_YEAR_CLOSED' };
+
+/** Insegnamento di Matematica 2A di Alfa e la sua attività del seed «Numeri entro il cento». */
+async function insegnamentoEAttivitaAlfa(docente) {
+  const teaching = (await docente.get('/teachings')).corpo.find((t) => t.classe === '2A').teaching_id;
+  const attivita = (await docente.get(`/teachings/${teaching}/activities`)).corpo
+    .find((a) => a.nome.testo === 'Numeri entro il cento').activity_id;
+  return { teaching, attivita };
+}
+
+/** Chiude l'anno del seed di Alfa per la durata di fn, poi lo riporta ad attivo. */
+async function conAnnoAlfaChiuso(fn) {
+  const anno = (await uno("SELECT sy.id FROM school_years sy JOIN tenants t ON t.id = sy.tenant_id WHERE t.slug = 'alfa' AND sy.stato = 'attivo'")).id;
+  await pool.query("UPDATE school_years SET stato = 'chiuso' WHERE id = $1", [anno]);
+  try {
+    return await fn();
+  } finally {
+    await pool.query("UPDATE school_years SET stato = 'attivo' WHERE id = $1", [anno]);
+  }
+}
+
+// ===========================================================================
+// REGOLA UNICA DI SCRITTURA
+// ===========================================================================
+
+test('Regola di scrittura: il motivo dipende solo dallo stato dell\'anno; ogni motivo emesso ha un testo nel catalogo', () => {
+  assert.equal(dominio.motivoDiSolaLettura({ annoStato: dominio.ANNO.ATTIVO }), null);
+  assert.equal(dominio.motivoDiSolaLettura({ annoStato: dominio.ANNO.CHIUSO }), 'ERR_SCHOOL_YEAR_CLOSED');
+  assert.equal(dominio.motivoDiSolaLettura({ annoStato: null }), 'ERR_SCHOOL_YEAR_CLOSED', 'anno assente: come la scrittura (409)');
+  assert.equal(dominio.motivoDiSolaLettura({ annoStato: dominio.ANNO.IN_PREPARAZIONE }), 'ERR_SCHOOL_YEAR_IN_PREPARATION');
+  const emessi = [null, ...Object.values(dominio.ANNO)].map((s) => dominio.motivoDiSolaLettura({ annoStato: s })).filter(Boolean);
+  assert.deepEqual(emessi.filter((m) => !(m in CATALOGO)), []);
+});
+
+test('Griglia: scrittura { consentita, motivo } — docente titolare sì; coordinatore e amministratore no, senza motivo; anno chiuso: motivo per tutti', async () => {
+  const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
+  const coordinatore = await loginESwitch(srv.base, COORDINATORE, 'alfa');
+  const admin = await loginESwitch(srv.base, ADMIN, 'alfa');
+  const { attivita } = await insegnamentoEAttivitaAlfa(docente);
+  const scritturaDi = async (s) => {
+    const r = await s.get(`/activities/${attivita}/griglia`);
+    assert.equal(r.status, 200);
+    return r.corpo.scrittura;
+  };
+  const primaDocente = (await docente.get(`/activities/${attivita}/griglia`)).corpo;
+  assert.deepEqual(await scritturaDi(docente), CONSENTITA);
+  assert.deepEqual(await scritturaDi(coordinatore), NON_CONSENTITA, 'il coordinatore legge ma non scrive: nessun avviso');
+  assert.deepEqual(await scritturaDi(admin), NON_CONSENTITA);
+  // Nessun campo esistente cambia: tutto il resto della griglia è quello di prima.
+  const { scrittura, ...resto } = primaDocente;
+  assert.ok(scrittura);
+  assert.deepEqual(Object.keys(resto).sort(),
+    ['activity', 'bande', 'criteri', 'grigliaNonConfigurata', 'pedagogicalUnitId', 'precisione', 'righe', 'scala', 'unitaPedagogica']);
+
+  await conAnnoAlfaChiuso(async () => {
+    for (const s of [docente, coordinatore, admin]) assert.deepEqual(await scritturaDi(s), ANNO_CHIUSO);
+    const { scrittura: chiusa, ...restoChiuso } = (await docente.get(`/activities/${attivita}/griglia`)).corpo;
+    assert.deepEqual(restoChiuso, resto, 'anno chiuso: stessi dati, cambia solo la regola di scrittura');
+  });
+  assert.deepEqual(await scritturaDi(docente), CONSENTITA, 'anno di nuovo attivo');
+});
+
+test('GET /teachings/:id/scrittura: forma, regole per ruolo, anno chiuso; 403 senza teaching.read; 404 per un altro tenant', async () => {
+  const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
+  const coordinatore = await loginESwitch(srv.base, COORDINATORE, 'alfa');
+  const admin = await loginESwitch(srv.base, ADMIN, 'alfa');
+  const { teaching } = await insegnamentoEAttivitaAlfa(docente);
+  const leggi = async (s) => {
+    const r = await s.get(`/teachings/${teaching}/scrittura`);
+    assert.equal(r.status, 200);
+    return r.corpo;
+  };
+  assert.deepEqual(await leggi(docente), { attivita: CONSENTITA, osservazioni: CONSENTITA });
+  assert.deepEqual(await leggi(coordinatore), { attivita: NON_CONSENTITA, osservazioni: NON_CONSENTITA });
+  assert.deepEqual(await leggi(admin), { attivita: NON_CONSENTITA, osservazioni: NON_CONSENTITA });
+
+  await conAnnoAlfaChiuso(async () => {
+    for (const s of [docente, coordinatore, admin]) {
+      assert.deepEqual(await leggi(s), { attivita: ANNO_CHIUSO, osservazioni: ANNO_CHIUSO });
+    }
+  });
+
+  // Il docente di Italiano 2A non ha teaching.read sull'insegnamento di Matematica 2A.
+  const italiano = await loginESwitch(srv.base, 'teacher.italian.a@alfa.test', 'alfa');
+  const vietata = await italiano.get(`/teachings/${teaching}/scrittura`);
+  assert.deepEqual([vietata.status, vietata.corpo.errore],
+    [403, { codice: 'ERR_PERMISSION_MISSING', parametri: { permesso: 'PERMISSION_TEACHING_READ' } }]);
+  const beta = await loginESwitch(srv.base, 'teacher.math.b@beta.test', 'beta');
+  const altroTenant = await beta.get(`/teachings/${teaching}/scrittura`);
+  assert.deepEqual([altroTenant.status, altroTenant.corpo.errore],
+    [404, { codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_TEACHING' } }]);
+});
+
+test('GET /teachings/:id/scrittura: un insegnamento di un anno in preparazione non esiste per il percorso (404)', async () => {
+  const alfa = (await uno("SELECT id FROM tenants WHERE slug = 'alfa'")).id;
+  const docenteId = (await uno('SELECT id FROM accounts WHERE email = $1', [DOCENTE])).id;
+  const livello = (await uno("SELECT id FROM school_levels WHERE tenant_id = $1 AND nome = 'Primaria'", [alfa])).id;
+  const classe = (await uno("SELECT id FROM classes WHERE tenant_id = $1 AND nome = '2A'", [alfa])).id;
+  const anno = (await uno(
+    "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, '2027/2028', '2027-09-01', '2028-06-30', 'in_preparazione') RETURNING id", [alfa]
+  )).id;
+  const materia = (await uno("INSERT INTO subjects (tenant_id, school_level_id, school_year_id, nome) VALUES ($1, $2, $3, 'Matematica nuova') RETURNING id", [alfa, livello, anno])).id;
+  const teaching = (await uno('INSERT INTO teachings (tenant_id, school_year_id, class_id, subject_id, account_id) VALUES ($1, $2, $3, $4, $5) RETURNING id', [alfa, anno, classe, materia, docenteId])).id;
+  const ruolo = (await uno(
+    "INSERT INTO role_assignments (account_id, role_id, scope_type, tenant_id, scope_teaching_id) VALUES ($1, (SELECT id FROM roles WHERE codice = 'TEACHER'), 'TEACHING', $2, $3) RETURNING id",
+    [docenteId, alfa, teaching]
+  )).id;
+  try {
+    for (const email of [DOCENTE, ADMIN]) {
+      const s = await loginESwitch(srv.base, email, 'alfa');
+      const r = await s.get(`/teachings/${teaching}/scrittura`);
+      assert.deepEqual([r.status, r.corpo.errore], [404, { codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_TEACHING' } }], email);
+    }
+  } finally {
+    await pool.query('DELETE FROM role_assignments WHERE id = $1', [ruolo]);
+    await pool.query('DELETE FROM teachings WHERE id = $1', [teaching]);
+    await pool.query('DELETE FROM subjects WHERE id = $1', [materia]);
+    await pool.query('DELETE FROM school_years WHERE id = $1', [anno]);
+  }
+});
+
+// ===========================================================================
+// SALVATAGGIO SUL POSTO: CELLA ED ESITO DELLA RIGA NELLA RISPOSTA DEL PUT
+// ===========================================================================
+
+/**
+ * Esegue le scritture in sequenza sulla prima riga di una nuova attività e, dopo ognuna,
+ * confronta cella e riga del PUT con la griglia letta subito dopo.
+ */
+async function verificaEsitoSulPosto(sessione, teaching, dataAttivita, scritture) {
+  const unita = (await sessione.get(`/teachings/${teaching}/pedagogical-units`)).corpo[0];
+  const creata = await sessione.post(`/teachings/${teaching}/activities`, { nome: 'Prova sul posto', dataAttivita, pedagogicalUnitId: unita.id });
+  assert.equal(creata.status, 201);
+  const attivita = creata.corpo.activity_id;
+  const griglia = async () => (await sessione.get(`/activities/${attivita}/griglia`)).corpo;
+  const iniziale = await griglia();
+  assert.ok(iniziale.criteri.length >= 2, 'servono almeno due criteri');
+  const riga = iniziale.righe[0];
+  const risposte = [];
+  for (const [indiceCriterio, valore] of scritture) {
+    const criterio = iniziale.criteri[indiceCriterio].id;
+    const r = await sessione.put(`/activities/${attivita}/enrollments/${riga.enrollmentId}/criteria/${criterio}`, { valore });
+    assert.equal(r.status, 200, JSON.stringify(r.corpo));
+    const dopo = (await griglia()).righe.find((x) => x.enrollmentId === riga.enrollmentId);
+    assert.deepEqual(r.corpo.riga, {
+      enrollmentId: dopo.enrollmentId,
+      valutazionePresenti: dopo.valutazionePresenti,
+      valutazioniTotali: dopo.valutazioniTotali,
+      esito: dopo.esito,
+    }, `riga dopo ${JSON.stringify([indiceCriterio, valore])}`);
+    assert.deepEqual(r.corpo.cella, { criterionId: criterio, valore: dopo.celle.find((c) => c.criterionId === criterio).valore });
+    assert.equal(r.corpo.cella.valore, valore);
+    risposte.push(r.corpo);
+  }
+  return { risposte, scala: iniziale.scala };
+}
+
+test('PUT della cella (Alfa, scala 0–2): cella ed esito di riga identici alla griglia dopo inserimento, modifica e cancellazione; i campi esistenti restano', async () => {
+  const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
+  const { teaching } = await insegnamentoEAttivitaAlfa(docente);
+  const { risposte, scala } = await verificaEsitoSulPosto(docente, teaching, '2026-11-21', [
+    [0, 2], // inserimento
+    [0, 1], // modifica
+    [1, 0], // inserimento di un secondo criterio (valore 0: osservato, non assente)
+    [0, null], // cancellazione
+    [0, null], // cancellazione di una cella già vuota
+  ]);
+  assert.deepEqual(scala.valori.map((v) => v.valore), [0, 1, 2]);
+  const [inserita, modificata, seconda, cancellata, giaVuota] = risposte;
+  assert.ok(Number.isInteger(inserita.observationId));
+  assert.equal(inserita.eliminato, false);
+  assert.equal(modificata.observationId, inserita.observationId, 'la modifica aggiorna la stessa osservazione');
+  assert.deepEqual([inserita.riga.esito.base, modificata.riga.esito.base, seconda.riga.esito.base].map((b) => b.n), [1, 1, 2]);
+  assert.deepEqual([cancellata.eliminato, cancellata.observationId, cancellata.riga.valutazionePresenti], [true, undefined, 1]);
+  assert.deepEqual([giaVuota.eliminato, giaVuota.riga], [false, cancellata.riga]);
+  assert.notDeepEqual(inserita.riga.esito, modificata.riga.esito, 'da 2 a 1 l\'esito cambia');
+});
+
+test('PUT della cella (Beta, scala 1–4): stesso esito della griglia', async () => {
+  const docente = await loginESwitch(srv.base, 'teacher.math.b@beta.test', 'beta');
+  const teaching = (await docente.get('/teachings')).corpo[0].teaching_id;
+  const { scala } = await verificaEsitoSulPosto(docente, teaching, '2026-11-21', [[0, 4], [1, 1], [0, 3], [1, null]]);
+  assert.deepEqual(scala.valori.map((v) => v.valore), [1, 2, 3, 4]);
+});
+
+test('PUT della cella: il coordinatore e l\'amministratore non scrivono (403), su anno chiuso nessuno (409); nessuna riga nella risposta di errore', async () => {
+  const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
+  const { attivita } = await insegnamentoEAttivitaAlfa(docente);
+  const griglia = (await docente.get(`/activities/${attivita}/griglia`)).corpo;
+  const cella = `/activities/${attivita}/enrollments/${griglia.righe[0].enrollmentId}/criteria/${griglia.criteri[0].id}`;
+  for (const email of [COORDINATORE, ADMIN]) {
+    const s = await loginESwitch(srv.base, email, 'alfa');
+    const r = await s.put(cella, { valore: 1 });
+    assert.deepEqual([r.status, r.corpo.errore.codice, r.corpo.riga], [403, 'ERR_PERMISSION_MISSING', undefined], email);
+  }
+  await conAnnoAlfaChiuso(async () => {
+    const r = await docente.put(cella, { valore: 1 });
+    assert.deepEqual([r.status, r.corpo.errore.codice, r.corpo.riga], [409, 'ERR_SCHOOL_YEAR_CLOSED', undefined]);
+  });
+});

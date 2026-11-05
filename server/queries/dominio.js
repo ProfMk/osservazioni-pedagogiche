@@ -15,6 +15,7 @@ const { getCriteria, getScalaApplicabile, getBandeGiudizio } = require('./config
 const { calcolaEsito, mediaSemplicePercentuali } = require('../lib/calcoloEsiti');
 const motore = require('../lib/calcoloProgresso');
 const { pubblico, bandePubbliche, scalaPubblica, traduttoreDi } = require('../lib/pubblicazione');
+const { haPermesso } = require('../lib/autorizzazione');
 
 /**
  * Stato degli anni scolastici (006). Un anno 'in_preparazione' è invisibile nel percorso
@@ -108,8 +109,34 @@ async function verificaAnnoScolasticoAttivo(client, schoolYearId, tenantId) {
     'SELECT stato FROM school_years WHERE id = $1 AND tenant_id = $2 FOR SHARE',
     [schoolYearId, tenantId]
   );
-  if (rows.length > 0 && rows[0].stato === ANNO.IN_PREPARAZIONE) throw conflitto('ERR_SCHOOL_YEAR_IN_PREPARATION');
-  if (rows.length === 0 || rows[0].stato !== ANNO.ATTIVO) throw conflitto('ERR_SCHOOL_YEAR_CLOSED');
+  const motivo = motivoDiSolaLettura({ annoStato: rows.length > 0 ? rows[0].stato : null });
+  if (motivo) throw conflitto(motivo);
+}
+
+/**
+ * Perché NESSUNO può scrivere ora nell'ambito (chiave di catalogo), oppure null. Dipende solo
+ * dallo stato, mai dal ruolo: lo stesso motivo arriva a tutti quelli che leggono. È il punto
+ * unico della sola lettura delle scritture dei docenti: lo usano sia il 409 delle scritture
+ * (verificaAnnoScolasticoAttivo) sia la regola esposta al client (regolaDiScrittura).
+ * Lavoro 3: qui, prima del motivo dell'anno, si aggiungerà quello della scuola sospesa.
+ */
+function motivoDiSolaLettura({ annoStato }) {
+  if (annoStato === ANNO.ATTIVO) return null;
+  // Un anno in preparazione non è raggiungibile dalle letture (404): il caso resta per coerenza con il 409.
+  return annoStato === ANNO.IN_PREPARAZIONE ? 'ERR_SCHOOL_YEAR_IN_PREPARATION' : 'ERR_SCHOOL_YEAR_CLOSED';
+}
+
+/**
+ * Regola unica di scrittura (lavoro 2): { consentita, motivo }. L'ambito (livello, classe,
+ * insegnamento, stato dell'anno) viene da verificaTeachingNelTenant o verificaActivityNelTenant,
+ * mai dal client. consentita = nessun motivo di sola lettura E permesso del chiamante con
+ * l'ambito completo (la stessa verifica di richiedePermesso nelle scritture).
+ */
+async function regolaDiScrittura(client, { accountId, permesso, tenantId, schoolLevelId, classId, teachingId, annoStato }) {
+  const motivo = motivoDiSolaLettura({ annoStato });
+  if (motivo) return { consentita: false, motivo };
+  const consentita = await haPermesso(client, { accountId, permesso, tenantId, schoolLevelId, classId, teachingId });
+  return { consentita, motivo: null };
 }
 
 /**
@@ -349,15 +376,13 @@ async function caricaAttivita(client, { activityId, tenantId, lingua }) {
 }
 
 /**
- * Griglia di inserimento di un'attività: una riga per alunno iscritto, una colonna per
- * criterio. Conserva la propria semantica (P14): esito per alunno = n/N, percentuale e banda
- * dei punteggi di QUESTA attività, con la Regola B.
+ * Righe della griglia per gli alunni indicati: celle ed esito per alunno = n/N, percentuale e
+ * banda dei punteggi di QUESTA attività, con la Regola B. Unico calcolo dell'esito di riga:
+ * lo usano la griglia e la risposta del salvataggio di una cella (stessa forma).
  */
-async function getGrigliaActivity(client, { activityId, tenantId, lingua }) {
-  const d = await caricaAttivita(client, { activityId, tenantId, lingua });
+function righeDellaGriglia(d, alunni) {
   const perCella = new Map(d.osservazioni.map((o) => [`${o.enrollment_id}:${o.criterion_id}`, o]));
-
-  const righe = d.alunni.map((alunno) => {
+  return alunni.map((alunno) => {
     const celle = d.criteri.map((c) => {
       const oss = perCella.get(`${alunno.enrollment_id}:${c.id}`);
       return { criterionId: c.id, valore: oss ? oss.valore : null, nota: oss ? d.tr.autore(oss.note || null, oss.lingua_nota) : null };
@@ -376,7 +401,36 @@ async function getGrigliaActivity(client, { activityId, tenantId, lingua }) {
       esito: { ...pubblico(valore), base: { n: presenti.length, N: d.criteri.length } },
     };
   });
+}
 
+/**
+ * Dopo il salvataggio di una cella (stessa transazione): la cella e l'esito della riga
+ * dell'alunno, riletti dal database e calcolati come nella griglia (righeDellaGriglia).
+ */
+async function getCellaERigaDopoSalvataggio(client, { activityId, enrollmentId, criterionId, tenantId, lingua }) {
+  const d = await caricaAttivita(client, { activityId, tenantId, lingua });
+  const [riga] = righeDellaGriglia(d, d.alunni.filter((a) => a.enrollment_id === enrollmentId));
+  if (!riga) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_ENROLLMENT' });
+  const cella = riga.celle.find((c) => c.criterionId === criterionId);
+  return {
+    cella: { criterionId, valore: cella ? cella.valore : null },
+    riga: {
+      enrollmentId: riga.enrollmentId,
+      valutazionePresenti: riga.valutazionePresenti,
+      valutazioniTotali: riga.valutazioniTotali,
+      esito: riga.esito,
+    },
+  };
+}
+
+/**
+ * Griglia di inserimento di un'attività: una riga per alunno iscritto, una colonna per
+ * criterio. Conserva la propria semantica (P14): esito per alunno = n/N, percentuale e banda
+ * dei punteggi di QUESTA attività, con la Regola B.
+ */
+async function getGrigliaActivity(client, { activityId, tenantId, lingua }) {
+  const d = await caricaAttivita(client, { activityId, tenantId, lingua });
+  const righe = righeDellaGriglia(d, d.alunni);
   return {
     activity: d.attivita,
     pedagogicalUnitId: d.info.pedagogical_unit_id,
@@ -513,9 +567,11 @@ async function getReportClasseActivity(client, { activityId, tenantId, lingua })
 
 module.exports = {
   ANNO, verificaAnnoScolasticoAttivo, verificaAnnoScolasticoConfigurabile, getAnnoScolasticoCorrente,
+  motivoDiSolaLettura, regolaDiScrittura,
   verificaTeachingNelPercorso, verificaActivityNelPercorso,
   getTeachingsPropri, verificaTeachingNelTenant, getPedagogicalUnitsDiTeaching,
   getActivitiesDiTeaching, creaActivity, verificaActivityNelTenant, getGrigliaActivity, salvaObservation,
+  getCellaERigaDopoSalvataggio,
   getReportClasseActivity, getStudentiDiTeaching,
   verificaSchoolLevelNelTenant, getClassiDelloSchoolLevel, verificaClasseNelTenant,
   getStudentiDellaClasse, getTeachingsDellaClasse,

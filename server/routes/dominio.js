@@ -48,6 +48,23 @@ async function scopeDiTeaching(teachingId, tenantId) {
   return { schoolLevelId: teaching.school_level_id, classId: teaching.class_id, teachingId: teaching.id };
 }
 
+// GET /api/teachings/:teachingId/scrittura — regola di scrittura dell'insegnamento, decisa dal server:
+// { attivita: { consentita, motivo }, osservazioni: { consentita, motivo } }. Stessa autorizzazione delle
+// letture del percorso (teaching.read con l'ambito del Teaching; anno in preparazione -> 404).
+router.get('/teachings/:teachingId/scrittura', asincrono(async (req, res) => {
+  const teachingId = Number(req.params.teachingId);
+  const teaching = await dominio.verificaTeachingNelPercorso(pool, teachingId, req.tenantId);
+  const ambito = {
+    accountId: req.accountId, tenantId: req.tenantId,
+    schoolLevelId: teaching.school_level_id, classId: teaching.class_id, teachingId: teaching.id,
+  };
+  await richiedePermesso(pool, { ...ambito, permesso: 'teaching.read' });
+  res.json({
+    attivita: await dominio.regolaDiScrittura(pool, { ...ambito, permesso: 'activity.create', annoStato: teaching.anno_stato }),
+    osservazioni: await dominio.regolaDiScrittura(pool, { ...ambito, permesso: 'observation.create', annoStato: teaching.anno_stato }),
+  });
+}));
+
 // GET /api/teachings/:teachingId/activities
 router.get('/teachings/:teachingId/activities', asincrono(async (req, res) => {
   const teachingId = Number(req.params.teachingId);
@@ -183,7 +200,14 @@ router.get('/activities/:activityId/griglia', asincrono(async (req, res) => {
     accountId: req.accountId, permesso: 'observation.read', tenantId: req.tenantId,
     schoolLevelId: activityInfo.school_level_id, classId: activityInfo.class_id, teachingId: activityInfo.teaching_id,
   });
-  res.json(await dominio.getGrigliaActivity(pool, { activityId, tenantId: req.tenantId, lingua: req.lingua }));
+  const griglia = await dominio.getGrigliaActivity(pool, { activityId, tenantId: req.tenantId, lingua: req.lingua });
+  // Sola lettura decisa dal server (lavoro 2): il client mostra i controlli solo se consentita.
+  const scrittura = await dominio.regolaDiScrittura(pool, {
+    accountId: req.accountId, permesso: 'observation.create', tenantId: req.tenantId,
+    schoolLevelId: activityInfo.school_level_id, classId: activityInfo.class_id, teachingId: activityInfo.teaching_id,
+    annoStato: activityInfo.anno_stato,
+  });
+  res.json({ ...griglia, scrittura });
 }));
 
 // GET /api/activities/:activityId/report-classe — esito dell'attività (VIEW_ACTIVITY_OUTCOME): niente media mobile.
@@ -235,7 +259,12 @@ router.put('/activities/:activityId/enrollments/:enrollmentId/criteria/:criterio
       prima,
       dopo: esito.eliminato ? null : { valore },
     });
-    return esito;
+    // Salvataggio sul posto (lavoro 2): cella ed esito della riga dopo la scrittura, nella stessa
+    // transazione e con lo stesso calcolo della griglia.
+    const dopo = await dominio.getCellaERigaDopoSalvataggio(client, {
+      activityId, enrollmentId, criterionId, tenantId: req.tenantId, lingua: req.lingua,
+    });
+    return { ...esito, ...dopo };
   });
   res.json(risultato);
 }));

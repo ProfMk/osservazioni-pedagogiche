@@ -455,5 +455,5 @@ test('Anno attivo: salvataggio e cancellazione (valore null) di un\'osservazione
   const salva = await docente.put(cella, { valore: 1 });
   assert.deepEqual([salva.status, salva.corpo.eliminato], [200, false]);
   const cancella = await docente.put(cella, { valore: null });
-  assert.deepEqual([cancella.status, cancella.corpo], [200, { eliminato: true }]);
+  assert.deepEqual([cancella.status, cancella.corpo.eliminato, cancella.corpo.observationId], [200, true, undefined]);
 });
