@@ -350,3 +350,83 @@ test('Partenza: precedenza TENANT_ADMIN > COORDINATOR > TEACHER nel tenant attiv
   }
   assert.equal((await partenzaDopoLogin(COORDINATORE)).partenza, 'classi');
 });
+
+// ===========================================================================
+// NOME DELL'ANNO MODIFICABILE, DATE NO (passo 5)
+// ===========================================================================
+
+async function auditRinomina(annoId) {
+  const { rows } = await pool.query(
+    "SELECT actor_account_id, tenant_id, prima, dopo FROM audit_log WHERE azione = 'school_year.rename' AND risorsa = 'school_year' AND risorsa_id = $1 ORDER BY id",
+    [annoId]
+  );
+  return rows;
+}
+
+test('Nome dell\'anno: il TENANT_ADMIN rinomina un anno attivo (date e azioni invariate, audit con prima e dopo); il nuovo nome arriva agli insegnamenti', async () => {
+  const admin = await loginESwitch(srv.base, ADMIN, 'alfa');
+  const adminId = (await uno('SELECT id FROM accounts WHERE email = $1', [ADMIN])).id;
+  const alfa = (await uno("SELECT id FROM tenants WHERE slug = 'alfa'")).id;
+  const prima = (await admin.get('/admin/school-years')).corpo.anni.find((a) => a.stato === 'attivo');
+  assert.deepEqual([prima.nome, prima.azioni, prima.rinominabile], ['2026/2027', ['chiudi'], true]);
+  try {
+    const r = await admin.put(`/admin/school-years/${prima.id}`, { nome: '  2026-27 ' });
+    assert.equal(r.status, 200, JSON.stringify(r.corpo));
+    assert.deepEqual(r.corpo, { id: prima.id, nome: '2026-27', stato: 'attivo', dataInizio: prima.dataInizio, dataFine: prima.dataFine });
+    const dopo = (await admin.get('/admin/school-years')).corpo.anni.find((a) => a.id === prima.id);
+    assert.deepEqual(dopo, { ...prima, nome: '2026-27' }, 'cambia solo il nome: date, stato, azioni e rinominabile restano');
+    assert.deepEqual(await auditRinomina(prima.id), [{ actor_account_id: adminId, tenant_id: alfa, prima: { nome: '2026/2027' }, dopo: { nome: '2026-27' } }]);
+    const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
+    assert.ok((await docente.get('/teachings')).corpo.every((t) => t.anno_scolastico === '2026-27'));
+    // Lo stesso nome di prima non scrive nulla.
+    assert.equal((await admin.put(`/admin/school-years/${prima.id}`, { nome: '2026-27' })).status, 200);
+    assert.equal((await auditRinomina(prima.id)).length, 1, 'nessun audit per un nome invariato');
+  } finally {
+    await pool.query('UPDATE school_years SET nome = $1 WHERE id = $2', [prima.nome, prima.id]);
+  }
+});
+
+test('Nome dell\'anno: anno in preparazione sì; nome occupato, vuoto o troppo lungo rifiutati; anno chiuso 409 (rinominabile false); TEACHER 403; altro tenant 404', async () => {
+  const admin = await loginESwitch(srv.base, ADMIN, 'alfa');
+  const alfa = (await uno("SELECT id FROM tenants WHERE slug = 'alfa'")).id;
+  const nuovo = await admin.post('/admin/school-years', { nome: '2027/2028', dataInizio: '2027-09-01', dataFine: '2028-06-30' });
+  assert.equal(nuovo.status, 201);
+  const chiuso = (await uno(
+    "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, '2020/2021', '2020-09-01', '2021-06-30', 'chiuso') RETURNING id", [alfa]
+  )).id;
+  try {
+    const id = nuovo.corpo.id;
+    const errore = async (annoId, corpo) => {
+      const r = await admin.put(`/admin/school-years/${annoId}`, corpo);
+      return [r.status, r.corpo && r.corpo.errore];
+    };
+    assert.deepEqual(await errore(id, { nome: '2026/2027' }), [409, { codice: 'ERR_SCHOOL_YEAR_NAME_TAKEN', parametri: { nome: '2026/2027', campo: 'UI_FIELD_NOME' } }]);
+    assert.deepEqual(await errore(id, { nome: '   ' }), [400, { codice: 'ERR_REQUIRED_FIELD', parametri: { campo: 'UI_FIELD_NOME' } }]);
+    assert.deepEqual(await errore(id, {}), [400, { codice: 'ERR_REQUIRED_FIELD', parametri: { campo: 'UI_FIELD_NOME' } }]);
+    assert.deepEqual(await errore(id, { nome: 'x'.repeat(21) }), [400, { codice: 'ERR_TEXT_TOO_LONG', parametri: { campo: 'UI_FIELD_NOME', massimo: 20 } }]);
+    assert.deepEqual(await errore(chiuso, { nome: '2020-21' }), [409, { codice: 'ERR_SCHOOL_YEAR_CLOSED', parametri: {} }]);
+    assert.deepEqual(await errore(999999, { nome: 'Qualunque' }), [404, { codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_SCHOOL_YEAR' } }]);
+    const annoBeta = (await uno("SELECT sy.id FROM school_years sy JOIN tenants t ON t.id = sy.tenant_id WHERE t.slug = 'beta' LIMIT 1")).id;
+    assert.deepEqual(await errore(annoBeta, { nome: 'Di Beta' }), [404, { codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_SCHOOL_YEAR' } }]);
+    const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
+    const vietata = await docente.put(`/admin/school-years/${id}`, { nome: 'Del docente' });
+    assert.deepEqual([vietata.status, vietata.corpo.errore], [403, { codice: 'ERR_PERMISSION_MISSING', parametri: { permesso: 'PERMISSION_TENANT_MANAGE_CONFIG' } }]);
+    assert.deepEqual(await auditRinomina(id), [], 'nessun tentativo rifiutato è nell\'audit');
+
+    const elenco = (await admin.get('/admin/school-years')).corpo.anni;
+    assert.deepEqual(elenco.map((a) => [a.nome, a.stato, a.rinominabile]),
+      [['2027/2028', 'in_preparazione', true], ['2026/2027', 'attivo', true], ['2020/2021', 'chiuso', false]]);
+    const rinominato = await admin.put(`/admin/school-years/${id}`, { nome: 'Anno nuovo' });
+    assert.deepEqual([rinominato.status, rinominato.corpo.nome, rinominato.corpo.stato, rinominato.corpo.dataInizio, rinominato.corpo.dataFine],
+      [200, 'Anno nuovo', 'in_preparazione', '2027-09-01', '2028-06-30']);
+    assert.deepEqual((await auditRinomina(id)).map((a) => [a.prima, a.dopo]), [[{ nome: '2027/2028' }, { nome: 'Anno nuovo' }]]);
+    const { rows } = await pool.query("SELECT nome, to_char(data_inizio, 'YYYY-MM-DD') AS i, to_char(data_fine, 'YYYY-MM-DD') AS f FROM school_years WHERE tenant_id = $1 ORDER BY data_inizio", [alfa]);
+    assert.deepEqual(rows, [
+      { nome: '2020/2021', i: '2020-09-01', f: '2021-06-30' },
+      { nome: '2026/2027', i: '2026-09-01', f: '2027-06-30' },
+      { nome: 'Anno nuovo', i: '2027-09-01', f: '2028-06-30' },
+    ], 'nessuna data è cambiata');
+  } finally {
+    await pool.query('DELETE FROM school_years WHERE id = ANY($1::bigint[])', [[nuovo.corpo.id, chiuso]]);
+  }
+});

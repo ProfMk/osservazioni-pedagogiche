@@ -61,6 +61,9 @@ router.get('/school-years', asincrono(async (req, res) => {
 // POST /api/admin/school-years  body: { nome, dataInizio, dataFine } -> 201, anno 'in_preparazione'
 router.post('/school-years', scritturaConfigurazione((client, req) => calendario.creaAnno(client, ctxDi(req), req.body || {}), 201));
 
+// PUT /api/admin/school-years/:annoId  body: { nome } -> anno rinominato (le date non cambiano)
+router.put('/school-years/:annoId', scritturaConfigurazione((client, req) => calendario.rinominaAnno(client, ctxDi(req), idAnno(req), req.body || {})));
+
 // POST /api/admin/school-years/:annoId/activate | close | reopen | switch-to ; DELETE /api/admin/school-years/:annoId
 const TRANSIZIONI = {
   activate: calendario.attivaAnno,

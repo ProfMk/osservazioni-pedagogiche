@@ -1643,19 +1643,46 @@
     { id: 'elimina', percorso: '', metodo: 'DELETE', chiave: 'UI_DELETE', per: 'UI_YEAR_DELETE_FOR', conferma: 'UI_YEAR_DELETE_CONFIRM' },
   ];
 
+  /** Nuovo nome di un anno, nel corpo della pagina (le date non cambiano: governano i periodi). */
+  function moduloRinominaAnno(a, annulla) {
+    var nome = inputTesto(20, a.nome);
+    return moduloAdmin({
+      id: 'anno-' + a.id, titolo: 'UI_YEAR_RENAME_FOR', parametri: { anno: a.nome }, nota: 'UI_YEAR_RENAME_NOTE',
+      invio: 'UI_SAVE', annulla: annulla,
+      campi: [{ nome: 'nome', etichetta: 'UI_SCHOOL_YEAR_NAME', input: nome, campo: 'UI_FIELD_NOME', aiuto: { chiave: 'UI_SCHOOL_YEAR_NAME_HINT' } }],
+      invia: async function () {
+        var rinominato = await api('/admin/school-years/' + a.id, corpoJson('PUT', { nome: nome.value }));
+        stato.insegnamenti = null; // il nome dell'anno compare negli insegnamenti (anno_scolastico)
+        return rinominato;
+      },
+    });
+  }
+
   function rigaAnno(a) {
+    var riga = el('li', { classe: 'voce-admin' });
     var azioni = AZIONI_ANNO.filter(function (z) { return a.azioni.indexOf(z.id) >= 0; }).map(function (z) {
       return pulsanteAzione(z.chiave, {
         per: z.per, conferma: z.conferma, parametri: { anno: a.nome },
         esegui: function () { return api('/admin/school-years/' + a.id + (z.percorso ? '/' + z.percorso : ''), corpoJson(z.metodo)); },
       });
     });
-    return el('li', { classe: 'voce-admin' }, [
+    // «Rinomina» solo se il server lo consente (campo rinominabile, distinto dalle azioni di transizione).
+    if (a.rinominabile) {
+      azioni.unshift(t('button', 'UI_RENAME', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_YEAR_RENAME_FOR', { anno: a.nome }),
+        onclick: function () {
+          riga.replaceChildren(moduloRinominaAnno(a, function () { disegna(stato.rotta); }));
+          riga.querySelector('input').focus();
+        },
+      }));
+    }
+    riga.append.apply(riga, [
       el('span', { classe: 'titolo' }, [el('bdi', {}, [a.nome])]),
       ' ', t('span', chiaveStatoAnno(a.stato), null, { classe: 'etichetta-stato stato-' + a.stato }),
       ' ', t('span', 'UI_DATES_RANGE', { inizio: I18n.data(a.dataInizio), fine: I18n.data(a.dataFine) }, { classe: 'sottotitolo' }),
-      azioni.length ? el('span', { classe: 'azioni' }, azioni) : null,
+      azioni.length ? el('span', { classe: 'azioni' }, azioni) : '',
     ]);
+    return riga;
   }
 
   function bloccoPassaggio(p) {

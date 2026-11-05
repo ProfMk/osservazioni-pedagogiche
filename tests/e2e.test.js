@@ -1405,3 +1405,63 @@ test('Lavoro 2: «Classi del mio livello» — il COORDINATOR va da Classi alla 
     await pool.query('DELETE FROM classes WHERE id = $1', [vuota]);
   }
 });
+
+// --- Lavoro 2: nome dell'anno modificabile -----------------------------------------------
+
+test('Lavoro 2: il TENANT_ADMIN rinomina l\'anno nel corpo della pagina (nessuna finestra di dialogo); errore sul campo; il nuovo nome arriva agli insegnamenti; nessun «Rinomina» su un anno chiuso', async () => {
+  const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0].id;
+  const anno = (await pool.query("SELECT id, nome FROM school_years WHERE tenant_id = $1 AND stato = 'attivo'", [alfa])).rows[0];
+  const chiuso = (await pool.query(
+    "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, '2019/2020', '2019-09-01', '2020-06-30', 'chiuso') RETURNING id", [alfa]
+  )).rows[0].id;
+  try {
+    const pagina = await nuovaPagina();
+    const dialoghi = [];
+    pagina.on('dialog', (d) => { dialoghi.push(d.type()); return d.dismiss(); });
+    await entraCome(pagina, 'tenant.admin.a@alfa.test');
+    // Gli insegnamenti si leggono una volta (cache del client) con il nome di prima.
+    await vaiA(pagina, `#/materia/${t2A.subject_id}`);
+    assert.ok((await pagina.innerText('#contenuto .elenco')).includes(anno.nome));
+
+    await vaiA(pagina, '#/amministrazione/calendario');
+    const voce = (nome) => pagina.locator('.elenco-anni li', { has: pagina.locator('.titolo', { hasText: nome }) });
+    assert.equal(await voce('2019/2020').getByRole('button', { name: testoCatalogo('UI_YEAR_RENAME_FOR', { anno: '2019/2020' }) }).count(), 0, 'anno chiuso: nessun «Rinomina»');
+    await voce(anno.nome).getByRole('button', { name: testoCatalogo('UI_YEAR_RENAME_FOR', { anno: anno.nome }) }).click();
+    const modulo = moduloDi(pagina, `anno-${anno.id}`);
+    await modulo.waitFor();
+    const campoNome = modulo.getByLabel(CATALOGO.UI_SCHOOL_YEAR_NAME, { exact: true });
+    assert.equal(await campoNome.inputValue(), anno.nome);
+    assert.equal(await pagina.evaluate(() => document.activeElement.closest('form') !== null && document.activeElement.tagName), 'INPUT', 'il fuoco va al campo');
+    assert.ok((await modulo.innerText()).includes(CATALOGO.UI_YEAR_RENAME_NOTE));
+    await nessunaViolazione(pagina, 'modulo di rinomina dell\'anno');
+
+    // Errore del server sul campo (nome vuoto), poi il salvataggio.
+    await campoNome.fill('');
+    await modulo.locator('button[type=submit]').click();
+    await pagina.waitForSelector(`#anno-${anno.id}-nome-errore:not([hidden])`);
+    assert.equal(await pagina.textContent(`#anno-${anno.id}-nome-errore`), testoCatalogo('ERR_REQUIRED_FIELD', { campo: CATALOGO.UI_FIELD_NOME }));
+    assert.equal(await campoNome.getAttribute('aria-invalid'), 'true');
+    await nessunaViolazione(pagina, 'rinomina con errore');
+    pagina.errori.length = 0;
+    await conRidisegno(pagina, async () => {
+      await campoNome.fill('2026-27');
+      await modulo.locator('button[type=submit]').click();
+    });
+    assert.ok((await pagina.innerText('.elenco-anni')).includes('2026-27'));
+    assert.ok(!(await pagina.innerText('.elenco-anni')).includes(anno.nome));
+    const date = await voce('2026-27').locator('.sottotitolo').textContent();
+    assert.ok(date.length > 0, 'le date restano mostrate');
+    await senzaTestiMancanti(pagina, 'calendario dopo la rinomina');
+    await nessunaViolazione(pagina, 'calendario dopo la rinomina');
+
+    // La cache degli insegnamenti è stata azzerata: la materia mostra il nuovo nome.
+    await vaiA(pagina, `#/materia/${t2A.subject_id}`);
+    assert.ok((await pagina.innerText('#contenuto .elenco')).includes('2026-27'));
+    assert.deepEqual(dialoghi, [], 'nessuna window.prompt né altre finestre di dialogo');
+    assert.deepEqual(pagina.errori, []);
+    await pagina.context().close();
+  } finally {
+    await pool.query('UPDATE school_years SET nome = $1 WHERE id = $2', [anno.nome, anno.id]);
+    await pool.query('DELETE FROM school_years WHERE id = $1', [chiuso]);
+  }
+});

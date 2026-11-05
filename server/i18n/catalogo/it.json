@@ -405,6 +405,8 @@
     "UI_CELL_SAVED": "Salvato.",
     "UI_MY_LEVEL_CLASSES": "Classi del mio livello",
     "UI_MY_LEVEL_NONE": "Non coordini nessun livello in questo istituto.",
-    "UI_CLASS_NO_TEACHINGS": "Questa classe non ha ancora insegnamenti."
+    "UI_CLASS_NO_TEACHINGS": "Questa classe non ha ancora insegnamenti.",
+    "UI_YEAR_RENAME_FOR": "Rinomina l'anno scolastico {anno}",
+    "UI_YEAR_RENAME_NOTE": "Cambia solo il nome: le date dell'anno restano quelle di prima, perché da esse dipendono i periodi di valutazione."
   }
 }

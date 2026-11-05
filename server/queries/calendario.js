@@ -73,13 +73,22 @@ function azioniDi(anno, anni) {
   }
 }
 
+/**
+ * Il nome di un anno si cambia su un anno attivo o in preparazione (lavoro 2); le date no, perché
+ * governano i periodi. Un anno chiuso resta in sola lettura, come i suoi periodi. È un campo a parte
+ * e non un'azione: l'elenco `azioni` riguarda solo le transizioni e l'eliminazione.
+ */
+function rinominabile(anno) {
+  return [ANNO.ATTIVO, ANNO.IN_PREPARAZIONE].includes(anno.stato);
+}
+
 /** Elenco degli anni del tenant con azioni, anno di lavoro predefinito e passaggio proposto. */
 async function elencoAnni(client, tenantId) {
   const anni = await anniDelTenant(client, tenantId);
   const attivo = anni.find((a) => a.stato === ANNO.ATTIVO);
   const nuovo = anni.find((a) => a.stato === ANNO.IN_PREPARAZIONE);
   return {
-    anni: anni.map((a) => ({ ...annoPubblico(a), azioni: azioniDi(a, anni) })),
+    anni: anni.map((a) => ({ ...annoPubblico(a), azioni: azioniDi(a, anni), rinominabile: rinominabile(a) })),
     annoDiLavoro: annoDiLavoro(anni),
     // «Passa al nuovo anno»: l'azione che il calendario propone quando esistono entrambi.
     passaggio: attivo && nuovo ? { daAnno: annoPubblico(attivo), aAnno: annoPubblico(nuovo) } : null,
@@ -139,6 +148,28 @@ async function creaAnno(client, ctx, corpo) {
   const anno = annoPubblico(rows[0]);
   await audit(client, ctx, 'school_year.create', anno.id, null, anno);
   return anno;
+}
+
+/**
+ * Nuovo nome di un anno attivo o in preparazione (anno chiuso -> 409 ERR_SCHOOL_YEAR_CLOSED, come i
+ * periodi). Stesse regole del nome di creaAnno: obbligatorio (≤ 20), unico nel tenant. Le date non
+ * cambiano. Lo stesso nome di prima non scrive nulla (né l'anno né l'audit).
+ */
+async function rinominaAnno(client, ctx, annoId, corpo) {
+  const { anno, anni } = await annoDelTenant(client, ctx.tenantId, annoId, { blocca: true });
+  if (!rinominabile(anno)) throw conflitto('ERR_SCHOOL_YEAR_CLOSED');
+  const nome = testoObbligatorio(corpo.nome, 'UI_FIELD_NOME', MAX_NOME_ANNO);
+  if (nome === anno.nome) return annoPubblico(anno);
+  if (anni.some((a) => a.nome === nome)) throw conflitto('ERR_SCHOOL_YEAR_NAME_TAKEN', { nome, campo: 'UI_FIELD_NOME' });
+  const { rows } = await unicoORifiuta(() => client.query(
+    `UPDATE school_years SET nome = $1 WHERE id = $2
+     RETURNING id, nome, stato, to_char(data_inizio, 'YYYY-MM-DD') AS data_inizio, to_char(data_fine, 'YYYY-MM-DD') AS data_fine`,
+    [nome, anno.id]
+  ), {
+    school_years_tenant_id_nome_key: () => conflitto('ERR_SCHOOL_YEAR_NAME_TAKEN', { nome, campo: 'UI_FIELD_NOME' }),
+  });
+  await audit(client, ctx, 'school_year.rename', anno.id, { nome: anno.nome }, { nome });
+  return annoPubblico(rows[0]);
 }
 
 /** in_preparazione -> attivo, solo se non c'è un altro anno attivo. */
@@ -310,6 +341,6 @@ async function eliminaPeriodo(client, ctx, periodoId) {
 }
 
 module.exports = {
-  chiaveStato, annoDiLavoro, anniDelTenant, annoPubblico, elencoAnni, creaAnno, attivaAnno, chiudiAnno, riapriAnno,
+  chiaveStato, annoDiLavoro, anniDelTenant, annoPubblico, elencoAnni, creaAnno, rinominaAnno, attivaAnno, chiudiAnno, riapriAnno,
   passaAlNuovoAnno, eliminaAnno, elencoPeriodi, creaPeriodo, modificaPeriodo, eliminaPeriodo,
 };

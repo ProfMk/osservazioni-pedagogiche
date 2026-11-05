@@ -12,8 +12,8 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 | 1 | Server: sola lettura ed esito sul posto | `ea3a90f` | 213/213 | 22/22 |
 | 2 | Client: avviso di sola lettura, salvataggio sul posto | `881aade` | 215/215 | 26/26 |
 | 3 | Reflow della griglia | `42ad8c4` | 215/215 | 28/28 |
-| 4 | Partenza per ruolo, «Classi del mio livello» | (questo commit) | 217/217 | 30/30 |
-| 5 | Nome dell'anno modificabile | — | — | — |
+| 4 | Partenza per ruolo, «Classi del mio livello» | `8d0fbe6` | 217/217 | 30/30 |
+| 5 | Nome dell'anno modificabile | (questo commit) | 219/219 | 31/31 |
 | 6 | Etichette e aiuto per livello e ordine | — | — | — |
 | 7 | Chiusura (README, numeri finali) | — | — | — |
 
@@ -137,6 +137,25 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
   indirizzo valido e non riconosciuto; percorso del COORDINATOR con classe senza insegnamenti creata e rimossa
   nel test).
 
+## Passo 5 — Nome dell'anno modificabile (date no)
+- Verificato prima: nessuna migration serve (`app_role` ha UPDATE su tutte le tabelle tranne `audit_log`,
+  migration 002; la 004 non ha trigger di immutabilità su `school_years` oltre a quello generico su `tenant_id`).
+- Server: `rinominabile(anno)` e `rinominaAnno(client, ctx, annoId, corpo)` in `server/queries/calendario.js`;
+  `PUT /api/admin/school-years/:annoId` con `scritturaConfigurazione` (permesso `tenant.manage_config`, stessa
+  transazione dell'audit). Ordine dei controlli: anno del tenant (404, riga bloccata `FOR UPDATE`), anno
+  chiuso (409 `ERR_SCHOOL_YEAR_CLOSED`), nome (`testoObbligatorio`, ≤ 20), unicità nel tenant (409
+  `ERR_SCHOOL_YEAR_NAME_TAKEN`, anche dal vincolo `school_years_tenant_id_nome_key`). Audit
+  `school_year.rename` con `prima: { nome }`, `dopo: { nome }`. Le date non si toccano.
+- `GET /api/admin/school-years`: campo `rinominabile` per anno; `azioni` invariato.
+- Client: pulsante «Rinomina» (`UI_RENAME`, nome accessibile `UI_YEAR_RENAME_FOR`) solo se `rinominabile`; modulo
+  nel corpo della pagina (`moduloRinominaAnno`, stesso `moduloAdmin` degli altri moduli, con nota
+  `UI_YEAR_RENAME_NOTE`); dopo il salvataggio `stato.insegnamenti = null` e ridisegno con la conferma.
+- Test: due test di integrazione (successo con audit e date invariate, nome invariato senza audit, anno in
+  preparazione, nome occupato, vuoto, assente, troppo lungo, anno chiuso, anno inesistente e di un altro
+  tenant, TEACHER 403); un E2E (modulo nel corpo, errore sul campo, nuovo nome negli insegnamenti, nessuna
+  finestra di dialogo, nessun «Rinomina» su un anno chiuso, axe-core). Le asserzioni sulle `azioni` in
+  `tests/anniScolastici.test.js` sono invariate e verdi.
+
 ## Decisioni prese da Claude Code
 1. **Anno in preparazione nella regola**: `motivoDiSolaLettura` restituisce
    `ERR_SCHOOL_YEAR_IN_PREPARATION` (lo stesso codice del 409 di oggi). Non è raggiungibile dalle
@@ -177,6 +196,11 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
     (`ERR_NOT_FOUND`, `UI_RESOURCE_CLASS`) senza chiamare altre API.
 17. (Passo 4) Testo dei collegamenti di andata e ritorno: il nome della vista di destinazione (`UI_MY_LEVEL_CLASSES`,
     `UI_TEACHINGS`).
+18. (Passo 5) Su un anno chiuso il 409 arriva **prima** della validazione del nome (come i periodi: prima
+    lo stato dell'anno, poi i campi).
+19. (Passo 5) Lo stesso nome di prima risponde 200 con l'anno, **senza** scrittura né riga d'audit.
+20. (Passo 5) L'E2E rinomina l'anno attivo di Alfa e lo riporta al nome originale nel `finally` (SQL); l'anno
+    chiuso di prova è creato e rimosso dal test.
 
 ## Asserzioni esistenti modificate
 1. `tests/immutabilita.test.js`, test «Anno attivo: salvataggio e cancellazione (valore null) di
@@ -212,6 +236,8 @@ Nessuna.
 | `UI_MY_LEVEL_CLASSES` | (nuova) | Classi del mio livello | 4 |
 | `UI_MY_LEVEL_NONE` | (nuova) | Non coordini nessun livello in questo istituto. | 4 |
 | `UI_CLASS_NO_TEACHINGS` | (nuova) | Questa classe non ha ancora insegnamenti. | 4 |
+| `UI_YEAR_RENAME_FOR` | (nuova) | Rinomina l'anno scolastico {anno} | 5 |
+| `UI_YEAR_RENAME_NOTE` | (nuova) | Cambia solo il nome: le date dell'anno restano quelle di prima, perché da esse dipendono i periodi di valutazione. | 5 |
 
 ## Da riprendere
 - **Altre tabelle che a 320 px scorrono di lato** (fuori ambito, non corrette; la pagina non scorre, scorre
