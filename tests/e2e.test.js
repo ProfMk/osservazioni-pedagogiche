@@ -1465,3 +1465,36 @@ test('Lavoro 2: il TENANT_ADMIN rinomina l\'anno nel corpo della pagina (nessuna
     await pool.query('DELETE FROM school_years WHERE id = $1', [chiuso]);
   }
 });
+
+// --- Lavoro 2: livello e posizione nell'elenco (nota 2) -------------------------------------
+
+test('Lavoro 2: livelli — etichette e aiuti distinguono il livello (grado di scuola) dalla posizione nell\'elenco; errore sulla posizione; nessun testo mancante', async () => {
+  const pagina = await nuovaPagina();
+  await entraCome(pagina, 'tenant.admin.a@alfa.test');
+  await vaiA(pagina, '#/amministrazione/livelli');
+  assert.equal(await pagina.textContent('.sezione-amministrazione p.nota'), CATALOGO.UI_SCHOOL_LEVELS_NOTE);
+  // Nell'elenco ogni livello dice la sua posizione (seed: Primaria 1, Secondaria di primo grado 2).
+  const righe = await pagina.$$eval('.elenco-livelli li', (n) => n.map((li) => [li.querySelector('.titolo').textContent, li.querySelector('.sottotitolo span').textContent]));
+  assert.deepEqual(righe, [
+    ['Primaria', testoCatalogo('UI_LEVEL_POSITION', { n: 1 })],
+    ['Secondaria di primo grado', testoCatalogo('UI_LEVEL_POSITION', { n: 2 })],
+  ]);
+  // Nel modulo: etichette diverse, ognuna con il suo aiuto collegato.
+  const modulo = moduloDi(pagina, 'nuovo-livello');
+  const nome = modulo.getByLabel(CATALOGO.UI_LEVEL_NAME, { exact: true });
+  const posizione = modulo.getByLabel(CATALOGO.UI_LEVEL_ORDER, { exact: true });
+  const aiutoDi = (input) => input.evaluate((n) => n.getAttribute('aria-describedby').split(' ').map((id) => document.getElementById(id))
+    .filter((x) => x.classList.contains('aiuto')).map((x) => x.textContent));
+  assert.deepEqual(await aiutoDi(nome), [CATALOGO.UI_LEVEL_NAME_HINT]);
+  assert.deepEqual(await aiutoDi(posizione), [CATALOGO.UI_LEVEL_ORDER_HINT]);
+  await nome.fill('Infanzia');
+  await posizione.fill('primo');
+  await modulo.locator('button[type=submit]').click();
+  await pagina.waitForSelector('#nuovo-livello-ordine-errore:not([hidden])');
+  assert.equal(await pagina.textContent('#nuovo-livello-ordine-errore'), testoCatalogo('ERR_INTEGER_INVALID', { campo: CATALOGO.UI_FIELD_ORDINE }));
+  assert.equal(await posizione.getAttribute('aria-invalid'), 'true');
+  await senzaTestiMancanti(pagina, 'livelli');
+  await nessunaViolazione(pagina, 'livelli');
+  assert.deepEqual(pagina.errori.map((e) => e.replace(srv.origine, '')), ['400 /api/admin/school-levels'], 'il solo errore atteso');
+  await pagina.context().close();
+});

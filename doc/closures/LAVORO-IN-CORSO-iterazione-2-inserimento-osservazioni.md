@@ -13,8 +13,8 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 | 2 | Client: avviso di sola lettura, salvataggio sul posto | `881aade` | 215/215 | 26/26 |
 | 3 | Reflow della griglia | `42ad8c4` | 215/215 | 28/28 |
 | 4 | Partenza per ruolo, «Classi del mio livello» | `8d0fbe6` | 217/217 | 30/30 |
-| 5 | Nome dell'anno modificabile | (questo commit) | 219/219 | 31/31 |
-| 6 | Etichette e aiuto per livello e ordine | — | — | — |
+| 5 | Nome dell'anno modificabile | `2c38a5b` | 219/219 | 31/31 |
+| 6 | Etichette e aiuto per livello e ordine | (questo commit) | 219/219 | 32/32 |
 | 7 | Chiusura (README, numeri finali) | — | — | — |
 
 ## Passo 0 — Avvio
@@ -156,6 +156,22 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
   finestra di dialogo, nessun «Rinomina» su un anno chiuso, axe-core). Le asserzioni sulle `azioni` in
   `tests/anniScolastici.test.js` sono invariate e verdi.
 
+## Passo 6 — Livello e posizione nell'elenco (nota 2)
+- **Causa della confusione**: nel linguaggio della scuola «ordine di scuola» è proprio il grado (Infanzia,
+  Primaria, Secondaria); un campo chiamato «Ordine» accanto a «Nome del livello» si legge quindi come un
+  secondo modo di dire il livello. Il campo è invece la posizione del livello nell'elenco.
+- Catalogo: l'etichetta del campo diventa «Posizione nell'elenco»; aiuto nuovo per il nome (esempi di gradi di
+  scuola); aiuto della posizione riscritto (dice che non è l'ordine di scuola, e cosa succede se resta vuoto
+  sia per un livello nuovo sia per uno esistente: prima diceva solo «va in coda», vero solo per i nuovi);
+  `UI_FIELD_ORDINE` (nei messaggi d'errore) allineato; nota introduttiva nell'elenco dei livelli.
+- Client (`public/js/app.js`): `moduloLivello` passa l'aiuto del nome (`campo()` lo collega con
+  `aria-describedby`); `SEZIONI_VISTE.livelli` mostra la nota; `rigaLivello` mostra la posizione di ogni livello
+  («posizione 1 nell'elenco · 2 classi attive»).
+- Nessuna asserzione esistente dipende dai testi cambiati (gli E2E leggono le etichette dal catalogo;
+  `tests/strutturaIstituto.test.js` verifica il codice `UI_FIELD_ORDINE`, non il testo).
+- Test: un E2E nuovo (nota, posizione nell'elenco, aiuti collegati ai due campi, errore sulla posizione,
+  testi mancanti, axe-core).
+
 ## Decisioni prese da Claude Code
 1. **Anno in preparazione nella regola**: `motivoDiSolaLettura` restituisce
    `ERR_SCHOOL_YEAR_IN_PREPARATION` (lo stesso codice del 409 di oggi). Non è raggiungibile dalle
@@ -238,6 +254,13 @@ Nessuna.
 | `UI_CLASS_NO_TEACHINGS` | (nuova) | Questa classe non ha ancora insegnamenti. | 4 |
 | `UI_YEAR_RENAME_FOR` | (nuova) | Rinomina l'anno scolastico {anno} | 5 |
 | `UI_YEAR_RENAME_NOTE` | (nuova) | Cambia solo il nome: le date dell'anno restano quelle di prima, perché da esse dipendono i periodi di valutazione. | 5 |
+| `UI_LEVEL_NAME` | Nome del livello | (invariato) | 6 |
+| `UI_LEVEL_NAME_HINT` | (nuova) | Il grado di scuola, per esempio Infanzia, Primaria o Secondaria di primo grado. | 6 |
+| `UI_LEVEL_ORDER` | Ordine | Posizione nell'elenco | 6 |
+| `UI_LEVEL_ORDER_HINT` | Facoltativo: i livelli si elencano dal numero più basso; se resta vuoto, il livello va in coda. | Facoltativo. È solo il posto del livello in questo elenco (1 = primo), non l'ordine di scuola: quello è il nome del livello. Se resta vuoto, un livello nuovo va in fondo all'elenco e uno già esistente resta dov'è. | 6 |
+| `UI_FIELD_ORDINE` | ordine | posizione nell'elenco | 6 |
+| `UI_LEVEL_POSITION` | (nuova) | posizione {n} nell'elenco | 6 |
+| `UI_SCHOOL_LEVELS_NOTE` | (nuova) | Un livello è un grado di scuola dell'istituto (per esempio Primaria) e raccoglie le sue classi. I livelli compaiono nell'ordine della loro posizione nell'elenco. | 6 |
 
 ## Da riprendere
 - **Altre tabelle che a 320 px scorrono di lato** (fuori ambito, non corrette; la pagina non scorre, scorre

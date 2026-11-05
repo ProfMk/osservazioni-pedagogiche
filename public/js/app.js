@@ -1788,7 +1788,7 @@
       titolo: livello ? 'UI_EDIT_LEVEL' : 'UI_NEW_SCHOOL_LEVEL', parametri: { nome: livello ? livello.nome : null },
       invio: livello ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
       campi: [
-        { nome: 'nome', etichetta: 'UI_LEVEL_NAME', input: nome, campo: 'UI_FIELD_NOME' },
+        { nome: 'nome', etichetta: 'UI_LEVEL_NAME', input: nome, campo: 'UI_FIELD_NOME', aiuto: { chiave: 'UI_LEVEL_NAME_HINT' } },
         { nome: 'ordine', etichetta: 'UI_LEVEL_ORDER', input: ordine, campo: 'UI_FIELD_ORDINE', aiuto: { chiave: 'UI_LEVEL_ORDER_HINT' } },
       ],
       invia: function () {
@@ -1825,7 +1825,7 @@
     riga.append(
       contenuto('span', l.nome, { classe: 'titolo' }),
       ' ', t('span', chiaveStatoLivello(l.stato), null, { classe: 'etichetta-stato stato-' + l.stato }),
-      ' ', t('span', 'UI_LEVEL_CLASSES_COUNT', { n: l.classiAttive }, { classe: 'sottotitolo' }),
+      ' ', el('span', { classe: 'sottotitolo' }, [t('span', 'UI_LEVEL_POSITION', { n: l.ordine }), ' · ', t('span', 'UI_LEVEL_CLASSES_COUNT', { n: l.classiAttive })]),
       el('span', { classe: 'azioni' }, azioni)
     );
     return riga;
@@ -1836,6 +1836,7 @@
     return {
       nodi: [
         t('h3', 'UI_SCHOOL_LEVELS'),
+        t('p', 'UI_SCHOOL_LEVELS_NOTE', null, { classe: 'nota' }),
         livelli.length ? el('ul', { classe: 'elenco-admin elenco-livelli' }, livelli.map(function (l) { return rigaLivello(l, r); }))
           : t('p', 'UI_NO_SCHOOL_LEVELS', null, { classe: 'stato' }),
         moduloLivello(null, null),
