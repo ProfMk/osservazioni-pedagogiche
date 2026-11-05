@@ -888,3 +888,227 @@ test('Iterazione 2A: RTL — la cornice dell\'amministrazione (menu, anno di lav
   assert.deepEqual(pagina.errori, []);
   await pagina.context().close();
 });
+
+// --- Lavoro 2: inserimento osservazioni (sola lettura, salvataggio sul posto) ------------
+
+/** Attività nuova in 2A, con dati propri: nessun altro test ne dipende. */
+async function attivitaDiProva(nome, dataAttivita = '2026-11-22') {
+  const unita = (await api.get(`/teachings/${t2A.teaching_id}/pedagogical-units`)).corpo[0];
+  const r = await api.post(`/teachings/${t2A.teaching_id}/activities`, { nome, dataAttivita, pedagogicalUnitId: unita.id });
+  assert.equal(r.status, 201);
+  return r.corpo.activity_id;
+}
+
+const hashGriglia = (id, scheda = 'griglia') => `#/classe/${t2A.teaching_id}/attivita/${id}/${scheda}`;
+const selCella = (enrollmentId, criterionId) => `tr[data-iscrizione="${enrollmentId}"] td[data-criterio="${criterionId}"]`;
+const grigliaApi = async (id) => (await api.get(`/activities/${id}/griglia`)).corpo;
+
+/** Attende che nessuna cella sia in salvataggio. */
+async function salvataggiConclusi(pagina) {
+  await pagina.waitForFunction(() => !document.querySelector('table.griglia [aria-busy="true"]'));
+}
+
+/** Osservatore di mutazioni installato prima delle scelte: conta i nodi «Caricamento» aggiunti. */
+async function osservaCaricamenti(pagina) {
+  await pagina.evaluate((testo) => {
+    window.caricamentiVisti = 0;
+    new MutationObserver((mutazioni) => {
+      mutazioni.forEach((m) => m.addedNodes.forEach((n) => { if ((n.textContent || '').includes(testo)) window.caricamentiVisti += 1; }));
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, CATALOGO.STATUS_LOADING);
+}
+
+/** L'esito di riga mostrato corrisponde a quello della griglia del server (banda e n/N). */
+async function esitoDiRigaComeServer(pagina, id, enrollmentId) {
+  const riga = (await grigliaApi(id)).righe.find((r) => r.enrollmentId === enrollmentId);
+  const mostrato = await pagina.$eval(`tr[data-iscrizione="${enrollmentId}"] td.esito`, (td) => ({
+    banda: (td.querySelector('.chip[data-banda]') || { dataset: {} }).dataset.banda || null,
+    base: td.querySelector('.tenue').textContent,
+  }));
+  assert.deepEqual(mostrato, {
+    banda: riga.esito.bandaId === null || riga.esito.bandaId === undefined ? null : String(riga.esito.bandaId),
+    base: testoCatalogo('BASE_COUNT', riga.esito.base),
+  });
+  return riga;
+}
+
+test('Lavoro 2: salvataggio sul posto — stesso controllo, fuoco e scorrimento invariati, nessun «Caricamento», esito di riga dal server', async () => {
+  const id = await attivitaDiProva('Prova sul posto E2E');
+  const pagina = await nuovaPagina();
+  await accedi(pagina);
+  await vaiA(pagina, hashGriglia(id));
+  assert.equal(await pagina.$('.avviso.sola-lettura'), null, 'anno attivo: nessun avviso di sola lettura');
+  const g = await grigliaApi(id);
+  const riga = g.righe.at(-1);
+  const [c1, c2] = g.criteri;
+  const cella = selCella(riga.enrollmentId, c1.id);
+  const selettore = await pagina.$(`${cella} select`);
+  await selettore.scrollIntoViewIfNeeded();
+  await selettore.focus();
+  const scorrimento = await pagina.evaluate(() => scrollY);
+  assert.ok(scorrimento > 0, 'la riga bassa richiede lo scorrimento della pagina');
+  await osservaCaricamenti(pagina);
+  await selettore.evaluate((n) => {
+    n.dataset.stesso = '1';
+    // Il salvataggio locale è rapido: si registra ogni valore di aria-busy assunto dalla cella.
+    window.occupata = [];
+    new MutationObserver(() => window.occupata.push(n.closest('td').getAttribute('aria-busy')))
+      .observe(n.closest('td'), { attributes: true, attributeFilter: ['aria-busy'] });
+  });
+
+  await pagina.selectOption(`${cella} select`, '2');
+  await salvataggiConclusi(pagina);
+  assert.deepEqual(await pagina.evaluate(() => window.occupata), ['true', null], 'durante il salvataggio la cella è occupata');
+  const dopo = await pagina.evaluate((sel) => {
+    const s = document.querySelector(`${sel} select`);
+    return { stesso: s.dataset.stesso === '1' && s.isConnected, fuoco: document.activeElement === s, abilitato: !s.disabled, valore: s.value, scrollY, caricamenti: window.caricamentiVisti };
+  }, cella);
+  assert.deepEqual(dopo, { stesso: true, fuoco: true, abilitato: true, valore: '2', scrollY: scorrimento, caricamenti: 0 });
+  assert.equal(await pagina.getAttribute(`${cella} .valore`, 'data-valore'), '2', 'il segno della cella segue il valore salvato');
+  assert.equal(await pagina.getAttribute(`${cella} .valore`, 'data-banda'), String(g.scala.valori.find((v) => v.valore === 2).bandaId));
+  assert.equal(await pagina.textContent('.annuncio-salvataggio[role=status]'), CATALOGO.UI_CELL_SAVED);
+  assert.equal(await pagina.$$eval('[role=status].annuncio-salvataggio', (n) => n.length), 1, 'una sola regione di annuncio');
+  await esitoDiRigaComeServer(pagina, id, riga.enrollmentId);
+
+  // Scelte ravvicinate: sulla stessa cella vince l'ultima; la riga resta coerente con il server.
+  await pagina.selectOption(`${cella} select`, '0');
+  await pagina.selectOption(`${selCella(riga.enrollmentId, c2.id)} select`, '1');
+  await pagina.selectOption(`${cella} select`, '1');
+  await salvataggiConclusi(pagina);
+  const servita = await esitoDiRigaComeServer(pagina, id, riga.enrollmentId);
+  assert.deepEqual(servita.celle.slice(0, 2).map((c) => c.valore), [1, 1]);
+  assert.equal(await pagina.getAttribute(`${cella} .valore`, 'data-valore'), '1');
+  assert.deepEqual(await pagina.evaluate(() => [scrollY, window.caricamentiVisti]), [scorrimento, 0]);
+
+  // Il risultato non cambia: una griglia ridisegnata da zero mostra lo stesso esito.
+  const esitoSulPosto = await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`);
+  await vaiA(pagina, hashGriglia(id));
+  assert.equal(await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`), esitoSulPosto);
+  await senzaTestiMancanti(pagina, 'griglia dopo i salvataggi');
+  await nessunaViolazione(pagina, 'griglia dopo i salvataggi');
+
+  // Anno attivo: la scheda «Attività» ha il modulo «Nuova attività» e nessun avviso.
+  await vaiA(pagina, hashClasse('attivita'));
+  assert.ok(await pagina.$('#nuova-nome'));
+  assert.equal(await pagina.$('.avviso.sola-lettura'), null);
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Lavoro 2: un salvataggio fallito (500, poi 409) riporta il controllo all\'ultimo valore salvato, con il messaggio accanto; nessun banner globale', async () => {
+  const id = await attivitaDiProva('Prova errori E2E');
+  const pagina = await nuovaPagina();
+  await accedi(pagina);
+  await vaiA(pagina, hashGriglia(id));
+  const g = await grigliaApi(id);
+  const riga = g.righe[0];
+  const cella = selCella(riga.enrollmentId, g.criteri[0].id);
+  await pagina.selectOption(`${cella} select`, '1');
+  await salvataggiConclusi(pagina);
+  const esitoSalvato = await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`);
+
+  const simulate = [
+    { status: 500, body: '' },
+    { status: 409, body: JSON.stringify({ errore: { codice: 'ERR_SCHOOL_YEAR_CLOSED', parametri: {} } }) },
+  ];
+  await pagina.route('**/api/activities/*/enrollments/*/criteria/*', (route) => {
+    const r = simulate.shift();
+    return r ? route.fulfill({ status: r.status, contentType: 'application/json', body: r.body }) : route.continue();
+  });
+  const statoCella = () => pagina.$eval(cella, (td) => {
+    const s = td.querySelector('select');
+    const m = td.querySelector('.errore-campo');
+    return {
+      valore: s.value, invalido: s.getAttribute('aria-invalid'), descritto: s.getAttribute('aria-describedby') === m.id,
+      messaggio: m.hidden ? null : m.textContent, segno: td.querySelector('.valore').dataset.valore,
+      bannerGlobale: document.querySelector('#errore').textContent, fuoco: document.activeElement === s,
+    };
+  });
+  await pagina.focus(`${cella} select`);
+  for (const [scelto, codice] of [['2', 'ERR_INTERNAL'], ['0', 'ERR_SCHOOL_YEAR_CLOSED']]) {
+    await pagina.selectOption(`${cella} select`, scelto);
+    await salvataggiConclusi(pagina);
+    assert.deepEqual(await statoCella(), {
+      valore: '1', invalido: 'true', descritto: true, messaggio: CATALOGO[codice], segno: '1', bannerGlobale: '', fuoco: true,
+    }, codice);
+    assert.equal(await pagina.innerText(`tr[data-iscrizione="${riga.enrollmentId}"] td.esito`), esitoSalvato, 'esito invariato');
+  }
+  assert.equal((await grigliaApi(id)).righe[0].celle[0].valore, 1, 'nel database resta l\'ultimo valore salvato');
+  await nessunaViolazione(pagina, 'griglia con un errore sul controllo');
+
+  // Di nuovo raggiungibile: il salvataggio riesce e il messaggio sparisce.
+  await pagina.unroute('**/api/activities/*/enrollments/*/criteria/*');
+  await pagina.selectOption(`${cella} select`, '2');
+  await salvataggiConclusi(pagina);
+  const ripreso = await statoCella();
+  assert.deepEqual([ripreso.valore, ripreso.invalido, ripreso.messaggio, ripreso.segno], ['2', null, null, '2']);
+  assert.equal(await pagina.getAttribute(`${cella} select`, 'aria-describedby'), null);
+  await esitoDiRigaComeServer(pagina, id, riga.enrollmentId);
+  assert.deepEqual(pagina.errori.filter((e) => !/^(500|409) .*\/criteria\//.test(e)), [], 'solo gli errori simulati');
+  await pagina.context().close();
+});
+
+test('Lavoro 2: solo tastiera — frecce sul controllo per scegliere, Tab al criterio successivo della stessa riga; salvataggio sul posto', async () => {
+  const id = await attivitaDiProva('Prova tastiera E2E');
+  const pagina = await nuovaPagina();
+  await accedi(pagina);
+  await vaiA(pagina, hashGriglia(id));
+  const g = await grigliaApi(id);
+  const riga = g.righe[1];
+  const [c1, c2] = g.criteri;
+  await osservaCaricamenti(pagina);
+  await pagina.focus(`${selCella(riga.enrollmentId, c1.id)} select`);
+  await pagina.keyboard.press('ArrowDown');
+  await salvataggiConclusi(pagina);
+  await pagina.keyboard.press('Tab');
+  const dove = await pagina.evaluate(() => {
+    const td = document.activeElement.closest('td');
+    return [document.activeElement.tagName, td.dataset.criterio, td.closest('tr').dataset.iscrizione];
+  });
+  assert.deepEqual(dove, ['SELECT', String(c2.id), String(riga.enrollmentId)], 'Tab: criterio successivo dello stesso alunno');
+  await pagina.keyboard.press('ArrowDown');
+  await pagina.keyboard.press('ArrowDown');
+  await salvataggiConclusi(pagina);
+  const servita = await esitoDiRigaComeServer(pagina, id, riga.enrollmentId);
+  assert.deepEqual(servita.celle.slice(0, 2).map((c) => c.valore), [g.scala.valori[0].valore, g.scala.valori[1].valore]);
+  assert.equal(await pagina.evaluate((sel) => document.activeElement === document.querySelector(`${sel} select`), selCella(riga.enrollmentId, c2.id)), true, 'il fuoco resta');
+  assert.equal(await pagina.evaluate(() => window.caricamentiVisti), 0);
+  assert.deepEqual(pagina.errori, []);
+  await pagina.context().close();
+});
+
+test('Lavoro 2: anno chiuso — avviso di sola lettura appena si entra (griglia, esito, scheda «Attività»), nessun controllo, nessun modulo «Nuova attività»', async () => {
+  const id = await attivitaDiProva('Prova anno chiuso E2E');
+  const g = await grigliaApi(id);
+  assert.equal((await api.put(`/activities/${id}/enrollments/${g.righe[0].enrollmentId}/criteria/${g.criteri[0].id}`, { valore: 2 })).status, 200);
+  // Dati condivisi: l'anno di Alfa si chiude solo per questo test e si riapre in ogni caso.
+  const anno = (await pool.query("SELECT sy.id FROM school_years sy JOIN tenants t ON t.id = sy.tenant_id WHERE t.slug = 'alfa' AND sy.stato = 'attivo'")).rows[0].id;
+  await pool.query("UPDATE school_years SET stato = 'chiuso' WHERE id = $1", [anno]);
+  try {
+    const pagina = await nuovaPagina();
+    await accedi(pagina);
+    const avvisoVisibile = async (dove) => {
+      const avviso = await pagina.$('#contenuto .avviso.sola-lettura[role=status]');
+      assert.ok(avviso && await avviso.isVisible(), `${dove}: avviso visibile`);
+      assert.equal((await avviso.textContent()).replace(/\s+/g, ' ').trim(), `${CATALOGO.UI_READ_ONLY} ${CATALOGO.ERR_SCHOOL_YEAR_CLOSED}`);
+      assert.equal(await avviso.$('button'), null, `${dove}: l'avviso non si chiude`);
+      await senzaTestiMancanti(pagina, dove);
+      await nessunaViolazione(pagina, dove);
+    };
+    await vaiA(pagina, hashGriglia(id));
+    await avvisoVisibile('griglia, anno chiuso');
+    assert.equal(await pagina.$eval('#contenuto .avviso.sola-lettura', (a) => !!(a.compareDocumentPosition(document.querySelector('#contenuto .schede')) & Node.DOCUMENT_POSITION_FOLLOWING)), true, 'sopra le schede');
+    assert.equal(await pagina.$$eval('table.griglia select', (n) => n.length), 0, 'nessun controllo');
+    assert.equal(await pagina.getAttribute(`${selCella(g.righe[0].enrollmentId, g.criteri[0].id)} .valore`, 'data-valore'), '2', 'i valori restano leggibili');
+    await vaiA(pagina, hashGriglia(id, 'esito'));
+    await avvisoVisibile('esito, anno chiuso');
+    await vaiA(pagina, hashClasse('attivita'));
+    await avvisoVisibile('scheda Attività, anno chiuso');
+    assert.equal(await pagina.$('#nuova-nome'), null, 'nessun modulo «Nuova attività»');
+    assert.ok(await pagina.$('#contenuto .elenco .scelta'), 'le attività restano consultabili');
+    assert.deepEqual(pagina.errori, []);
+    await pagina.context().close();
+  } finally {
+    await pool.query("UPDATE school_years SET stato = 'attivo' WHERE id = $1", [anno]);
+  }
+});

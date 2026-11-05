@@ -889,13 +889,27 @@
 
   // --- ATTIVITÀ: elenco, griglia di inserimento, esito (P14) ------------------------------
 
+  /** Regola di scrittura dell'insegnamento, decisa dal server: { attivita, osservazioni }, ognuna { consentita, motivo }. */
+  function regolaDiScrittura(tn) { return api('/teachings/' + tn.teaching_id + '/scrittura'); }
+
+  /**
+   * Sola lettura (nota 6): avviso fisso, non chiudibile, con il motivo ricevuto dal server.
+   * Il motivo dipende solo dallo stato (anno chiuso; più avanti scuola sospesa): uguale per tutti i ruoli.
+   */
+  function avvisoSolaLettura(regola) {
+    if (!regola || !regola.motivo) return null;
+    return el('div', { classe: 'avviso sola-lettura', role: 'status' }, [t('strong', 'UI_READ_ONLY'), ' ', t('span', regola.motivo)]);
+  }
+
   SCHEDE_CLASSE.attivita = async function (tn) {
     var id = tn.teaching_id;
-    var risposte = await Promise.all([api('/teachings/' + id + '/activities'), api('/teachings/' + id + '/pedagogical-units')]);
+    var risposte = await Promise.all([api('/teachings/' + id + '/activities'), api('/teachings/' + id + '/pedagogical-units'), regolaDiScrittura(tn)]);
     var attivita = risposte[0];
     var unita = risposte[1];
+    var scrittura = risposte[2];
     return [
-      haPermesso('activity.create') ? moduloNuovaAttivita(tn, unita) : null,
+      avvisoSolaLettura(scrittura.attivita),
+      scrittura.attivita.consentita ? moduloNuovaAttivita(tn, unita) : null,
       attivita.length ? el('div', { classe: 'elenco' }, attivita.map(function (a) {
         var rotta = { tipo: 'attivita', teachingId: id, activityId: a.activity_id, scheda: 'griglia' };
         return el('a', { href: versoHash(rotta), classe: 'scelta', onclick: function (e) { e.preventDefault(); vai(rotta); } }, [
@@ -937,7 +951,8 @@
 
   VISTE.attivita = async function (r) {
     var tn = await insegnamento(r.teachingId);
-    var elenco = await api('/teachings/' + tn.teaching_id + '/activities');
+    var risposte = await Promise.all([api('/teachings/' + tn.teaching_id + '/activities'), regolaDiScrittura(tn)]);
+    var elenco = risposte[0];
     var a = elenco.find(function (x) { return x.activity_id === r.activityId; });
     if (!a) throw new ErroreApi({ codice: 'ERR_NOT_FOUND', parametri: { risorsa: 'UI_RESOURCE_ACTIVITY' } }, 404);
     var indietro = cornice([RADICE, voceMateria(tn), voceClasse(tn, 'attivita'), { contenuto: a.nome }]);
@@ -945,45 +960,54 @@
       var rotta = { tipo: 'attivita', teachingId: tn.teaching_id, activityId: a.activity_id, scheda: s[0] };
       return t('a', s[1], null, { href: versoHash(rotta), role: 'tab', 'aria-selected': String(s[0] === r.scheda), classe: 'scheda', onclick: function (e) { e.preventDefault(); vai(rotta); } });
     }));
-    var corpo = r.scheda === 'esito' ? await esitoAttivita(a) : await grigliaAttivita(tn, a, r);
-    return [indietro, el('h2', {}, [contenuto('span', a.nome), ' · ', el('bdi', {}, [I18n.data(a.data_attivita)])]), schede,
+    var corpo = r.scheda === 'esito' ? await esitoAttivita(a) : await grigliaAttivita(a);
+    // L'avviso di sola lettura sta sopra le schede: lo si vede appena si entra, in griglia e in esito.
+    return [indietro, el('h2', {}, [contenuto('span', a.nome), ' · ', el('bdi', {}, [I18n.data(a.data_attivita)])]),
+      avvisoSolaLettura(risposte[1].osservazioni), schede,
       el('div', { classe: 'corpo-scheda', role: 'tabpanel' }, corpo.filter(Boolean))];
   };
 
-  /** Griglia di inserimento (P14: stessa semantica): ogni cella mostra il valore con il colore della sua banda; vuota = non osservato (grigio). */
-  async function grigliaAttivita(tn, a, rotta) {
+  /** Esito di una riga: n/N, percentuale e banda come arrivano dal server (griglia o risposta del salvataggio). */
+  function contenutoEsitoRiga(esito, ctx) {
+    return [G.numero(esito, ctx), ' ', G.chipBanda(esito, ctx), ' ', t('span', 'BASE_COUNT', { n: esito.base.n, N: esito.base.N }, { classe: 'tenue' })];
+  }
+
+  /**
+   * Griglia di inserimento (P14: stessa semantica): ogni cella mostra il valore con il colore della sua banda;
+   * vuota = non osservato (grigio). Riferimenti stabili nel DOM: tr[data-iscrizione], td[data-criterio], td.esito.
+   * I controlli compaiono solo se il server consente la scrittura (g.scrittura).
+   */
+  async function grigliaAttivita(a) {
     var g = await api('/activities/' + a.activity_id + '/griglia');
     if (g.grigliaNonConfigurata) return [t('p', 'NOT_CONFIGURED', null, { classe: 'stato' })];
     var ctx = ctxDi(g);
-    var scrittura = haPermesso('observation.create');
+    var scrittura = g.scrittura.consentita;
+    // Una sola regione per l'annuncio cortese dei salvataggi, non una per cella.
+    var annuncio = el('p', { classe: 'nascosta annuncio-salvataggio', role: 'status' });
+    var contesto = { activityId: a.activity_id, ctx: ctx, annuncio: annuncio };
     var corpoTabella = el('tbody', {}, g.righe.map(function (riga) {
       var nomeAlunno = riga.cognome + ' ' + riga.nome;
+      var statoRiga = { enrollmentId: riga.enrollmentId, coda: Promise.resolve(), esito: null };
       var celle = riga.celle.map(function (cella) {
         var criterio = g.criteri.find(function (c) { return c.id === cella.criterionId; });
         var segnoValore = G.valoreScala(cella.valore, ctx);
         if (!scrittura) {
           var voce = g.scala.valori.find(function (v) { return v.valore === cella.valore; });
-          return el('td', { classe: 'cella-valore' }, [segnoValore, ' ', voce ? contenuto('span', voce.etichetta) : t('span', 'UI_NOT_ASSESSED')]);
+          return el('td', { classe: 'cella-valore', 'data-criterio': cella.criterionId }, [segnoValore, ' ', voce ? contenuto('span', voce.etichetta) : t('span', 'UI_NOT_ASSESSED')]);
         }
         var selettore = el('select', { 'aria-label': I18n.testo('UI_CELL_LABEL', { alunno: nomeAlunno, criterio: criterio.descrizione }) }, [
           t('option', 'UI_NOT_ASSESSED', null, { value: '' }),
         ].concat(g.scala.valori.map(function (v) {
           return t('option', 'UI_SCALE_OPTION', { valore: v.valore, etichetta: v.etichetta }, { value: v.valore, selected: cella.valore === v.valore });
         })));
-        selettore.addEventListener('change', async function () {
-          selettore.disabled = true;
-          try {
-            await api('/activities/' + a.activity_id + '/enrollments/' + riga.enrollmentId + '/criteria/' + cella.criterionId, {
-              method: 'PUT', body: JSON.stringify({ valore: selettore.value === '' ? null : Number(selettore.value) }),
-            });
-            await disegna(rotta);
-          } catch (errore) { mostraErrore(errore); selettore.disabled = false; }
-        });
-        return el('td', { classe: 'cella-valore' }, [segnoValore, ' ', selettore]);
+        var messaggio = el('span', { id: 'errore-cella-' + riga.enrollmentId + '-' + cella.criterionId, classe: 'errore-campo', role: 'alert', hidden: true });
+        var td = el('td', { classe: 'cella-valore', 'data-criterio': cella.criterionId }, [segnoValore, ' ', selettore, messaggio]);
+        var statoCella = { criterionId: cella.criterionId, td: td, selettore: selettore, segno: segnoValore, messaggio: messaggio, salvato: cella.valore, inCorso: 0 };
+        selettore.addEventListener('change', function () { salvaCellaSulPosto(contesto, statoRiga, statoCella); });
+        return td;
       });
-      return el('tr', {}, [el('th', { scope: 'row' }, [nomeAlunno])].concat(celle).concat([
-        el('td', { classe: 'esito' }, [G.numero(riga.esito, ctx), ' ', G.chipBanda(riga.esito, ctx), ' ', t('span', 'BASE_COUNT', { n: riga.esito.base.n, N: riga.esito.base.N }, { classe: 'tenue' })]),
-      ]));
+      statoRiga.esito = el('td', { classe: 'esito' }, contenutoEsitoRiga(riga.esito, ctx));
+      return el('tr', { 'data-iscrizione': riga.enrollmentId }, [el('th', { scope: 'row' }, [nomeAlunno])].concat(celle).concat([statoRiga.esito]));
     }));
     return [el('div', { classe: 'scorrimento' }, [el('table', { classe: 'griglia' }, [
       el('caption', { classe: 'nascosta' }, [t('span', 'UI_GRID')]),
@@ -991,7 +1015,60 @@
         .concat(g.criteri.map(function (c) { return el('th', { scope: 'col' }, [c.codice, ' ', contenuto('span', c.descrizione)]); }))
         .concat([t('th', 'UI_ACTIVITY_RESULT', null, { scope: 'col' })]))]),
       corpoTabella,
-    ])])];
+    ])]), annuncio];
+  }
+
+  /**
+   * Salvataggio sul posto (nota 8): nessun ridisegno e nessun «Caricamento»; il controllo non viene mai
+   * disabilitato né sostituito (fuoco e scorrimento restano). Le scritture di una riga sono in coda: la
+   * risposta di una non può mostrare un esito più vecchio di un'altra; di più scelte ravvicinate sulla
+   * stessa cella si salva l'ultima. A salvataggio riuscito cambiano solo il segno della cella e l'esito della
+   * riga, con i valori restituiti dal server. In caso d'errore il controllo torna all'ultimo valore salvato
+   * e il messaggio compare accanto a lui.
+   */
+  function salvaCellaSulPosto(contesto, riga, cella) {
+    cella.inCorso += 1;
+    cella.td.setAttribute('aria-busy', 'true');
+    riga.coda = riga.coda.then(async function () {
+      var valore = cella.selettore.value === '' ? null : Number(cella.selettore.value);
+      try {
+        if (valore === cella.salvato) return;
+        var risposta = await api('/activities/' + contesto.activityId + '/enrollments/' + riga.enrollmentId + '/criteria/' + cella.criterionId, {
+          method: 'PUT', body: JSON.stringify({ valore: valore }),
+        });
+        cella.salvato = risposta.cella.valore;
+        var segno = G.valoreScala(risposta.cella.valore, contesto.ctx);
+        cella.segno.replaceWith(segno);
+        cella.segno = segno;
+        riga.esito.replaceChildren.apply(riga.esito, contenutoEsitoRiga(risposta.riga.esito, contesto.ctx));
+        togliErroreCella(cella);
+        contesto.annuncio.replaceChildren(t('span', 'UI_CELL_SAVED'));
+      } catch (errore) {
+        if (errore instanceof ErroreApi && errore.stato === 401) { mostraAccesso(); return; }
+        cella.selettore.value = cella.salvato === null ? '' : String(cella.salvato);
+        mostraErroreCella(cella, errore instanceof ErroreApi ? errore : { codice: 'ERR_INTERNAL' });
+      } finally {
+        cella.inCorso -= 1;
+        if (cella.inCorso === 0) cella.td.removeAttribute('aria-busy');
+      }
+    });
+  }
+
+  function mostraErroreCella(cella, errore) {
+    cella.messaggio.textContent = I18n.testo(errore.codice, errore.parametri);
+    if (I18n.esiste(errore.codice)) cella.messaggio.removeAttribute('data-testo-mancante');
+    else cella.messaggio.setAttribute('data-testo-mancante', errore.codice);
+    cella.messaggio.hidden = false;
+    cella.selettore.setAttribute('aria-invalid', 'true');
+    cella.selettore.setAttribute('aria-describedby', cella.messaggio.id);
+  }
+
+  function togliErroreCella(cella) {
+    cella.messaggio.hidden = true;
+    cella.messaggio.replaceChildren();
+    cella.messaggio.removeAttribute('data-testo-mancante');
+    cella.selettore.removeAttribute('aria-invalid');
+    cella.selettore.removeAttribute('aria-describedby');
   }
 
   /** ESITO DELL'ATTIVITÀ (P14): solo i dati di questa attività; nessun ◇, nessuna finestra. */

@@ -224,6 +224,46 @@ test('PUT della cella (Beta, scala 1–4): stesso esito della griglia', async ()
   assert.deepEqual(scala.valori.map((v) => v.valore), [1, 2, 3, 4]);
 });
 
+// ===========================================================================
+// CLIENT: CONTROLLI STATICI (passo 2)
+// ===========================================================================
+
+const APP = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
+
+/** Corpo della funzione `nome` di app.js (parentesi graffe bilanciate). */
+function corpoFunzione(nome) {
+  const inizio = APP.indexOf(`function ${nome}(`);
+  assert.ok(inizio >= 0, `${nome} non trovata`);
+  const apertura = APP.indexOf('{', inizio);
+  let profondita = 0;
+  for (let i = apertura; i < APP.length; i += 1) {
+    if (APP[i] === '{') profondita += 1;
+    if (APP[i] === '}') profondita -= 1;
+    if (profondita === 0) return APP.slice(apertura, i + 1);
+  }
+  throw new Error(`${nome}: graffe non bilanciate`);
+}
+
+test('Client: i testi nuovi della sola lettura e del salvataggio sul posto sono nel catalogo', () => {
+  for (const chiave of ['UI_READ_ONLY', 'UI_CELL_SAVED', 'ERR_SCHOOL_YEAR_CLOSED', 'ERR_INTERNAL']) assert.ok(chiave in CATALOGO, chiave);
+  assert.match(APP, /'UI_READ_ONLY'/);
+  assert.match(APP, /'UI_CELL_SAVED'/);
+});
+
+test('Client: il salvataggio di una cella non ridisegna, non mostra «Caricamento», non disabilita il controllo, non usa il banner globale', () => {
+  const salva = corpoFunzione('salvaCellaSulPosto');
+  for (const vietato of ['disegna(', 'caricamento(', '.disabled', 'mostraErrore(', 'replaceChildren(contenitore', 'vai(']) {
+    assert.ok(!salva.includes(vietato), `salvaCellaSulPosto contiene ${vietato}`);
+  }
+  const griglia = corpoFunzione('grigliaAttivita');
+  assert.match(griglia, /addEventListener\('change', function \(\) \{ salvaCellaSulPosto\(contesto, statoRiga, statoCella\); \}\)/);
+  assert.ok(!griglia.includes('disegna('), 'la griglia non ridisegna');
+  assert.ok(!griglia.includes("haPermesso('observation.create')"), 'la scrittura la decide il server (g.scrittura)');
+  assert.match(griglia, /g\.scrittura\.consentita/);
+  // Riferimenti nel DOM usati dagli E2E e dal reflow.
+  for (const riferimento of ["'data-iscrizione'", "'data-criterio'", "classe: 'esito'"]) assert.ok(griglia.includes(riferimento), riferimento);
+});
+
 test('PUT della cella: il coordinatore e l\'amministratore non scrivono (403), su anno chiuso nessuno (409); nessuna riga nella risposta di errore', async () => {
   const docente = await loginESwitch(srv.base, DOCENTE, 'alfa');
   const { attivita } = await insegnamentoEAttivitaAlfa(docente);

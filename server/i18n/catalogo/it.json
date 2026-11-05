@@ -400,6 +400,8 @@
     "UI_CLASS_NAME": "Nome della classe",
     "UI_CLASS_NAME_HINT": "Per esempio 1A; al massimo 50 caratteri.",
     "UI_CLASS_DEACTIVATE_CONFIRM": "Disattivare la classe {nome}? Resterà leggibile nello storico.",
-    "UI_CLASS_DELETE_CONFIRM": "Eliminare la classe {nome}? L'operazione non si può annullare."
+    "UI_CLASS_DELETE_CONFIRM": "Eliminare la classe {nome}? L'operazione non si può annullare.",
+    "UI_READ_ONLY": "Sola lettura",
+    "UI_CELL_SAVED": "Salvato."
   }
 }

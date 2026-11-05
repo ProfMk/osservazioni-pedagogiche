@@ -9,8 +9,8 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 | Passo | Contenuto | Commit | `npm test` | `npm run test:e2e` |
 |---|---|---|---|---|
 | 0 | Avvio, piano | `7b15a4c` | 206/206 | 22/22 |
-| 1 | Server: sola lettura ed esito sul posto | (questo commit) | 213/213 | 22/22 |
-| 2 | Client: avviso di sola lettura, salvataggio sul posto | — | — | — |
+| 1 | Server: sola lettura ed esito sul posto | `ea3a90f` | 213/213 | 22/22 |
+| 2 | Client: avviso di sola lettura, salvataggio sul posto | (questo commit) | 215/215 | 26/26 |
 | 3 | Reflow della griglia | — | — | — |
 | 4 | Partenza per ruolo, «Classi del mio livello» | — | — | — |
 | 5 | Nome dell'anno modificabile | — | — | — |
@@ -54,6 +54,31 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
   senza `teaching.read`); il PUT della cella aggiunge `cella` e `riga` (anche con `valore: null`).
 - Test: `tests/inserimentoOsservazioni.test.js` (7 casi), aggiunto a `test` e `test:integration`.
 
+## Passo 2 — Client: avviso di sola lettura e salvataggio sul posto
+- `public/js/app.js`:
+  - `regolaDiScrittura(tn)` legge `GET /teachings/:id/scrittura`; `avvisoSolaLettura(regola)`: `div.avviso.sola-lettura`
+    con `role="status"`, titolo `UI_READ_ONLY` + testo del `motivo` ricevuto; nessun pulsante di chiusura; nulla se
+    `motivo` è nullo.
+  - Vista dell'attività: l'avviso sta **sopra le schede** (griglia ed esito), con la regola `osservazioni`.
+    Scheda «Attività» della classe: avviso con la regola `attivita`; il modulo «Nuova attività» solo se
+    `scrittura.attivita.consentita` (prima: `haPermesso('activity.create')`).
+  - Griglia: controlli solo se `g.scrittura.consentita` (prima: `haPermesso('observation.create')`).
+    Riferimenti nel DOM: `tr[data-iscrizione]`, `td.cella-valore[data-criterio]` (anche in sola lettura), `td.esito`.
+  - `salvaCellaSulPosto(contesto, riga, cella)`: niente `disegna()`, niente «Caricamento», il `<select>` non è mai
+    disabilitato né sostituito; `aria-busy="true"` sulla cella durante il salvataggio; coda per riga
+    (`riga.coda`); a salvataggio riuscito cambiano solo il segno (`G.valoreScala`) e la cella `esito`
+    (`contenutoEsitoRiga`, valori del PUT); annuncio `UI_CELL_SAVED` in un'unica regione `role="status"`
+    (visivamente nascosta) sotto la tabella.
+  - Errore: il controllo torna all'ultimo valore salvato, `aria-invalid="true"`, messaggio in
+    `span#errore-cella-<iscrizione>-<criterio>.errore-campo` (`role="alert"`) collegato con `aria-describedby`;
+    testo dal codice d'errore, `ERR_INTERNAL` se manca; mai il banner `#errore`. 401 → accesso.
+- Test: due controlli statici in `tests/inserimentoOsservazioni.test.js` (catalogo; `salvaCellaSulPosto` senza
+  `disegna(`, `caricamento(`, `.disabled`, `mostraErrore(`, `vai(`; la griglia usa `g.scrittura.consentita`);
+  quattro E2E nuovi in `tests/e2e.test.js` (salvataggio sul posto con scorrimento, fuoco, osservatore di
+  mutazioni e confronto con `GET …/griglia`; errori 500 e 409 simulati con `pagina.route`; solo tastiera;
+  anno chiuso). axe-core sulle viste toccate (griglia con valori, griglia con errore, griglia/esito/scheda
+  «Attività» ad anno chiuso).
+
 ## Decisioni prese da Claude Code
 1. **Anno in preparazione nella regola**: `motivoDiSolaLettura` restituisce
    `ERR_SCHOOL_YEAR_IN_PREPARATION` (lo stesso codice del 409 di oggi). Non è raggiungibile dalle
@@ -64,6 +89,19 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
    altre letture del percorso (`scopeDiTeaching`).
 4. Nel PUT, `cella.valore` e `riga` sono **riletti dal database** dopo la scrittura (non copiati dalla
    richiesta).
+5. (Passo 2) **«Vince l'ultima»**: ogni scrittura in coda legge il valore del controllo quando parte, non quando
+   è stata chiesta; se coincide con l'ultimo valore salvato non parte. Tre scelte rapide sulla stessa cella
+   danno quindi al più due PUT, e l'ultimo valore è quello salvato.
+6. (Passo 2) Se un salvataggio fallisce mentre sulla stessa cella c'è già una scelta successiva in coda, il
+   ripristino all'ultimo valore salvato **annulla anche quella scelta** (il controllo mostra sempre ciò che
+   è salvato).
+7. (Passo 2) Nuova chiave `UI_CELL_SAVED` («Salvato.») invece di riusare `UI_SAVED` («Modifica salvata.»,
+   usata dai moduli dell'amministrazione), per l'annuncio breve chiesto dal prompt.
+8. (Passo 2) La regione dell'annuncio è visivamente nascosta (`.nascosta`): chi vede ha già il segno della
+   cella e l'esito della riga che cambiano.
+9. (Passo 2) `aria-describedby` del controllo punta al messaggio solo mentre c'è un errore.
+10. (Passo 2) L'E2E dell'anno chiuso chiude **per la durata del test** l'anno attivo di Alfa e lo riapre nel
+    `finally`; le attività usate dagli E2E nuovi sono create dal test stesso (nessun dato del seed toccato).
 
 ## Asserzioni esistenti modificate
 1. `tests/immutabilita.test.js`, test «Anno attivo: salvataggio e cancellazione (valore null) di
@@ -78,7 +116,10 @@ File temporaneo: alla chiusura lo sostituisce il CHECKPOINT 017, scritto dal pro
 Nessuna.
 
 ## Testi di catalogo nuovi o modificati
-(nessuno finora)
+| Chiave | Prima | Dopo | Passo |
+|---|---|---|---|
+| `UI_READ_ONLY` | (nuova) | Sola lettura | 2 |
+| `UI_CELL_SAVED` | (nuova) | Salvato. | 2 |
 
 ## Da riprendere
 (niente)
