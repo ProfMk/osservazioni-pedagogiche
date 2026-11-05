@@ -17,10 +17,18 @@ const motore = require('../lib/calcoloProgresso');
 const { pubblico, bandePubbliche, scalaPubblica, traduttoreDi } = require('../lib/pubblicazione');
 
 /**
+ * Stato degli anni scolastici (006). Un anno 'in_preparazione' è invisibile nel percorso
+ * degli insegnamenti, per tutti i ruoli (iterazione 2A, decisione 11): i docenti lo vedono,
+ * e ci scrivono, solo quando diventa 'attivo'.
+ */
+const ANNO = Object.freeze({ ATTIVO: 'attivo', IN_PREPARAZIONE: 'in_preparazione', CHIUSO: 'chiuso' });
+
+/**
  * Teaching raggiungibili dall'account nel percorso unico (P15): i propri (titolare) e
  * quelli che l'account può leggere per scope di classe, livello, tenant o piattaforma
  * (stessa regola di RBAC delle rotte: permesso teaching.read). Ordine: materia nell'ordine
- * configurato, poi classe. Nessun ordinamento sul testo tradotto (B-4).
+ * configurato, poi classe. Nessun ordinamento sul testo tradotto (B-4). Esclusi gli
+ * insegnamenti degli anni in preparazione.
  */
 async function getTeachingsPropri(client, { accountId, tenantId, lingua }) {
   const tr = await traduttoreDi(client, lingua);
@@ -34,7 +42,7 @@ async function getTeachingsPropri(client, { accountId, tenantId, lingua }) {
      JOIN school_years sy ON sy.id = t.school_year_id
      JOIN accounts a ON a.id = t.account_id
      JOIN people p ON p.id = a.person_id
-     WHERE t.tenant_id = $2 AND t.stato = 'attivo' AND (
+     WHERE t.tenant_id = $2 AND t.stato = 'attivo' AND sy.stato <> 'in_preparazione' AND (
        t.account_id = $1
        OR EXISTS (
          SELECT 1 FROM role_assignments r
@@ -67,8 +75,9 @@ async function getTeachingsPropri(client, { accountId, tenantId, lingua }) {
 async function verificaTeachingNelTenant(client, teachingId, tenantId) {
   const { rows } = await client.query(
     `SELECT t.id, t.tenant_id, t.school_year_id, t.class_id, t.subject_id, t.account_id, cl.school_level_id,
-            s.nome AS materia, cl.nome AS classe
+            s.nome AS materia, cl.nome AS classe, sy.stato AS anno_stato
      FROM teachings t JOIN subjects s ON s.id = t.subject_id JOIN classes cl ON cl.id = t.class_id
+     JOIN school_years sy ON sy.id = t.school_year_id
      WHERE t.id = $1 AND t.tenant_id = $2`,
     [teachingId, tenantId]
   );
@@ -77,16 +86,47 @@ async function verificaTeachingNelTenant(client, teachingId, tenantId) {
 }
 
 /**
- * Decisione 4 (chiusura V1.1 §5): ogni scrittura su un dato pedagogico richiede che l'anno
- * scolastico bersaglio sia 'attivo'; la lettura resta permessa su tutti gli anni. FOR SHARE:
- * l'anno non può essere chiuso da una transazione concorrente mentre questa scrittura è in corso.
+ * Teaching nel percorso degli insegnamenti (letture): come verificaTeachingNelTenant, ma un
+ * insegnamento di un anno in preparazione non esiste per questo percorso (404). Le scritture
+ * dei docenti usano verificaTeachingNelTenant e ricevono 409 da verificaAnnoScolasticoAttivo.
+ */
+async function verificaTeachingNelPercorso(client, teachingId, tenantId) {
+  const teaching = await verificaTeachingNelTenant(client, teachingId, tenantId);
+  if (teaching.anno_stato === ANNO.IN_PREPARAZIONE) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_TEACHING' });
+  return teaching;
+}
+
+/**
+ * Decisione 4 (chiusura V1.1 §5, modificata nell'iterazione 2A): ogni scrittura dei DOCENTI
+ * (attività, osservazioni) richiede che l'anno scolastico bersaglio sia 'attivo'; la lettura
+ * resta permessa su tutti gli anni. Anno in preparazione -> 409 ERR_SCHOOL_YEAR_IN_PREPARATION
+ * (codice più preciso); anno chiuso o assente -> 409 ERR_SCHOOL_YEAR_CLOSED. FOR SHARE: l'anno
+ * non può cambiare stato in una transazione concorrente mentre questa scrittura è in corso.
  */
 async function verificaAnnoScolasticoAttivo(client, schoolYearId, tenantId) {
   const { rows } = await client.query(
     'SELECT stato FROM school_years WHERE id = $1 AND tenant_id = $2 FOR SHARE',
     [schoolYearId, tenantId]
   );
-  if (rows.length === 0 || rows[0].stato !== 'attivo') throw conflitto('ERR_SCHOOL_YEAR_CLOSED');
+  if (rows.length > 0 && rows[0].stato === ANNO.IN_PREPARAZIONE) throw conflitto('ERR_SCHOOL_YEAR_IN_PREPARATION');
+  if (rows.length === 0 || rows[0].stato !== ANNO.ATTIVO) throw conflitto('ERR_SCHOOL_YEAR_CLOSED');
+}
+
+/**
+ * Scritture di CONFIGURAZIONE (periodi; nei passi futuri curricolo e insegnamenti): permesse
+ * sugli anni 'attivo' e 'in_preparazione'; un anno 'chiuso' resta in sola lettura per tutti
+ * (409 ERR_SCHOOL_YEAR_CLOSED). Anno inesistente o di un altro tenant -> 404. FOR SHARE, come
+ * per le scritture dei docenti. Restituisce l'anno (date come 'YYYY-MM-DD').
+ */
+async function verificaAnnoScolasticoConfigurabile(client, schoolYearId, tenantId) {
+  const { rows } = await client.query(
+    `SELECT id, nome, stato, to_char(data_inizio, 'YYYY-MM-DD') AS data_inizio, to_char(data_fine, 'YYYY-MM-DD') AS data_fine
+     FROM school_years WHERE id = $1 AND tenant_id = $2 FOR SHARE`,
+    [schoolYearId, tenantId]
+  );
+  if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_SCHOOL_YEAR' });
+  if (![ANNO.ATTIVO, ANNO.IN_PREPARAZIONE].includes(rows[0].stato)) throw conflitto('ERR_SCHOOL_YEAR_CLOSED');
+  return rows[0];
 }
 
 /** Nuclei (unità pedagogiche) della materia di un Teaching: uniche opzioni per creare un'Activity. */
@@ -194,7 +234,7 @@ async function getTeachingsDellaClasse(client, classId, tenantId, lingua) {
      JOIN school_years sy ON sy.id = t.school_year_id
      JOIN accounts a ON a.id = t.account_id
      JOIN people p ON p.id = a.person_id
-     WHERE t.class_id = $1 AND t.tenant_id = $2 AND t.stato = 'attivo'
+     WHERE t.class_id = $1 AND t.tenant_id = $2 AND t.stato = 'attivo' AND sy.stato <> 'in_preparazione'
      ORDER BY sy.nome DESC, s.ordine, s.id`,
     [classId, tenantId]
   );
@@ -212,8 +252,10 @@ async function verificaActivityNelTenant(client, activityId, tenantId) {
   const { rows } = await client.query(
     `SELECT a.id, a.nome, a.lingua_contenuto, to_char(a.data_attivita, 'YYYY-MM-DD') AS data_attivita,
             a.teaching_id, a.class_id, a.subject_id, a.pedagogical_unit_id,
-            a.tenant_id, a.school_year_id, cl.school_level_id, cl.nome AS classe, pu.nome AS unita_pedagogica
+            a.tenant_id, a.school_year_id, cl.school_level_id, cl.nome AS classe, pu.nome AS unita_pedagogica,
+            sy.stato AS anno_stato
      FROM activities a
+     JOIN school_years sy ON sy.id = a.school_year_id
      JOIN classes cl ON cl.id = a.class_id
      JOIN pedagogical_units pu ON pu.id = a.pedagogical_unit_id
      WHERE a.id = $1 AND a.tenant_id = $2`,
@@ -221,6 +263,13 @@ async function verificaActivityNelTenant(client, activityId, tenantId) {
   );
   if (rows.length === 0) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_ACTIVITY' });
   return rows[0];
+}
+
+/** Activity nel percorso degli insegnamenti (letture): un'attività di un anno in preparazione non esiste qui (404). */
+async function verificaActivityNelPercorso(client, activityId, tenantId) {
+  const info = await verificaActivityNelTenant(client, activityId, tenantId);
+  if (info.anno_stato === ANNO.IN_PREPARAZIONE) throw nonTrovato('ERR_NOT_FOUND', { risorsa: 'UI_RESOURCE_ACTIVITY' });
+  return info;
 }
 
 async function verificaEnrollmentCoerente(client, activityInfo, enrollmentId) {
@@ -463,6 +512,8 @@ async function getReportClasseActivity(client, { activityId, tenantId, lingua })
 }
 
 module.exports = {
+  ANNO, verificaAnnoScolasticoAttivo, verificaAnnoScolasticoConfigurabile, getAnnoScolasticoCorrente,
+  verificaTeachingNelPercorso, verificaActivityNelPercorso,
   getTeachingsPropri, verificaTeachingNelTenant, getPedagogicalUnitsDiTeaching,
   getActivitiesDiTeaching, creaActivity, verificaActivityNelTenant, getGrigliaActivity, salvaObservation,
   getReportClasseActivity, getStudentiDiTeaching,

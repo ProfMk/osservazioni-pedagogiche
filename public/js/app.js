@@ -79,7 +79,9 @@
       case 'nucleoAlunno': return '#/classe/' + r.teachingId + '/alunno/' + r.enrollmentId + '/nucleo/' + r.nucleoId;
       case 'criterioAlunno': return '#/classe/' + r.teachingId + '/alunno/' + r.enrollmentId + '/nucleo/' + r.nucleoId + '/criterio/' + r.criterioId;
       case 'attivita': return '#/classe/' + r.teachingId + '/attivita/' + r.activityId + '/' + r.scheda;
-      case 'amministrazione': return '#/amministrazione';
+      case 'amministrazione':
+        // Sezione, livello (per le classi) e anno di lavoro restano nella rotta, mai in una preferenza salvata.
+        return '#/amministrazione' + (r.sezione ? '/' + r.sezione : '') + (r.livelloId ? '/' + r.livelloId : '') + (r.annoId ? '?anno=' + r.annoId : '');
       case 'password': return '#/password';
       case 'istituti': return '#/istituti';
       default: return '#/insegnamenti';
@@ -87,10 +89,18 @@
   }
 
   function daHash(hash) {
-    var p = String(hash || '').replace(/^#\/?/, '').split('/');
+    var parti = String(hash || '').replace(/^#\/?/, '').split('?');
+    var p = parti[0].split('/');
     var id = function (i) { return Number(p[i]); };
     if (p[0] === 'materia' && p[1]) return { tipo: 'materia', subjectId: id(1) };
-    if (p[0] === 'amministrazione') return { tipo: 'amministrazione' };
+    if (p[0] === 'amministrazione') {
+      var amministrazione = { tipo: 'amministrazione' };
+      var anno = new URLSearchParams(parti[1] || '').get('anno');
+      if (p[1]) amministrazione.sezione = p[1];
+      if (p[2]) amministrazione.livelloId = id(2);
+      if (anno) amministrazione.annoId = Number(anno);
+      return amministrazione;
+    }
     if (p[0] === 'password') return { tipo: 'password' };
     if (p[0] === 'istituti') return { tipo: 'istituti' };
     if (p[0] === 'classe' && p[1]) {
@@ -1058,7 +1068,7 @@
     return [indietro, t('h2', 'UI_CHANGE_PASSWORD'), area];
   };
 
-  // --- Amministrazione (piattaforma: scuole e amministratori; istituto: completezza delle traduzioni, B-6) ---
+  // --- Amministrazione della piattaforma: scuole e amministratori ---
 
   function persona(a) { return a.nome + ' ' + a.cognome; }
 
@@ -1101,7 +1111,7 @@
 
   async function mostraCredenziali(credenziali) {
     stato.credenzialiDaMostrare = credenziali;
-    await disegna({ tipo: 'amministrazione' });
+    await disegna({ tipo: 'amministrazione', sezione: 'scuole' });
     var titolo = $('titolo-credenziali');
     if (titolo) titolo.focus();
   }
@@ -1190,40 +1200,492 @@
     ]);
   }
 
-  VISTE.amministrazione = async function () {
-    var indietro = cornice([RADICE, { chiave: 'UI_ADMINISTRATION' }]);
-    var corpo = [indietro, t('h2', 'UI_ADMINISTRATION')];
+  // --- Amministrazione: cornice, sezioni, anno di lavoro (iterazione 2A) ----------------------
+
+  /**
+   * Sezioni dell'amministrazione (solo quelle già realizzate). Quelle dell'istituto
+   * richiedono un istituto attivo e tenant.manage_config; «Scuole» è del PLATFORM_ADMIN.
+   * `anno`: la sezione segue l'anno su cui si lavora (selettore in alto).
+   */
+  var SEZIONI_ADMIN = [
+    { id: 'quadro', chiave: 'UI_ADMIN_SECTION_OVERVIEW', istituto: true, anno: true },
+    { id: 'calendario', chiave: 'UI_ADMIN_SECTION_CALENDAR', istituto: true, anno: true },
+    { id: 'livelli', chiave: 'UI_ADMIN_SECTION_LEVELS', istituto: true },
+    { id: 'scuole', chiave: 'UI_ADMIN_SECTION_SCHOOLS', piattaforma: true },
+  ];
+
+  function amministraIstituto() { return !!(stato.me.activeTenantId && haPermesso('tenant.manage_config')); }
+
+  function sezioniDisponibili() {
+    return SEZIONI_ADMIN.filter(function (s) { return s.istituto ? amministraIstituto() : !!stato.me.isPlatformAdmin; });
+  }
+
+  function chiaveStatoAnno(statoAnno) { return 'STATUS_SCHOOL_YEAR_' + statoAnno.toUpperCase(); }
+  function chiaveStatoLivello(statoLivello) { return 'STATUS_SCHOOL_LEVEL_' + statoLivello.toUpperCase(); }
+  function chiaveStatoClasse(statoClasse) { return 'STATUS_CLASS_' + statoClasse.toUpperCase(); }
+
+  function rottaAdmin(r, modifiche) { return Object.assign({ tipo: 'amministrazione', annoId: r.annoId }, modifiche); }
+
+  function collegamentoA(rotta, figli, attributi) {
+    return el('a', Object.assign({ href: versoHash(rotta), classe: 'collegamento', onclick: function (e) { e.preventDefault(); vai(rotta); } }, attributi || {}), figli);
+  }
+
+  /** Dopo una scrittura riuscita: la vista si ridisegna dal server, con la conferma in testa. */
+  async function ridisegna() {
+    await disegna(stato.rotta);
+    contenitore().prepend(conferma('UI_SAVED'));
+  }
+
+  function erroreAzione(errore) {
+    if (errore instanceof ErroreApi && errore.stato === 401) mostraAccesso();
+    else mostraErrore(errore instanceof ErroreApi ? errore : { codice: 'ERR_INTERNAL' });
+  }
+
+  /** Pulsante d'azione: nome accessibile con l'oggetto, conferma esplicita se indicata, poi la vista aggiornata. */
+  function pulsanteAzione(chiave, opzioni) {
+    var pulsante = t('button', chiave, null, {
+      type: 'button', classe: opzioni.classe || 'collegamento',
+      'aria-label': opzioni.per ? I18n.testo(opzioni.per, opzioni.parametri) : null,
+      onclick: async function () {
+        if (opzioni.conferma && !window.confirm(I18n.testo(opzioni.conferma, opzioni.parametri))) return;
+        pulsante.disabled = true;
+        try {
+          await opzioni.esegui();
+          await ridisegna();
+        } catch (errore) {
+          pulsante.disabled = false;
+          erroreAzione(errore);
+        }
+      },
+    });
+    return pulsante;
+  }
+
+  /**
+   * Modulo dell'amministrazione: campi con etichetta, aiuto ed errore (campo()), novalidate,
+   * errori del server sul campo indicato dal parametro `campo` (UI_FIELD_*).
+   */
+  function moduloAdmin(o) {
+    var invio = t('button', o.invio, null, { type: 'submit', classe: 'azione' });
+    var perCampo = {};
+    o.campi.forEach(function (c) { perCampo[c.campo] = c.input; });
+    var modulo = el('form', {
+      classe: 'modulo modulo-admin', novalidate: true, 'aria-labelledby': o.id + '-titolo',
+      onsubmit: async function (evento) {
+        evento.preventDefault();
+        azzeraErroriCampi(modulo);
+        invio.disabled = true;
+        try {
+          await o.invia();
+          await ridisegna();
+        } catch (errore) {
+          assegnaErrore(errore, {}, perCampo);
+          invio.disabled = false;
+        }
+      },
+    }, [
+      t('h4', o.titolo, o.parametri, { id: o.id + '-titolo' }),
+      o.nota ? t('p', o.nota, o.parametri, { classe: 'nota' }) : null,
+      el('div', { classe: 'campi' }, o.campi.map(function (c) { return campo(o.id + '-' + c.nome, c.etichetta, c.input, c.aiuto); })),
+      el('div', { classe: 'pulsanti' }, [invio, o.annulla ? t('button', 'UI_CANCEL', null, { type: 'button', classe: 'collegamento', onclick: o.annulla }) : null]),
+    ]);
+    return modulo;
+  }
+
+  function inputTesto(massimo, valore) {
+    return el('input', { type: 'text', required: true, 'aria-required': 'true', maxlength: massimo, autocomplete: 'off', value: valore || null });
+  }
+  function inputData(valore) { return el('input', { type: 'date', required: true, 'aria-required': 'true', value: valore || null }); }
+
+  function corpoJson(metodo, corpo) { return { method: metodo, body: corpo === undefined ? undefined : JSON.stringify(corpo) }; }
+
+  /** Anno su cui si lavora: un collegamento per anno, con il suo stato; la scelta resta nella rotta. */
+  function selettoreAnno(anni, scelto, r) {
+    var figli = [t('span', 'UI_WORKING_YEAR', null, { id: 'titolo-anno-di-lavoro', classe: 'etichetta' })];
+    if (!anni.length) {
+      figli.push(t('span', 'UI_NO_SCHOOL_YEARS', null, { classe: 'stato' }));
+      return el('div', { classe: 'anno-di-lavoro' }, figli);
+    }
+    figli.push(el('ul', {}, anni.map(function (a) {
+      var rotta = Object.assign({}, r, { annoId: a.id });
+      return el('li', {}, [el('a', {
+        href: versoHash(rotta), classe: 'scelta-anno', 'aria-current': a.id === scelto.id ? 'true' : null,
+        onclick: function (e) { e.preventDefault(); vai(rotta); },
+      }, [el('bdi', {}, [a.nome]), ' ', t('span', chiaveStatoAnno(a.stato), null, { classe: 'sottotitolo' })])]);
+    })));
+    return el('nav', { classe: 'anno-di-lavoro', 'aria-labelledby': 'titolo-anno-di-lavoro' }, figli);
+  }
+
+  function menuAdmin(sezioni, corrente, r) {
+    if (sezioni.length < 2) return null;
+    return el('nav', { classe: 'menu-amministrazione', 'aria-label': I18n.testo('UI_ADMIN_SECTIONS') }, [el('ul', {}, sezioni.map(function (s) {
+      var rotta = rottaAdmin(r, { sezione: s.id });
+      return el('li', {}, [t('a', s.chiave, null, {
+        href: versoHash(rotta), classe: 'voce-menu', 'aria-current': s.id === corrente.id ? 'page' : null,
+        onclick: function (e) { e.preventDefault(); vai(rotta); },
+      })]);
+    }))]);
+  }
+
+  /**
+   * Amministrazione: titolo, menu delle sezioni, anno di lavoro (per le sezioni legate
+   * all'anno), poi la sezione. Senza sezione nella rotta: il Quadro per chi amministra
+   * l'istituto, le Scuole per il PLATFORM_ADMIN senza istituto attivo.
+   */
+  VISTE.amministrazione = async function (r) {
+    var sezioni = sezioniDisponibili();
+    var richiesta = r.sezione === 'classi' ? 'livelli' : r.sezione;
+    var sezione = sezioni.find(function (s) { return s.id === richiesta; }) || sezioni[0];
+    if (!sezione) {
+      cornice([RADICE, { chiave: 'UI_ADMINISTRATION' }]);
+      return [t('h2', 'UI_ADMINISTRATION'), t('p', 'ERR_FORBIDDEN', null, { classe: 'stato' })];
+    }
+    var datiAnni = null;
+    var anno = null;
+    if (sezione.anno) {
+      datiAnni = await api('/admin/school-years');
+      anno = datiAnni.anni.find(function (a) { return a.id === r.annoId; })
+        || datiAnni.anni.find(function (a) { return a.id === datiAnni.annoDiLavoro; }) || null;
+    }
+    var esito = await SEZIONI_VISTE[r.sezione === 'classi' ? 'classi' : sezione.id](r, { anno: anno, datiAnni: datiAnni });
+    var voci = [RADICE];
+    if (r.sezione) voci.push({ chiave: 'UI_ADMINISTRATION', rotta: rottaAdmin(r, {}) }, { chiave: sezione.chiave, rotta: rottaAdmin(r, { sezione: sezione.id }) });
+    else voci.push({ chiave: 'UI_ADMINISTRATION' });
+    var indietro = cornice(voci.concat(esito.voci || []));
+    return [
+      indietro,
+      t('h2', 'UI_ADMINISTRATION'),
+      menuAdmin(sezioni, sezione, r),
+      sezione.anno ? selettoreAnno(datiAnni.anni, anno, rottaAdmin(r, { sezione: r.sezione })) : null,
+      el('div', { classe: 'sezione-amministrazione' }, esito.nodi.filter(Boolean)),
+    ];
+  };
+
+  var SEZIONI_VISTE = {};
+
+  // --- Quadro dell'istituto: cose da fare e riepilogo per livello (tutto dal server) ---------
+
+  /** Il collegamento di una cosa da fare compare solo se la sua sezione esiste già (e l'utente la vede). */
+  function sezioneEsistente(c) {
+    var id = c.sezione === 'classi' ? 'livelli' : c.sezione;
+    return sezioniDisponibili().some(function (s) { return s.id === id; });
+  }
+
+  function rottaCollegamento(c, r) {
+    if (c.sezione === 'classi') return rottaAdmin(r, { sezione: 'classi', livelloId: c.livelloId });
+    return rottaAdmin(r, { sezione: c.sezione, annoId: c.annoId || r.annoId });
+  }
+
+  async function sezioneCompletezza() {
+    var completezza = await api('/admin/traduzioni/completezza');
+    var nodi = [t('h3', 'UI_TRANSLATION_COMPLETENESS')];
+    if (!completezza.lingue.length) nodi.push(t('p', 'UI_TRANSLATION_SINGLE_LANGUAGE', null, { classe: 'stato' }));
+    completezza.lingue.forEach(function (l) {
+      nodi.push(el('table', { classe: 'semplice' }, [
+        el('caption', {}, [t('span', 'UI_LANGUAGE_' + l.lingua.toUpperCase().replace(/[^A-Z0-9]/g, '_'))]),
+        el('tbody', {}, l.campi.map(function (c) {
+          return el('tr', {}, [
+            t('th', 'UI_TRANSLATION_FIELD_' + c.campo.toUpperCase().replace(/[^A-Z0-9]/g, '_'), null, { scope: 'row' }),
+            el('td', {}, [t('span', 'BASE_COUNT', { n: c.tradotti, N: c.totale })]),
+          ]);
+        })),
+      ]));
+    });
+    return nodi;
+  }
+
+  SEZIONI_VISTE.quadro = async function (r, contesto) {
+    var q = await api('/admin/overview' + (contesto.anno ? '?anno=' + contesto.anno.id : ''));
+    var cose = q.daFare.map(function (v) {
+      var testo = t('span', v.codice, v.parametri);
+      return el('li', {}, [v.collegamento && sezioneEsistente(v.collegamento) ? collegamentoA(rottaCollegamento(v.collegamento, r), [testo]) : testo]);
+    });
+    var nodi = [
+      t('h3', 'UI_ADMIN_TODO'),
+      cose.length ? el('ul', { classe: 'cose-da-fare' }, cose) : t('p', 'UI_TODO_NONE', null, { classe: 'stato' }),
+      t('h3', 'UI_ADMIN_SUMMARY_BY_LEVEL'),
+    ];
+    if (!q.riepilogo.length) nodi.push(t('p', 'UI_ADMIN_SUMMARY_EMPTY', null, { classe: 'stato' }));
+    else {
+      nodi.push(el('table', { classe: 'semplice riepilogo-livelli' }, [
+        q.anno ? t('caption', 'UI_ADMIN_SUMMARY_CAPTION', { anno: q.anno.nome }) : null,
+        el('thead', {}, [el('tr', {}, ['COLUMN_LEVEL', 'COLUMN_CLASSES', 'COLUMN_STUDENTS_ENROLLED', 'COLUMN_TEACHERS', 'COLUMN_TEACHINGS']
+          .map(function (k) { return t('th', k, null, { scope: 'col' }); }))]),
+        el('tbody', {}, q.riepilogo.map(function (riga) {
+          return el('tr', {}, [
+            el('th', { scope: 'row' }, [contenuto('span', riga.livello.nome)].concat(riga.livello.stato === 'attivo' ? [] : [' · ', t('span', chiaveStatoLivello(riga.livello.stato))])),
+            el('td', {}, [I18n.numero(riga.classi, 0)]),
+            el('td', {}, [I18n.numero(riga.alunni, 0)]),
+            el('td', {}, [I18n.numero(riga.docenti, 0)]),
+            el('td', {}, [I18n.numero(riga.insegnamenti, 0)]),
+          ]);
+        })),
+      ]));
+    }
+    return { nodi: nodi.concat(await sezioneCompletezza()) };
+  };
+
+  // --- Calendario: anni (con le loro azioni) e periodi dell'anno di lavoro ------------------
+
+  /** Azioni sugli anni, nell'ordine in cui compaiono; il server dice quali sono ammesse. */
+  var AZIONI_ANNO = [
+    { id: 'attiva', percorso: 'activate', metodo: 'POST', chiave: 'UI_YEAR_ACTIVATE', per: 'UI_YEAR_ACTIVATE_FOR', conferma: 'UI_YEAR_ACTIVATE_CONFIRM' },
+    { id: 'chiudi', percorso: 'close', metodo: 'POST', chiave: 'UI_YEAR_CLOSE', per: 'UI_YEAR_CLOSE_FOR', conferma: 'UI_YEAR_CLOSE_CONFIRM' },
+    { id: 'riapri', percorso: 'reopen', metodo: 'POST', chiave: 'UI_YEAR_REOPEN', per: 'UI_YEAR_REOPEN_FOR', conferma: 'UI_YEAR_REOPEN_CONFIRM' },
+    { id: 'elimina', percorso: '', metodo: 'DELETE', chiave: 'UI_DELETE', per: 'UI_YEAR_DELETE_FOR', conferma: 'UI_YEAR_DELETE_CONFIRM' },
+  ];
+
+  function rigaAnno(a) {
+    var azioni = AZIONI_ANNO.filter(function (z) { return a.azioni.indexOf(z.id) >= 0; }).map(function (z) {
+      return pulsanteAzione(z.chiave, {
+        per: z.per, conferma: z.conferma, parametri: { anno: a.nome },
+        esegui: function () { return api('/admin/school-years/' + a.id + (z.percorso ? '/' + z.percorso : ''), corpoJson(z.metodo)); },
+      });
+    });
+    return el('li', { classe: 'voce-admin' }, [
+      el('span', { classe: 'titolo' }, [el('bdi', {}, [a.nome])]),
+      ' ', t('span', chiaveStatoAnno(a.stato), null, { classe: 'etichetta-stato stato-' + a.stato }),
+      ' ', t('span', 'UI_DATES_RANGE', { inizio: I18n.data(a.dataInizio), fine: I18n.data(a.dataFine) }, { classe: 'sottotitolo' }),
+      azioni.length ? el('span', { classe: 'azioni' }, azioni) : null,
+    ]);
+  }
+
+  function bloccoPassaggio(p) {
+    var parametri = { da: p.daAnno.nome, a: p.aAnno.nome };
+    return el('section', { classe: 'passaggio', 'aria-labelledby': 'titolo-passaggio' }, [
+      t('h4', 'UI_YEAR_SWITCH', null, { id: 'titolo-passaggio' }),
+      t('p', 'UI_YEAR_SWITCH_TEXT', parametri),
+      pulsanteAzione('UI_YEAR_SWITCH', {
+        classe: 'azione', conferma: 'UI_YEAR_SWITCH_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/school-years/' + p.aAnno.id + '/switch-to', corpoJson('POST')); },
+      }),
+    ]);
+  }
+
+  function moduloNuovoAnno() {
+    var nome = inputTesto(20);
+    var inizio = inputData();
+    var fine = inputData();
+    return moduloAdmin({
+      id: 'nuovo-anno', titolo: 'UI_NEW_SCHOOL_YEAR', nota: 'UI_NEW_SCHOOL_YEAR_NOTE', invio: 'UI_CREATE',
+      campi: [
+        { nome: 'nome', etichetta: 'UI_SCHOOL_YEAR_NAME', input: nome, campo: 'UI_FIELD_NOME', aiuto: { chiave: 'UI_SCHOOL_YEAR_NAME_HINT' } },
+        { nome: 'inizio', etichetta: 'UI_DATE_START', input: inizio, campo: 'UI_FIELD_DATA_INIZIO' },
+        { nome: 'fine', etichetta: 'UI_DATE_END', input: fine, campo: 'UI_FIELD_DATA_FINE' },
+      ],
+      invia: function () { return api('/admin/school-years', corpoJson('POST', { nome: nome.value, dataInizio: inizio.value, dataFine: fine.value })); },
+    });
+  }
+
+  /** Modulo di un periodo: nuovo (periodo assente) o modifica sul posto. */
+  function moduloPeriodo(anno, periodo, annulla) {
+    var nome = inputTesto(50, periodo ? periodo.nome.testo : null);
+    var inizio = inputData(periodo ? periodo.dataInizio : null);
+    var fine = inputData(periodo ? periodo.dataFine : null);
+    return moduloAdmin({
+      id: periodo ? 'periodo-' + periodo.id : 'nuovo-periodo',
+      titolo: periodo ? 'UI_EDIT_PERIOD' : 'UI_NEW_PERIOD', parametri: { nome: periodo ? periodo.nome : null, anno: anno.nome },
+      nota: periodo ? null : 'UI_PERIOD_NOTE', invio: periodo ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
+      campi: [
+        { nome: 'nome', etichetta: 'UI_PERIOD_NAME', input: nome, campo: 'UI_FIELD_NOME' },
+        { nome: 'inizio', etichetta: 'UI_DATE_START', input: inizio, campo: 'UI_FIELD_DATA_INIZIO' },
+        { nome: 'fine', etichetta: 'UI_DATE_END', input: fine, campo: 'UI_FIELD_DATA_FINE' },
+      ],
+      invia: function () {
+        var corpo = { nome: nome.value, dataInizio: inizio.value, dataFine: fine.value };
+        return periodo ? api('/admin/periods/' + periodo.id, corpoJson('PUT', corpo)) : api('/admin/school-years/' + anno.id + '/periods', corpoJson('POST', corpo));
+      },
+    });
+  }
+
+  function rigaPeriodo(anno, p, modificabile) {
+    var riga = el('li', { classe: 'voce-admin' });
+    var parametri = { nome: p.nome };
+    var azioni = [];
+    if (modificabile) {
+      azioni.push(t('button', 'UI_EDIT', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_EDIT_FOR', parametri),
+        onclick: function () {
+          riga.replaceChildren(moduloPeriodo(anno, p, function () { disegna(stato.rotta); }));
+          riga.querySelector('input').focus();
+        },
+      }));
+      if (p.eliminabile) {
+        azioni.push(pulsanteAzione('UI_DELETE', {
+          per: 'UI_DELETE_FOR', conferma: 'UI_PERIOD_DELETE_CONFIRM', parametri: parametri,
+          esegui: function () { return api('/admin/periods/' + p.id, corpoJson('DELETE')); },
+        }));
+      }
+    }
+    riga.append(
+      contenuto('span', p.nome, { classe: 'titolo' }),
+      ' ', t('span', 'UI_DATES_RANGE', { inizio: I18n.data(p.dataInizio), fine: I18n.data(p.dataFine) }, { classe: 'sottotitolo' }),
+      azioni.length ? el('span', { classe: 'azioni' }, azioni) : ''
+    );
+    return riga;
+  }
+
+  SEZIONI_VISTE.calendario = async function (r, contesto) {
+    var dati = contesto.datiAnni;
+    var nodi = [t('h3', 'UI_SCHOOL_YEARS')];
+    if (dati.passaggio) nodi.push(bloccoPassaggio(dati.passaggio));
+    nodi.push(dati.anni.length ? el('ul', { classe: 'elenco-admin elenco-anni' }, dati.anni.map(rigaAnno)) : t('p', 'UI_NO_SCHOOL_YEARS', null, { classe: 'stato' }));
+    nodi.push(moduloNuovoAnno());
+    if (contesto.anno) {
+      var periodi = await api('/admin/school-years/' + contesto.anno.id + '/periods');
+      nodi.push(t('h3', 'UI_ASSESSMENT_PERIODS_OF', { anno: contesto.anno.nome }));
+      if (!periodi.modificabile) nodi.push(t('p', 'UI_PERIODS_READ_ONLY', { anno: contesto.anno.nome }, { classe: 'nota' }));
+      nodi.push(periodi.periodi.length
+        ? el('ul', { classe: 'elenco-admin elenco-periodi' }, periodi.periodi.map(function (p) { return rigaPeriodo(contesto.anno, p, periodi.modificabile); }))
+        : t('p', 'UI_NO_PERIODS', null, { classe: 'stato' }));
+      if (periodi.modificabile) nodi.push(moduloPeriodo(contesto.anno, null, null));
+    }
+    return { nodi: nodi };
+  };
+
+  // --- Livelli e classi --------------------------------------------------------------------
+
+  function moduloLivello(livello, annulla) {
+    var nome = inputTesto(100, livello ? livello.nome.testo : null);
+    var ordine = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', size: 6, value: livello ? String(livello.ordine) : null });
+    return moduloAdmin({
+      id: livello ? 'livello-' + livello.id : 'nuovo-livello',
+      titolo: livello ? 'UI_EDIT_LEVEL' : 'UI_NEW_SCHOOL_LEVEL', parametri: { nome: livello ? livello.nome : null },
+      invio: livello ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
+      campi: [
+        { nome: 'nome', etichetta: 'UI_LEVEL_NAME', input: nome, campo: 'UI_FIELD_NOME' },
+        { nome: 'ordine', etichetta: 'UI_LEVEL_ORDER', input: ordine, campo: 'UI_FIELD_ORDINE', aiuto: { chiave: 'UI_LEVEL_ORDER_HINT' } },
+      ],
+      invia: function () {
+        var corpo = { nome: nome.value, ordine: ordine.value };
+        return livello ? api('/admin/school-levels/' + livello.id, corpoJson('PUT', corpo)) : api('/admin/school-levels', corpoJson('POST', corpo));
+      },
+    });
+  }
+
+  function rigaLivello(l, r) {
+    var riga = el('li', { classe: 'voce-admin' });
+    var parametri = { nome: l.nome, livello: l.nome };
+    var azioni = [
+      haPermesso('class.manage') ? collegamentoA(rottaAdmin(r, { sezione: 'classi', livelloId: l.id }), [t('span', 'UI_LEVEL_OPEN_CLASSES')], {
+        'aria-label': I18n.testo('UI_LEVEL_OPEN_CLASSES_FOR', parametri),
+      }) : null,
+      t('button', 'UI_EDIT', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_EDIT_FOR', parametri),
+        onclick: function () { riga.replaceChildren(moduloLivello(l, function () { disegna(stato.rotta); })); riga.querySelector('input').focus(); },
+      }),
+      l.azioni.indexOf('disattiva') >= 0 ? pulsanteAzione('UI_DEACTIVATE', {
+        per: 'UI_DEACTIVATE_FOR', conferma: 'UI_LEVEL_DEACTIVATE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/school-levels/' + l.id + '/deactivate', corpoJson('POST')); },
+      }) : null,
+      l.azioni.indexOf('riattiva') >= 0 ? pulsanteAzione('UI_REACTIVATE', {
+        per: 'UI_REACTIVATE_FOR', parametri: parametri,
+        esegui: function () { return api('/admin/school-levels/' + l.id + '/reactivate', corpoJson('POST')); },
+      }) : null,
+      l.azioni.indexOf('elimina') >= 0 ? pulsanteAzione('UI_DELETE', {
+        per: 'UI_DELETE_FOR', conferma: 'UI_LEVEL_DELETE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/school-levels/' + l.id, corpoJson('DELETE')); },
+      }) : null,
+    ];
+    riga.append(
+      contenuto('span', l.nome, { classe: 'titolo' }),
+      ' ', t('span', chiaveStatoLivello(l.stato), null, { classe: 'etichetta-stato stato-' + l.stato }),
+      ' ', t('span', 'UI_LEVEL_CLASSES_COUNT', { n: l.classiAttive }, { classe: 'sottotitolo' }),
+      el('span', { classe: 'azioni' }, azioni)
+    );
+    return riga;
+  }
+
+  SEZIONI_VISTE.livelli = async function (r) {
+    var livelli = await api('/admin/school-levels');
+    return {
+      nodi: [
+        t('h3', 'UI_SCHOOL_LEVELS'),
+        livelli.length ? el('ul', { classe: 'elenco-admin elenco-livelli' }, livelli.map(function (l) { return rigaLivello(l, r); }))
+          : t('p', 'UI_NO_SCHOOL_LEVELS', null, { classe: 'stato' }),
+        moduloLivello(null, null),
+      ],
+    };
+  };
+
+  function moduloClasse(livello, classe, annulla) {
+    var nome = inputTesto(50, classe ? classe.nome : null);
+    return moduloAdmin({
+      id: classe ? 'classe-' + classe.id : 'nuova-classe',
+      titolo: classe ? 'UI_RENAME_CLASS' : 'UI_NEW_CLASS', parametri: { nome: classe ? classe.nome : null, livello: livello.nome },
+      invio: classe ? 'UI_SAVE' : 'UI_CREATE', annulla: annulla,
+      campi: [{ nome: 'nome', etichetta: 'UI_CLASS_NAME', input: nome, campo: 'UI_FIELD_NOME', aiuto: classe ? null : { chiave: 'UI_CLASS_NAME_HINT' } }],
+      invia: function () {
+        return classe ? api('/admin/classes/' + classe.id, corpoJson('PUT', { nome: nome.value }))
+          : api('/admin/school-levels/' + livello.id + '/classes', corpoJson('POST', { nome: nome.value }));
+      },
+    });
+  }
+
+  function rigaClasse(livello, c) {
+    var riga = el('li', { classe: 'voce-admin' });
+    var parametri = { nome: c.nome, livello: livello.nome };
+    var azioni = [
+      t('button', 'UI_RENAME', null, {
+        type: 'button', classe: 'collegamento', 'aria-label': I18n.testo('UI_RENAME_FOR', parametri),
+        onclick: function () { riga.replaceChildren(moduloClasse(livello, c, function () { disegna(stato.rotta); })); riga.querySelector('input').focus(); },
+      }),
+      c.azioni.indexOf('disattiva') >= 0 ? pulsanteAzione('UI_DEACTIVATE', {
+        per: 'UI_DEACTIVATE_FOR', conferma: 'UI_CLASS_DEACTIVATE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/classes/' + c.id + '/deactivate', corpoJson('POST')); },
+      }) : null,
+      c.azioni.indexOf('riattiva') >= 0 ? pulsanteAzione('UI_REACTIVATE', {
+        per: 'UI_REACTIVATE_FOR', parametri: parametri,
+        esegui: function () { return api('/admin/classes/' + c.id + '/reactivate', corpoJson('POST')); },
+      }) : null,
+      c.azioni.indexOf('elimina') >= 0 ? pulsanteAzione('UI_DELETE', {
+        per: 'UI_DELETE_FOR', conferma: 'UI_CLASS_DELETE_CONFIRM', parametri: parametri,
+        esegui: function () { return api('/admin/classes/' + c.id, corpoJson('DELETE')); },
+      }) : null,
+    ];
+    riga.append(
+      el('span', { classe: 'titolo' }, [el('bdi', {}, [c.nome])]),
+      ' ', t('span', chiaveStatoClasse(c.stato), null, { classe: 'etichetta-stato stato-' + c.stato }),
+      el('span', { classe: 'azioni' }, azioni)
+    );
+    return riga;
+  }
+
+  SEZIONI_VISTE.classi = async function (r) {
+    var dati = await api('/admin/school-levels/' + r.livelloId + '/classes');
+    var livello = dati.livello;
+    return {
+      voci: [{ contenuto: livello.nome }],
+      nodi: [
+        el('h3', {}, [t('span', 'UI_CLASSES_OF_LEVEL'), ' ', contenuto('span', livello.nome)]),
+        livello.stato === 'attivo' ? null : t('p', 'UI_LEVEL_DEACTIVATED_NOTE', null, { classe: 'nota' }),
+        dati.classi.length ? el('ul', { classe: 'elenco-admin elenco-classi' }, dati.classi.map(function (c) { return rigaClasse(livello, c); }))
+          : t('p', 'UI_NO_CLASSES', null, { classe: 'stato' }),
+        livello.stato === 'attivo' ? moduloClasse(livello, null, null) : null,
+      ],
+    };
+  };
+
+  // --- Scuole (PLATFORM_ADMIN): entrare in una scuola, crearla, reimpostare una password ----
+
+  SEZIONI_VISTE.scuole = async function () {
     var credenziali = stato.credenzialiDaMostrare;
     stato.credenzialiDaMostrare = null;
-    if (stato.me.isPlatformAdmin) {
-      var tenants = await api('/platform/tenants');
-      if (credenziali) corpo.push(riquadroCredenziali(credenziali));
-      // Entrare in una scuola: lo stesso elenco di pulsanti, con tutte le scuole attive (sempre aggiornato).
-      var attive = tenants.filter(function (tn) { return tn.stato === 'attivo'; });
-      corpo.push(el('section', { classe: 'sezione', 'aria-labelledby': 'titolo-entra-istituto' }, [
-        t('h3', 'UI_ENTER_TENANT', null, { id: 'titolo-entra-istituto' }),
-        attive.length ? elencoIstituti(attive) : t('p', 'UI_NO_TENANT', null, { classe: 'stato' }),
-      ]));
-      corpo.push(moduloNuovaScuola());
-      corpo.push(t('h3', 'UI_TENANTS'), el('ul', { classe: 'elenco-semplice elenco-scuole' }, tenants.map(voceScuola)));
-    }
-    if (stato.me.activeTenantId && haPermesso('tenant.manage_config')) {
-      var completezza = await api('/admin/traduzioni/completezza');
-      corpo.push(t('h3', 'UI_TRANSLATION_COMPLETENESS'));
-      if (!completezza.lingue.length) corpo.push(t('p', 'UI_TRANSLATION_SINGLE_LANGUAGE', null, { classe: 'stato' }));
-      completezza.lingue.forEach(function (l) {
-        corpo.push(el('table', { classe: 'semplice' }, [
-          el('caption', {}, [t('span', 'UI_LANGUAGE_' + l.lingua.toUpperCase().replace(/[^A-Z0-9]/g, '_'))]),
-          el('tbody', {}, l.campi.map(function (c) {
-            return el('tr', {}, [
-              t('th', 'UI_TRANSLATION_FIELD_' + c.campo.toUpperCase().replace(/[^A-Z0-9]/g, '_'), null, { scope: 'row' }),
-              el('td', {}, [t('span', 'BASE_COUNT', { n: c.tradotti, N: c.totale })]),
-            ]);
-          })),
-        ]));
-      });
-    }
-    return corpo;
+    var tenants = await api('/platform/tenants');
+    // Entrare in una scuola: lo stesso elenco di pulsanti, con tutte le scuole attive (sempre aggiornato).
+    var attive = tenants.filter(function (tn) { return tn.stato === 'attivo'; });
+    return {
+      nodi: [
+        credenziali ? riquadroCredenziali(credenziali) : null,
+        el('section', { classe: 'sezione', 'aria-labelledby': 'titolo-entra-istituto' }, [
+          t('h3', 'UI_ENTER_TENANT', null, { id: 'titolo-entra-istituto' }),
+          attive.length ? elencoIstituti(attive) : t('p', 'UI_NO_TENANT', null, { classe: 'stato' }),
+        ]),
+        moduloNuovaScuola(),
+        t('h3', 'UI_TENANTS'),
+        el('ul', { classe: 'elenco-semplice elenco-scuole' }, tenants.map(voceScuola)),
+      ],
+    };
   };
 
   // --- Avvio -------------------------------------------------------------------------

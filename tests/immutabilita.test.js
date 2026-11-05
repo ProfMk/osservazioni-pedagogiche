@@ -75,7 +75,7 @@ async function conFixture(fn) {
     F.L1 = await livello('Fixture L1');
     F.L2 = await livello('Fixture L2');
     const anno = async (nome, inizio, fine) => (await uno(c,
-      'INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine) VALUES ($1, $2, $3, $4) RETURNING id',
+      "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, $2, $3, $4, 'chiuso') RETURNING id",
       [F.alfa, nome, inizio, fine])).id;
     F.Y1 = await anno('2090/2091', '2090-09-01', '2091-06-30');
     F.Y2 = await anno('2091/2092', '2091-09-01', '2092-06-30');

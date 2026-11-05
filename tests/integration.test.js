@@ -761,7 +761,7 @@ test('DB: immutabilità strutturale di un Teaching dopo la creazione di un\'Acti
 test('DB (cross-year): un\'Activity non può usare una PedagogicalUnit di un anno scolastico diverso, anche nello stesso tenant', async () => {
   const alfa = (await pool.query("SELECT id FROM tenants WHERE slug = 'alfa'")).rows[0];
   const { rows: [nuovoAnno] } = await pool.query(
-    "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine) VALUES ($1, '2027/2028', '2027-09-01', '2028-06-30') RETURNING id",
+    "INSERT INTO school_years (tenant_id, nome, data_inizio, data_fine, stato) VALUES ($1, '2027/2028', '2027-09-01', '2028-06-30', 'chiuso') RETURNING id",
     [alfa.id]
   );
   const livello = (await pool.query("SELECT id FROM school_levels WHERE tenant_id = $1 AND nome = 'Primaria'", [alfa.id])).rows[0];
